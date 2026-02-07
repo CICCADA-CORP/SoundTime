@@ -17,7 +17,7 @@ WORKDIR /app
 
 COPY --from=builder /app/target/release/soundtime-server /app/soundtime-server
 
-RUN mkdir -p /data/music && chown -R appuser:appuser /data/music
+RUN mkdir -p /data/music /data/p2p-blobs && chown -R appuser:appuser /data
 
 USER appuser
 
