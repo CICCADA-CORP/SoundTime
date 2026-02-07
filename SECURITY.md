@@ -17,7 +17,7 @@ We take security seriously at SoundTime. If you discover a security vulnerabilit
 
 Please **DO NOT** report security vulnerabilities via public GitHub issues.
 
-Instead, please report vulnerabilities by email to **security@ciccada-corp.com** (replace with your actual security contact).
+Instead, please report vulnerabilities by email to **ciccada1337@proton.me**.
 
 Please include the following details in your report:
 - Type of issue (e.g., cross-site scripting, SQL injection, RCE, authorization bypass)
