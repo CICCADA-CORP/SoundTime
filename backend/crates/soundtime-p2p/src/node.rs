@@ -21,6 +21,7 @@ use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::blocked::is_peer_blocked;
+use crate::discovery::PeerRegistry;
 use crate::error::P2pError;
 
 /// ALPN protocol identifier for SoundTime P2P
@@ -104,6 +105,8 @@ pub struct P2pNode {
     blob_store: FsStore,
     /// Database handle for peer blocking checks
     db: DatabaseConnection,
+    /// Registry of known peers (in-memory)
+    registry: Arc<PeerRegistry>,
     /// Shutdown signal sender
     shutdown_tx: watch::Sender<bool>,
     /// Configuration used to create this node
@@ -196,10 +199,13 @@ impl P2pNode {
 
         let (shutdown_tx, _) = watch::channel(false);
 
+        let registry = Arc::new(PeerRegistry::new());
+
         let node = Arc::new(Self {
             endpoint,
             blob_store,
             db,
+            registry,
             shutdown_tx,
             _config: config,
         });
@@ -217,6 +223,11 @@ impl P2pNode {
     /// Get this node's unique identifier (public key).
     pub fn node_id(&self) -> NodeId {
         self.endpoint.node_id()
+    }
+
+    /// Get the peer registry.
+    pub fn registry(&self) -> &Arc<PeerRegistry> {
+        &self.registry
     }
 
     /// Get the node address (includes relay URL and direct addresses).
@@ -440,7 +451,7 @@ impl P2pNode {
             Err(_) => "unknown".to_string(),
         };
 
-        debug!(%peer_id, "incoming connection");
+        info!(%peer_id, "incoming connection");
 
         // Check if peer is blocked
         if is_peer_blocked(&self.db, &peer_id).await {
@@ -448,6 +459,9 @@ impl P2pNode {
             conn.close(1u8.into(), b"blocked");
             return Err(P2pError::PeerBlocked(peer_id));
         }
+
+        // Register the peer in our registry (marks it online with last_seen = now)
+        self.registry.upsert_peer(&peer_id, None, 0).await;
 
         // Accept bidirectional streams from this connection
         loop {
@@ -474,7 +488,7 @@ impl P2pNode {
                         }
                     };
 
-                    self.handle_message(msg, send, node_id).await?;
+                    self.handle_message(msg, send, node_id, &peer_id).await?;
                 }
                 Err(_) => break,
             }
@@ -489,6 +503,7 @@ impl P2pNode {
         msg: P2pMessage,
         mut send: iroh::endpoint::SendStream,
         node_id: NodeId,
+        peer_id: &str,
     ) -> Result<(), P2pError> {
         match msg {
             P2pMessage::FetchTrack { hash } => {
@@ -532,7 +547,9 @@ impl P2pNode {
                     .map_err(|e| P2pError::Connection(e.to_string()))?;
             }
             P2pMessage::AnnounceTrack { hash, title } => {
-                debug!(%hash, %title, "received track announcement");
+                debug!(%hash, %title, "received track announcement from {}", peer_id);
+                // Update last_seen for the announcing peer
+                self.registry.upsert_peer(peer_id, None, 0).await;
                 // TODO: Store announcement in DB for catalog browsing
             }
             P2pMessage::TrackData { .. } | P2pMessage::Pong { .. } => {

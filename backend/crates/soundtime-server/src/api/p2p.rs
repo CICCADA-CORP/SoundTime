@@ -7,7 +7,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use soundtime_db::AppState;
-use soundtime_p2p::{P2pNode, PeerInfo, PeerRegistry};
+use soundtime_p2p::{P2pMessage, P2pNode, PeerInfo};
 use std::sync::Arc;
 
 /// Helper: extract `Arc<P2pNode>` from type-erased AppState field.
@@ -75,8 +75,8 @@ pub async fn p2p_status(
         relay_url,
         relay_connected,
         direct_addresses,
-        peer_count: 0,
-        online_peer_count: 0,
+        peer_count: node.registry().peer_count().await,
+        online_peer_count: node.registry().online_peers().await.len(),
     })
 }
 
@@ -84,15 +84,12 @@ pub async fn p2p_status(
 pub async fn list_peers(
     State(state): State<Arc<AppState>>,
 ) -> Json<PeerListResponse> {
-    let Some(_node) = get_p2p_node(&state) else {
-        // Return empty list gracefully when P2P is disabled
+    let Some(node) = get_p2p_node(&state) else {
         return Json(PeerListResponse { peers: vec![] });
     };
 
-    // PeerRegistry is accessed via a shared reference stored alongside the node.
-    // For Phase 3 we return an empty list; the registry will be wired in via
-    // Extension or by adding it to the type-erased Any.
-    Json(PeerListResponse { peers: vec![] })
+    let peers = node.registry().list_peers().await;
+    Json(PeerListResponse { peers })
 }
 
 /// POST /api/admin/p2p/peers — add a peer by NodeId (admin only)
@@ -115,10 +112,23 @@ pub async fn add_peer(
 
     let peer_addr = soundtime_p2p::NodeAddr::new(node_id);
     match node.ping_peer(peer_addr).await {
-        Ok(_) => Ok(Json(MessageResponse {
-            message: format!("peer {} added and responded to ping", payload.node_id),
-        })),
+        Ok(P2pMessage::Pong { node_id: peer_nid, track_count }) => {
+            node.registry().upsert_peer(&peer_nid, None, track_count).await;
+            Ok(Json(MessageResponse {
+                message: format!("peer {} added and responded to ping ({} tracks)", payload.node_id, track_count),
+            }))
+        }
+        Ok(_) => {
+            // Got a response but not a Pong — register anyway
+            node.registry().upsert_peer(&payload.node_id, None, 0).await;
+            Ok(Json(MessageResponse {
+                message: format!("peer {} added (unexpected response type)", payload.node_id),
+            }))
+        }
         Err(e) => {
+            // Register as offline peer
+            node.registry().upsert_peer(&payload.node_id, None, 0).await;
+            node.registry().mark_offline(&payload.node_id).await;
             tracing::warn!(peer = %payload.node_id, "ping failed: {e}");
             Ok(Json(MessageResponse {
                 message: format!("peer {} added but ping failed: {e}", payload.node_id),
@@ -157,10 +167,12 @@ pub async fn ping_peer(
 
 /// DELETE /api/admin/p2p/peers/{node_id} — remove a peer (admin only)
 pub async fn remove_peer(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path(peer_node_id): Path<String>,
 ) -> Json<MessageResponse> {
-    // Will integrate with PeerRegistry in next phase
+    if let Some(node) = get_p2p_node(&state) {
+        node.registry().remove_peer(&peer_node_id).await;
+    }
     Json(MessageResponse {
         message: format!("peer {peer_node_id} removed"),
     })
@@ -237,9 +249,32 @@ pub async fn network_graph(
         });
     }
 
-    // Peers (will be populated when PeerRegistry is wired)
-    // For now, show any peers we know about
-    // TODO: Wire PeerRegistry to populate real peer data
+    // Peers from registry
+    let peers = node.registry().list_peers().await;
+    for peer in &peers {
+        let short_peer_id = if peer.node_id.len() > 8 {
+            &peer.node_id[..8]
+        } else {
+            &peer.node_id
+        };
+        let label = peer
+            .name
+            .as_deref()
+            .map(|n| format!("{n} ({short_peer_id}…)"))
+            .unwrap_or_else(|| format!("Peer ({short_peer_id}…)"));
+
+        nodes.push(NetworkGraphNode {
+            id: peer.node_id.clone(),
+            node_type: "peer".to_string(),
+            label,
+            online: peer.is_online,
+        });
+        links.push(NetworkGraphLink {
+            source: node_id.clone(),
+            target: peer.node_id.clone(),
+            link_type: "peer".to_string(),
+        });
+    }
 
     Json(NetworkGraph { nodes, links })
 }
