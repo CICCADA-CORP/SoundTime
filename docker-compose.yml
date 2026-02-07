@@ -43,6 +43,7 @@ services:
       P2P_SECRET_KEY_PATH: /data/p2p-blobs/secret_key
       P2P_BIND_PORT: ${P2P_BIND_PORT:-11204}
       P2P_LOCAL_DISCOVERY: ${P2P_LOCAL_DISCOVERY:-true}
+      P2P_SEED_PEERS: ${P2P_SEED_PEERS:-}
     depends_on:
       postgres:
         condition: service_healthy

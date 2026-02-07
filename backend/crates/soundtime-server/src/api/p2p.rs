@@ -114,6 +114,11 @@ pub async fn add_peer(
     match node.ping_peer(peer_addr).await {
         Ok(P2pMessage::Pong { node_id: peer_nid, track_count }) => {
             node.registry().upsert_peer(&peer_nid, None, track_count).await;
+            // Trigger peer exchange in background to discover wider network
+            let p2p_clone = Arc::clone(&node);
+            tokio::spawn(async move {
+                p2p_clone.discover_via_peer(node_id).await;
+            });
             Ok(Json(MessageResponse {
                 message: format!("peer {} added and responded to ping ({} tracks)", payload.node_id, track_count),
             }))

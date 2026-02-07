@@ -338,6 +338,13 @@ pub async fn upload_track(
                 if let Err(e) = update.update(&state.db).await {
                     tracing::warn!(%track_id, "failed to save content_hash: {e}");
                 }
+
+                // Broadcast announcement to all connected peers
+                let announce_title = track_title.clone();
+                let p2p_clone = Arc::clone(&p2p);
+                tokio::spawn(async move {
+                    p2p_clone.broadcast_announce_track(hash, announce_title).await;
+                });
             }
             Err(e) => {
                 tracing::warn!(%track_id, "failed to publish track to P2P: {e}");

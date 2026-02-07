@@ -40,6 +40,8 @@ pub enum P2pMessage {
     Ping,
     /// Peer discovery pong
     Pong { node_id: String, track_count: u64 },
+    /// Peer exchange — share list of known peer NodeIds for network discovery
+    PeerExchange { peers: Vec<String> },
 }
 
 /// Configuration for the P2P node.
@@ -53,6 +55,8 @@ pub struct P2pConfig {
     pub bind_port: u16,
     /// Whether to enable local network (mDNS) discovery
     pub enable_local_discovery: bool,
+    /// Seed peer NodeIds to connect to on startup (auto-discovery)
+    pub seed_peers: Vec<String>,
 }
 
 impl Default for P2pConfig {
@@ -62,6 +66,7 @@ impl Default for P2pConfig {
             secret_key_path: PathBuf::from("data/p2p/secret_key"),
             bind_port: 0,
             enable_local_discovery: true,
+            seed_peers: Vec::new(),
         }
     }
 }
@@ -88,11 +93,19 @@ impl P2pConfig {
             .unwrap_or_else(|_| "true".to_string())
             .eq_ignore_ascii_case("true");
 
+        let seed_peers = std::env::var("P2P_SEED_PEERS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
         Self {
             blobs_dir,
             secret_key_path,
             bind_port,
             enable_local_discovery,
+            seed_peers,
         }
     }
 }
@@ -215,6 +228,43 @@ impl P2pNode {
         tokio::spawn(async move {
             node_clone.accept_loop().await;
         });
+
+        // Connect to seed peers in background (after a short delay for relay setup)
+        if !node._config.seed_peers.is_empty() {
+            let seed_peers = node._config.seed_peers.clone();
+            let node_clone = Arc::clone(&node);
+            tokio::spawn(async move {
+                // Give the relay a moment to fully stabilize
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                node_clone.connect_to_seed_peers(&seed_peers).await;
+            });
+        }
+
+        // Spawn periodic peer exchange & refresh (every 5 minutes)
+        {
+            let node_clone = Arc::clone(&node);
+            let mut shutdown_rx = node.shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+                interval.tick().await; // skip first immediate tick
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            let peers = node_clone.registry.online_peers().await;
+                            if !peers.is_empty() {
+                                info!(online = peers.len(), "periodic peer exchange");
+                                if let Ok(nid) = peers[0].node_id.parse::<NodeId>() {
+                                    node_clone.discover_via_peer(nid).await;
+                                }
+                            }
+                        }
+                        _ = shutdown_rx.changed() => {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
 
         info!("P2P node started successfully");
         Ok(node)
@@ -398,6 +448,215 @@ impl P2pNode {
         Ok(pong)
     }
 
+    /// Connect to a list of seed peers by NodeId.
+    /// Pings each one and registers it in the registry.
+    async fn connect_to_seed_peers(&self, seed_peers: &[String]) {
+        info!(count = seed_peers.len(), "connecting to seed peers");
+
+        for peer_id_str in seed_peers {
+            let node_id: NodeId = match peer_id_str.parse() {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!(peer = %peer_id_str, "invalid seed peer NodeId: {e}");
+                    continue;
+                }
+            };
+
+            // Skip ourselves
+            if node_id == self.node_id() {
+                debug!("skipping self in seed peers");
+                continue;
+            }
+
+            let peer_addr = NodeAddr::new(node_id);
+            info!(peer = %peer_id_str, "pinging seed peer");
+
+            match self.ping_peer(peer_addr).await {
+                Ok(P2pMessage::Pong { node_id: nid, track_count }) => {
+                    self.registry.upsert_peer(&nid, None, track_count).await;
+                    info!(peer = %nid, %track_count, "seed peer connected and registered");
+                    // Exchange peer lists to discover the wider network
+                    self.discover_via_peer(node_id).await;
+                }
+                Ok(_) => {
+                    self.registry.upsert_peer(peer_id_str, None, 0).await;
+                    warn!(peer = %peer_id_str, "seed peer responded with unexpected message");
+                }
+                Err(e) => {
+                    warn!(peer = %peer_id_str, "failed to reach seed peer: {e}");
+                }
+            }
+        }
+
+        let total = self.registry.peer_count().await;
+        let online = self.registry.online_peers().await.len();
+        info!(%total, %online, "seed peer discovery complete");
+    }
+
+    /// Send a message to a specific peer.
+    async fn send_message_to_peer(&self, node_id: NodeId, msg: &P2pMessage) -> Result<(), P2pError> {
+        let peer_addr = NodeAddr::new(node_id);
+        let conn = self
+            .endpoint
+            .connect(peer_addr, SOUNDTIME_ALPN)
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        let (mut send, _recv) = conn
+            .open_bi()
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        let msg_bytes = serde_json::to_vec(msg)?;
+        send.write_all(&(msg_bytes.len() as u32).to_be_bytes())
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        send.write_all(&msg_bytes)
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        send.finish()
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Broadcast a track announcement to all online peers.
+    /// Called after a track is published to the local blob store.
+    pub async fn broadcast_announce_track(&self, hash: Hash, title: String) {
+        let peers = self.registry.online_peers().await;
+        if peers.is_empty() {
+            debug!(%hash, "no online peers to announce track to");
+            return;
+        }
+
+        info!(%hash, %title, peer_count = peers.len(), "broadcasting track announcement");
+
+        let msg = P2pMessage::AnnounceTrack {
+            hash: hash.to_string(),
+            title,
+        };
+
+        for peer in &peers {
+            let node_id: NodeId = match peer.node_id.parse() {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+
+            if let Err(e) = self.send_message_to_peer(node_id, &msg).await {
+                warn!(peer = %peer.node_id, "failed to announce track: {e}");
+                self.registry.mark_offline(&peer.node_id).await;
+            } else {
+                debug!(peer = %peer.node_id, %hash, "track announced");
+            }
+        }
+    }
+
+    /// Discover peers by exchanging peer lists with a known peer (Peer Exchange / PEX).
+    /// Sends our known peers, receives theirs, and connects to any new ones.
+    pub async fn discover_via_peer(&self, peer_node_id: NodeId) {
+        info!(peer = %peer_node_id, "initiating peer exchange");
+
+        let peer_addr = NodeAddr::new(peer_node_id);
+        match self.exchange_peers(peer_addr).await {
+            Ok(remote_peers) => {
+                let our_id = self.node_id().to_string();
+                let mut new_count = 0u32;
+
+                for peer_id_str in remote_peers {
+                    if peer_id_str == our_id {
+                        continue;
+                    }
+                    if self.registry.get_peer(&peer_id_str).await.is_some() {
+                        continue;
+                    }
+
+                    let nid: NodeId = match peer_id_str.parse() {
+                        Ok(id) => id,
+                        Err(_) => continue,
+                    };
+
+                    let addr = NodeAddr::new(nid);
+                    match self.ping_peer(addr).await {
+                        Ok(P2pMessage::Pong {
+                            node_id,
+                            track_count,
+                        }) => {
+                            self.registry.upsert_peer(&node_id, None, track_count).await;
+                            info!(peer = %node_id, %track_count, "discovered new peer via PEX");
+                            new_count += 1;
+                        }
+                        Ok(_) => {
+                            self.registry.upsert_peer(&peer_id_str, None, 0).await;
+                            new_count += 1;
+                        }
+                        Err(e) => {
+                            debug!(peer = %peer_id_str, "PEX peer unreachable: {e}");
+                        }
+                    }
+                }
+
+                info!(peer = %peer_node_id, %new_count, "peer exchange complete");
+            }
+            Err(e) => {
+                warn!(peer = %peer_node_id, "peer exchange failed: {e}");
+            }
+        }
+    }
+
+    /// Send our peer list to a remote peer and receive theirs.
+    async fn exchange_peers(&self, peer_addr: NodeAddr) -> Result<Vec<String>, P2pError> {
+        let conn = self
+            .endpoint
+            .connect(peer_addr, SOUNDTIME_ALPN)
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        let (mut send, mut recv) = conn
+            .open_bi()
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        // Build our peer list (include ourselves so remote knows us)
+        let mut our_peers: Vec<String> = self
+            .registry
+            .list_peers()
+            .await
+            .into_iter()
+            .map(|p| p.node_id)
+            .collect();
+        our_peers.push(self.node_id().to_string());
+
+        let msg = P2pMessage::PeerExchange { peers: our_peers };
+        let msg_bytes = serde_json::to_vec(&msg)?;
+        send.write_all(&(msg_bytes.len() as u32).to_be_bytes())
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        send.write_all(&msg_bytes)
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        send.finish()
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        // Read response
+        let mut len_buf = [0u8; 4];
+        recv.read_exact(&mut len_buf)
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        let msg_len = u32::from_be_bytes(len_buf) as usize;
+
+        let response = recv
+            .read_to_end(msg_len)
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        let response_msg: P2pMessage = serde_json::from_slice(&response)?;
+
+        match response_msg {
+            P2pMessage::PeerExchange { peers } => Ok(peers),
+            _ => Ok(vec![]),
+        }
+    }
+
     /// Gracefully shutdown the P2P node.
     pub async fn shutdown(&self) {
         info!("shutting down P2P node");
@@ -547,10 +806,76 @@ impl P2pNode {
                     .map_err(|e| P2pError::Connection(e.to_string()))?;
             }
             P2pMessage::AnnounceTrack { hash, title } => {
-                debug!(%hash, %title, "received track announcement from {}", peer_id);
+                info!(%hash, %title, %peer_id, "received track announcement");
                 // Update last_seen for the announcing peer
                 self.registry.upsert_peer(peer_id, None, 0).await;
-                // TODO: Store announcement in DB for catalog browsing
+
+                // Auto-fetch: if we don't have this blob, fetch it from the announcing peer
+                let blob_hash: Result<Hash, _> = hash.parse();
+                if let Ok(h) = blob_hash {
+                    if !self.has_blob(h).await {
+                        let peer_node_id: Result<NodeId, _> = peer_id.parse();
+                        if let Ok(nid) = peer_node_id {
+                            info!(%hash, %peer_id, "auto-fetching announced track");
+                            let peer_addr = NodeAddr::new(nid);
+                            match self.fetch_track_from_peer(peer_addr, h).await {
+                                Ok(data) => {
+                                    // Import fetched data into our blob store
+                                    match self.blob_store.import_bytes(data, BlobFormat::Raw).await {
+                                        Ok(tag) => {
+                                            info!(
+                                                %hash,
+                                                local_hash = %tag.hash(),
+                                                "track replicated from peer"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!(%hash, "failed to import fetched track: {e}");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(%hash, %peer_id, "failed to auto-fetch track: {e}");
+                                }
+                            }
+                        }
+                    } else {
+                        debug!(%hash, "already have this track, skipping fetch");
+                    }
+                }
+            }
+            P2pMessage::PeerExchange { peers } => {
+                info!(count = peers.len(), %peer_id, "received peer exchange request");
+
+                // Register new peers from the exchange (as known but unverified)
+                let our_id = self.node_id().to_string();
+                for pid in &peers {
+                    if *pid != our_id && self.registry.get_peer(pid).await.is_none() {
+                        self.registry.upsert_peer(pid, None, 0).await;
+                        debug!(peer = %pid, "discovered peer via PEX");
+                    }
+                }
+
+                // Reply with our peer list (including ourselves)
+                let mut our_peers: Vec<String> = self
+                    .registry
+                    .list_peers()
+                    .await
+                    .into_iter()
+                    .map(|p| p.node_id)
+                    .collect();
+                our_peers.push(our_id);
+
+                let reply = P2pMessage::PeerExchange { peers: our_peers };
+                let reply_bytes = serde_json::to_vec(&reply)?;
+                send.write_all(&(reply_bytes.len() as u32).to_be_bytes())
+                    .await
+                    .map_err(|e| P2pError::Connection(e.to_string()))?;
+                send.write_all(&reply_bytes)
+                    .await
+                    .map_err(|e| P2pError::Connection(e.to_string()))?;
+                send.finish()
+                    .map_err(|e| P2pError::Connection(e.to_string()))?;
             }
             P2pMessage::TrackData { .. } | P2pMessage::Pong { .. } => {
                 // These are responses, not requests — ignore if received as requests
