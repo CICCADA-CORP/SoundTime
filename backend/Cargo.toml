@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/soundtime-server",
+  "crates/soundtime-audio",
+  "crates/soundtime-db",
+  "crates/soundtime-migration",
+  "crates/soundtime-p2p",
+]

@@ -1,0 +1,16 @@
+pub mod admin;
+pub mod albums;
+pub mod artists;
+pub mod audio;
+pub mod editorial;
+pub mod favorites;
+pub mod history;
+pub mod libraries;
+pub mod lyrics;
+pub mod p2p;
+pub mod playlists;
+pub mod reports;
+pub mod search;
+pub mod setup;
+pub mod tracks;
+pub mod users;

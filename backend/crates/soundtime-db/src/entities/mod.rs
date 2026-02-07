@@ -1,0 +1,14 @@
+pub mod album;
+pub mod artist;
+pub mod blocked_domain;
+pub mod favorite;
+pub mod instance_setting;
+pub mod library;
+pub mod library_track;
+pub mod listen_history;
+pub mod playlist;
+pub mod playlist_track;
+pub mod remote_track;
+pub mod track;
+pub mod track_report;
+pub mod user;

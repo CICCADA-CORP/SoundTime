@@ -1,0 +1,22 @@
+[package]
+name = "soundtime-audio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+lofty = "0.22"
+symphonia = { version = "0.5", features = ["mp3", "flac", "ogg", "wav", "aac", "pcm", "all-codecs"] }
+tracing = "0.1"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "sync"] }
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+aws-sdk-s3 = "1"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }

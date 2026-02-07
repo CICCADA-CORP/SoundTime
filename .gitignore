@@ -1,0 +1,33 @@
+# Rust
+/target/
+**/target/
+
+# Node
+/node_modules/
+**/node_modules/
+/dist/
+**/dist/
+
+# SvelteKit
+**/.svelte-kit/
+**/build/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# Env
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+*.swp
+
+# Audio data (local dev)
+/data/
+.vscode/
+.github/copilot-instructions.md

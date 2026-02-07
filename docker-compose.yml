@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-soundtime}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-soundtime}
+      POSTGRES_DB: ${POSTGRES_DB:-soundtime}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # SECURITY: do NOT expose postgres port in production. Uncomment for local dev only.
+    # ports:
+    #   - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U soundtime"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../docker/Dockerfile.backend
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-soundtime}:${POSTGRES_PASSWORD:-soundtime}@postgres:5432/${POSTGRES_DB:-soundtime}
+      RUST_LOG: ${RUST_LOG:-info}
+      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-secure-random-string}
+      SOUNDTIME_DOMAIN: ${SOUNDTIME_DOMAIN:-localhost}
+      AUDIO_STORAGE_PATH: /data/music
+      # Storage backend: "local" (default) or "s3"
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      # S3 configuration (only when STORAGE_BACKEND=s3)
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_PREFIX: ${S3_PREFIX:-}
+      S3_CACHE_PATH: ${S3_CACHE_PATH:-/tmp/soundtime-s3-cache}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # P2P configuration (iroh)
+      P2P_ENABLED: ${P2P_ENABLED:-false}
+      P2P_BLOBS_DIR: /data/p2p-blobs
+      P2P_BIND_PORT: ${P2P_BIND_PORT:-11204}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+      - "${P2P_BIND_PORT:-11204}:${P2P_BIND_PORT:-11204}/udp"
+    volumes:
+      - music_data:/data/music
+      - p2p_data:/data/p2p-blobs
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../docker/Dockerfile.frontend
+    environment:
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://backend:8080/api}
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "${NGINX_PORT:-8880}:80"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  postgres_data:
+  music_data:
+  p2p_data:

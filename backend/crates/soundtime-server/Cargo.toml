@@ -1,0 +1,39 @@
+[package]
+name = "soundtime-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "set-header"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+sea-orm-migration = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+argon2 = "0.5"
+jsonwebtoken = "9"
+rand = "0.8"
+tower_governor = "0.8"
+password-hash = { version = "0.5", features = ["std"] }
+tokio-util = { version = "0.7", features = ["io"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+url = "2"
+urlencoding = "2"
+bytes = "1"
+
+soundtime-audio = { path = "../soundtime-audio" }
+soundtime-db = { path = "../soundtime-db" }
+soundtime-migration = { path = "../soundtime-migration" }
+soundtime-p2p = { path = "../soundtime-p2p" }
+
+[dev-dependencies]
+tempfile = "3"
+axum-test = "16"
+wiremock = "0.6"
+tower = { version = "0.5", features = ["util"] }
