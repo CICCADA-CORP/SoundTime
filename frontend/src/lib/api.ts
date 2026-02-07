@@ -1,6 +1,12 @@
 import type { ApiError, TokenPair } from "./types";
 
-const API_BASE = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8080/api";
+/**
+ * API base URL.
+ * - Production (behind Nginx): relative "/api" — works for any domain/IP.
+ * - Dev override: set PUBLIC_API_URL in .env (e.g. http://localhost:8080/api)
+ *   when NOT using the Vite proxy.
+ */
+const API_BASE: string = import.meta.env.PUBLIC_API_URL ?? "/api";
 
 function getAccessToken(): string | null {
   if (typeof window === "undefined") return null;
