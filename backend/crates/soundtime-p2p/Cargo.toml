@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-iroh = "0.32"
-iroh-blobs = { version = "0.31", features = ["fs-store"] }
+iroh = { version = "0.32", features = ["discovery-local-network"] }
+iroh-blobs = { version = "0.32", features = ["fs-store"] }
 iroh-io = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs"] }
 tracing = "0.1"

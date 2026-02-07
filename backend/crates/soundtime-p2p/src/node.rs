@@ -46,18 +46,21 @@ pub enum P2pMessage {
 pub struct P2pConfig {
     /// Directory for iroh-blobs persistent storage
     pub blobs_dir: PathBuf,
-    /// Optional path to a persistent secret key file
-    pub secret_key_path: Option<PathBuf>,
+    /// Path to a persistent secret key file (ensures stable NodeId across restarts)
+    pub secret_key_path: PathBuf,
     /// Bind port (0 = random)
     pub bind_port: u16,
+    /// Whether to enable local network (mDNS) discovery
+    pub enable_local_discovery: bool,
 }
 
 impl Default for P2pConfig {
     fn default() -> Self {
         Self {
             blobs_dir: PathBuf::from("data/p2p/blobs"),
-            secret_key_path: None,
+            secret_key_path: PathBuf::from("data/p2p/secret_key"),
             bind_port: 0,
+            enable_local_discovery: true,
         }
     }
 }
@@ -70,18 +73,25 @@ impl P2pConfig {
             .unwrap_or_else(|_| PathBuf::from("data/p2p/blobs"));
 
         let secret_key_path = std::env::var("P2P_SECRET_KEY_PATH")
-            .ok()
-            .map(PathBuf::from);
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| blobs_dir.parent()
+                .unwrap_or(&blobs_dir)
+                .join("secret_key"));
 
         let bind_port = std::env::var("P2P_BIND_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
 
+        let enable_local_discovery = std::env::var("P2P_LOCAL_DISCOVERY")
+            .unwrap_or_else(|_| "true".to_string())
+            .eq_ignore_ascii_case("true");
+
         Self {
             blobs_dir,
             secret_key_path,
             bind_port,
+            enable_local_discovery,
         }
     }
 }
@@ -118,10 +128,36 @@ impl P2pNode {
             .await
             .map_err(|e| P2pError::BlobStore(e.to_string()))?;
 
-        // Build the iroh endpoint with configured bind port
+        // Build the iroh endpoint with discovery services and relay
+        //
+        // discovery_n0() registers both:
+        //   - PkarrPublisher  — publishes our NodeId + relay URL to n0's DNS server
+        //   - DnsDiscovery    — resolves other NodeIds via DNS queries to n0's server
+        //
+        // Without these, the node cannot register with relay servers and peers
+        // cannot discover us — this was the root cause of "Relay Disconnected".
         let mut builder = Endpoint::builder()
             .secret_key(secret_key)
-            .alpns(vec![SOUNDTIME_ALPN.to_vec()]);
+            .alpns(vec![SOUNDTIME_ALPN.to_vec()])
+            .discovery_n0();
+
+        // Optionally enable local network discovery (mDNS/swarm)
+        if config.enable_local_discovery {
+            info!("enabling local network discovery (mDNS/swarm)");
+            builder = builder.add_discovery(|secret_key: &SecretKey| {
+                let node_id = secret_key.public();
+                match iroh::discovery::local_swarm_discovery::LocalSwarmDiscovery::new(node_id) {
+                    Ok(discovery) => {
+                        tracing::info!("local swarm discovery started");
+                        Some(discovery)
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to start local swarm discovery: {e}");
+                        None
+                    }
+                }
+            });
+        }
 
         // Bind to the configured port (0 = random)
         if config.bind_port > 0 {
@@ -134,17 +170,28 @@ impl P2pNode {
             .await
             .map_err(|e| P2pError::Endpoint(e.to_string()))?;
 
-        // Wait for relay connection (up to 10 seconds)
+        // Wait for relay connection (up to 15 seconds)
+        // With discovery services registered, the endpoint will automatically
+        // connect to one of n0's production relay servers and publish its address.
         info!("waiting for relay connection...");
         match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(15),
             Self::wait_for_relay(&endpoint),
         )
         .await
         {
             Ok(Some(relay)) => info!(%relay, "connected to relay server"),
             Ok(None) => warn!("no relay server available — P2P will use direct connections only"),
-            Err(_) => warn!("relay connection timed out after 10s — continuing without relay"),
+            Err(_) => warn!("relay connection timed out after 15s — continuing without relay"),
+        }
+
+        // Log direct addresses for diagnostics
+        if let Ok(addr) = endpoint.node_addr().await {
+            info!(
+                direct_addrs = addr.direct_addresses.len(),
+                relay = ?addr.relay_url.as_ref().map(|u| u.to_string()),
+                "P2P endpoint bound"
+            );
         }
 
         let (shutdown_tx, _) = watch::channel(false);
@@ -498,37 +545,33 @@ impl P2pNode {
     }
 
     /// Load or generate a persistent secret key.
+    /// The key is always persisted to ensure stable NodeId across restarts.
     async fn load_or_generate_key(config: &P2pConfig) -> Result<SecretKey, P2pError> {
-        if let Some(ref key_path) = config.secret_key_path {
-            if key_path.exists() {
-                let key_bytes = tokio::fs::read(key_path).await.map_err(P2pError::Io)?;
-                let key_str = String::from_utf8(key_bytes)
-                    .map_err(|e| P2pError::Endpoint(format!("invalid key file encoding: {e}")))?;
-                let key: SecretKey = key_str
-                    .trim()
-                    .parse()
-                    .map_err(|e| P2pError::Endpoint(format!("invalid secret key: {e}")))?;
-                info!("loaded existing P2P secret key");
-                return Ok(key);
-            } else {
-                let key = SecretKey::generate(&mut rand::rngs::OsRng);
-                // Ensure parent dir exists
-                if let Some(parent) = key_path.parent() {
-                    tokio::fs::create_dir_all(parent)
-                        .await
-                        .map_err(P2pError::Io)?;
-                }
-                tokio::fs::write(key_path, key.to_string().as_bytes())
-                    .await
-                    .map_err(P2pError::Io)?;
-                info!("generated new P2P secret key");
-                return Ok(key);
-            }
+        let key_path = &config.secret_key_path;
+
+        if key_path.exists() {
+            let key_bytes = tokio::fs::read(key_path).await.map_err(P2pError::Io)?;
+            let key_str = String::from_utf8(key_bytes)
+                .map_err(|e| P2pError::Endpoint(format!("invalid key file encoding: {e}")))?;
+            let key: SecretKey = key_str
+                .trim()
+                .parse()
+                .map_err(|e| P2pError::Endpoint(format!("invalid secret key: {e}")))?;
+            info!(path = %key_path.display(), "loaded existing P2P secret key");
+            return Ok(key);
         }
 
-        // No persistent key path — generate ephemeral key
+        // Generate and save a new key
         let key = SecretKey::generate(&mut rand::rngs::OsRng);
-        info!("using ephemeral P2P secret key (no P2P_SECRET_KEY_PATH set)");
+        if let Some(parent) = key_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(P2pError::Io)?;
+        }
+        tokio::fs::write(key_path, key.to_string().as_bytes())
+            .await
+            .map_err(P2pError::Io)?;
+        info!(path = %key_path.display(), "generated and saved new P2P secret key");
         Ok(key)
     }
 
