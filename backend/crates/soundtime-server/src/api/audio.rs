@@ -339,11 +339,26 @@ pub async fn upload_track(
                     tracing::warn!(%track_id, "failed to save content_hash: {e}");
                 }
 
-                // Broadcast announcement to all connected peers
-                let announce_title = track_title.clone();
+                // Broadcast full track metadata to all connected peers
+                let announcement = soundtime_p2p::TrackAnnouncement {
+                    hash: hash.to_string(),
+                    title: track_title.clone(),
+                    artist_name: artist_name.clone(),
+                    album_title: Some(album_title.clone()),
+                    duration_secs: audio_meta.duration_secs as f32,
+                    format: audio_meta.format.clone(),
+                    file_size: audio_meta.file_size as i64,
+                    genre: audio_meta.genre.clone(),
+                    year: audio_meta.year.map(|y| y as i16),
+                    track_number: audio_meta.track_number.map(|n| n as i16),
+                    disc_number: audio_meta.disc_number.map(|n| n as i16),
+                    bitrate: audio_meta.bitrate.map(|b| b as i32),
+                    sample_rate: audio_meta.sample_rate.map(|s| s as i32),
+                    origin_node: p2p.node_id().to_string(),
+                };
                 let p2p_clone = Arc::clone(&p2p);
                 tokio::spawn(async move {
-                    p2p_clone.broadcast_announce_track(hash, announce_title).await;
+                    p2p_clone.broadcast_announce_track(announcement).await;
                 });
             }
             Err(e) => {

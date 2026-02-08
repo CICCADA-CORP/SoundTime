@@ -16,9 +16,11 @@ use iroh::{Endpoint, NodeAddr, NodeId, SecretKey};
 use iroh_blobs::store::fs::Store as FsStore;
 use iroh_blobs::store::{Map, MapEntry, Store as StoreOps};
 use iroh_blobs::{BlobFormat, Hash, TempTag};
-use sea_orm::DatabaseConnection;
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use soundtime_db::entities::{album, artist, track};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use crate::blocked::is_peer_blocked;
 use crate::discovery::PeerRegistry;
@@ -27,13 +29,46 @@ use crate::error::P2pError;
 /// ALPN protocol identifier for SoundTime P2P
 pub const SOUNDTIME_ALPN: &[u8] = b"soundtime/p2p/1";
 
+/// Track metadata sent alongside announcements for catalog replication.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct TrackAnnouncement {
+    /// BLAKE3 content hash of the audio blob
+    pub hash: String,
+    /// Track title
+    pub title: String,
+    /// Artist name
+    pub artist_name: String,
+    /// Album title (if any)
+    pub album_title: Option<String>,
+    /// Duration in seconds
+    pub duration_secs: f32,
+    /// Audio format (e.g. "FLAC", "MP3")
+    pub format: String,
+    /// File size in bytes
+    pub file_size: i64,
+    /// Genre (optional)
+    pub genre: Option<String>,
+    /// Year (optional)
+    pub year: Option<i16>,
+    /// Track number on the album (optional)
+    pub track_number: Option<i16>,
+    /// Disc number (optional)
+    pub disc_number: Option<i16>,
+    /// Bitrate in bps (optional)
+    pub bitrate: Option<i32>,
+    /// Sample rate in Hz (optional)
+    pub sample_rate: Option<i32>,
+    /// NodeId of the instance that originally uploaded the track
+    pub origin_node: String,
+}
+
 /// Protocol message types exchanged between peers.
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub enum P2pMessage {
     /// Request a track blob by its content hash
     FetchTrack { hash: String },
-    /// Announce that this node has a track available
-    AnnounceTrack { hash: String, title: String },
+    /// Announce a track with full metadata for catalog replication
+    AnnounceTrack(TrackAnnouncement),
     /// Response containing track data
     TrackData { hash: String, size: u64 },
     /// Peer discovery ping
@@ -522,19 +557,22 @@ impl P2pNode {
 
     /// Broadcast a track announcement to all online peers.
     /// Called after a track is published to the local blob store.
-    pub async fn broadcast_announce_track(&self, hash: Hash, title: String) {
+    pub async fn broadcast_announce_track(&self, announcement: TrackAnnouncement) {
         let peers = self.registry.online_peers().await;
         if peers.is_empty() {
-            debug!(%hash, "no online peers to announce track to");
+            debug!(hash = %announcement.hash, "no online peers to announce track to");
             return;
         }
 
-        info!(%hash, %title, peer_count = peers.len(), "broadcasting track announcement");
+        info!(
+            hash = %announcement.hash,
+            title = %announcement.title,
+            artist = %announcement.artist_name,
+            peer_count = peers.len(),
+            "broadcasting track announcement"
+        );
 
-        let msg = P2pMessage::AnnounceTrack {
-            hash: hash.to_string(),
-            title,
-        };
+        let msg = P2pMessage::AnnounceTrack(announcement);
 
         for peer in &peers {
             let node_id: NodeId = match peer.node_id.parse() {
@@ -546,7 +584,7 @@ impl P2pNode {
                 warn!(peer = %peer.node_id, "failed to announce track: {e}");
                 self.registry.mark_offline(&peer.node_id).await;
             } else {
-                debug!(peer = %peer.node_id, %hash, "track announced");
+                debug!(peer = %peer.node_id, "track announced");
             }
         }
     }
@@ -805,42 +843,164 @@ impl P2pNode {
                 send.finish()
                     .map_err(|e| P2pError::Connection(e.to_string()))?;
             }
-            P2pMessage::AnnounceTrack { hash, title } => {
-                info!(%hash, %title, %peer_id, "received track announcement");
-                // Update last_seen for the announcing peer
+            P2pMessage::AnnounceTrack(ann) => {
+                info!(
+                    hash = %ann.hash,
+                    title = %ann.title,
+                    artist = %ann.artist_name,
+                    %peer_id,
+                    "received track announcement"
+                );
                 self.registry.upsert_peer(peer_id, None, 0).await;
 
-                // Auto-fetch: if we don't have this blob, fetch it from the announcing peer
-                let blob_hash: Result<Hash, _> = hash.parse();
-                if let Ok(h) = blob_hash {
-                    if !self.has_blob(h).await {
-                        let peer_node_id: Result<NodeId, _> = peer_id.parse();
-                        if let Ok(nid) = peer_node_id {
-                            info!(%hash, %peer_id, "auto-fetching announced track");
-                            let peer_addr = NodeAddr::new(nid);
-                            match self.fetch_track_from_peer(peer_addr, h).await {
-                                Ok(data) => {
-                                    // Import fetched data into our blob store
-                                    match self.blob_store.import_bytes(data, BlobFormat::Raw).await {
-                                        Ok(tag) => {
-                                            info!(
-                                                %hash,
-                                                local_hash = %tag.hash(),
-                                                "track replicated from peer"
-                                            );
-                                        }
-                                        Err(e) => {
-                                            warn!(%hash, "failed to import fetched track: {e}");
+                // Check if we already have this track (by content_hash)
+                let already_exists = track::Entity::find()
+                    .filter(track::Column::ContentHash.eq(Some(ann.hash.clone())))
+                    .one(&self.db)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some();
+
+                if already_exists {
+                    debug!(hash = %ann.hash, "track already in local catalog, skipping");
+                } else {
+                    // Auto-fetch the blob if we don't have it
+                    let blob_hash: Result<Hash, _> = ann.hash.parse();
+                    if let Ok(h) = blob_hash {
+                        if !self.has_blob(h).await {
+                            if let Ok(nid) = peer_id.parse::<NodeId>() {
+                                info!(hash = %ann.hash, %peer_id, "auto-fetching announced track");
+                                let peer_addr = NodeAddr::new(nid);
+                                match self.fetch_track_from_peer(peer_addr, h).await {
+                                    Ok(data) => {
+                                        if let Err(e) = self.blob_store.import_bytes(data, BlobFormat::Raw).await {
+                                            warn!(hash = %ann.hash, "failed to import blob: {e}");
                                         }
                                     }
+                                    Err(e) => {
+                                        warn!(hash = %ann.hash, %peer_id, "failed to fetch: {e}");
+                                    }
                                 }
-                                Err(e) => {
-                                    warn!(%hash, %peer_id, "failed to auto-fetch track: {e}");
+                            }
+                        }
+                    }
+
+                    // Create artist (find or create)
+                    let artist_id = match artist::Entity::find()
+                        .filter(artist::Column::Name.eq(&ann.artist_name))
+                        .one(&self.db)
+                        .await
+                    {
+                        Ok(Some(a)) => a.id,
+                        _ => {
+                            let new_id = Uuid::new_v4();
+                            let new_artist = artist::ActiveModel {
+                                id: Set(new_id),
+                                name: Set(ann.artist_name.clone()),
+                                musicbrainz_id: Set(None),
+                                bio: Set(None),
+                                image_url: Set(None),
+                                created_at: Set(chrono::Utc::now().into()),
+                            };
+                            if let Err(e) = new_artist.insert(&self.db).await {
+                                warn!(artist = %ann.artist_name, "failed to create artist: {e}");
+                                // Try to find it again (race condition)
+                                match artist::Entity::find()
+                                    .filter(artist::Column::Name.eq(&ann.artist_name))
+                                    .one(&self.db)
+                                    .await
+                                {
+                                    Ok(Some(a)) => a.id,
+                                    _ => return Ok(()),
+                                }
+                            } else {
+                                new_id
+                            }
+                        }
+                    };
+
+                    // Create album (find or create) if present
+                    let album_id = if let Some(ref album_title) = ann.album_title {
+                        match album::Entity::find()
+                            .filter(album::Column::Title.eq(album_title))
+                            .filter(album::Column::ArtistId.eq(artist_id))
+                            .one(&self.db)
+                            .await
+                        {
+                            Ok(Some(a)) => Some(a.id),
+                            _ => {
+                                let new_id = Uuid::new_v4();
+                                let new_album = album::ActiveModel {
+                                    id: Set(new_id),
+                                    title: Set(album_title.clone()),
+                                    artist_id: Set(artist_id),
+                                    release_date: Set(None),
+                                    cover_url: Set(None),
+                                    musicbrainz_id: Set(None),
+                                    genre: Set(ann.genre.clone()),
+                                    year: Set(ann.year),
+                                    created_at: Set(chrono::Utc::now().into()),
+                                };
+                                match new_album.insert(&self.db).await {
+                                    Ok(_) => Some(new_id),
+                                    Err(e) => {
+                                        warn!(album = %album_title, "failed to create album: {e}");
+                                        // Try find again
+                                        album::Entity::find()
+                                            .filter(album::Column::Title.eq(album_title))
+                                            .filter(album::Column::ArtistId.eq(artist_id))
+                                            .one(&self.db)
+                                            .await
+                                            .ok()
+                                            .flatten()
+                                            .map(|a| a.id)
+                                    }
                                 }
                             }
                         }
                     } else {
-                        debug!(%hash, "already have this track, skipping fetch");
+                        None
+                    };
+
+                    // Create the track record — file_path points to the P2P blob hash
+                    let track_id = Uuid::new_v4();
+                    let new_track = track::ActiveModel {
+                        id: Set(track_id),
+                        title: Set(ann.title.clone()),
+                        artist_id: Set(artist_id),
+                        album_id: Set(album_id),
+                        track_number: Set(ann.track_number),
+                        disc_number: Set(ann.disc_number),
+                        duration_secs: Set(ann.duration_secs),
+                        genre: Set(ann.genre.clone()),
+                        year: Set(ann.year),
+                        musicbrainz_id: Set(None),
+                        file_path: Set(format!("p2p://{}", ann.hash)),
+                        file_size: Set(ann.file_size),
+                        format: Set(ann.format.clone()),
+                        bitrate: Set(ann.bitrate),
+                        sample_rate: Set(ann.sample_rate),
+                        waveform_data: Set(None),
+                        uploaded_by: Set(None),
+                        content_hash: Set(Some(ann.hash.clone())),
+                        play_count: Set(0),
+                        created_at: Set(chrono::Utc::now().into()),
+                    };
+
+                    match new_track.insert(&self.db).await {
+                        Ok(_) => {
+                            info!(
+                                %track_id,
+                                title = %ann.title,
+                                artist = %ann.artist_name,
+                                hash = %ann.hash,
+                                "remote track replicated to local catalog"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(hash = %ann.hash, "failed to create track record: {e}");
+                        }
                     }
                 }
             }

@@ -11,7 +11,7 @@ pub mod node;
 
 pub use discovery::{PeerInfo, PeerRegistry};
 pub use error::P2pError;
-pub use node::{P2pConfig, P2pMessage, P2pNode};
+pub use node::{P2pConfig, P2pMessage, P2pNode, TrackAnnouncement};
 
 // Re-export iroh types needed by consumers
 pub use iroh::{NodeAddr, NodeId, RelayUrl};
