@@ -350,9 +350,12 @@ async fn main() {
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     tracing::info!(%addr, "server started");
 
-    axum::serve(tokio::net::TcpListener::bind(addr).await.unwrap(), app)
-        .await
-        .unwrap();
+    axum::serve(
+        tokio::net::TcpListener::bind(addr).await.unwrap(),
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 async fn healthz() -> Json<ApiStatus> {
