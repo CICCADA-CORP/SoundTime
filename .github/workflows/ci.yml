@@ -88,6 +88,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -113,6 +116,7 @@ jobs:
           context: ./backend
           file: docker/Dockerfile.backend
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta-backend.outputs.tags }}
           labels: ${{ steps.meta-backend.outputs.labels }}
           cache-from: type=gha
@@ -133,6 +137,7 @@ jobs:
           context: ./frontend
           file: docker/Dockerfile.frontend
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta-frontend.outputs.tags }}
           labels: ${{ steps.meta-frontend.outputs.labels }}
           cache-from: type=gha
@@ -146,8 +151,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build backend image
-        run: docker build -f docker/Dockerfile.backend -t soundtime-backend ./backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: docker/Dockerfile.backend
+          push: false
+          platforms: linux/amd64,linux/arm64
 
       - name: Build frontend image
-        run: docker build -f docker/Dockerfile.frontend -t soundtime-frontend ./frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: docker/Dockerfile.frontend
+          push: false
+          platforms: linux/amd64,linux/arm64
