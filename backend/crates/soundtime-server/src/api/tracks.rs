@@ -115,7 +115,7 @@ pub async fn list_tracks(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let total_pages = (total + per_page - 1) / per_page;
+    let total_pages = total.div_ceil(per_page);
 
     // Batch-fetch artist and album data
     let artist_ids: Vec<Uuid> = tracks
@@ -220,7 +220,7 @@ pub async fn my_uploads(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let total_pages = (total + per_page - 1) / per_page;
+    let total_pages = total.div_ceil(per_page);
 
     // Batch-fetch artist and album data
     let artist_ids: Vec<Uuid> = tracks
@@ -620,7 +620,7 @@ pub async fn list_popular_tracks(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let total_pages = (total + per_page - 1) / per_page;
+    let total_pages = total.div_ceil(per_page);
 
     Ok(Json(PaginatedResponse {
         data: tracks.into_iter().map(TrackResponse::from).collect(),

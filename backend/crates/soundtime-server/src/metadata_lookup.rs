@@ -86,6 +86,7 @@ struct MbArtistCredit {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct MbArtist {
     id: String,
     name: Option<String>,
@@ -95,6 +96,7 @@ struct MbArtist {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct MbRelease {
     id: String,
     title: Option<String>,
@@ -104,6 +106,7 @@ struct MbRelease {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct MbReleaseGroup {
     id: Option<String>,
     #[serde(rename = "primary-type")]
@@ -129,6 +132,7 @@ struct CaaImage {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CaaThumbnails {
     #[serde(rename = "500")]
     size_500: Option<String>,
@@ -738,6 +742,7 @@ pub async fn enrich_track(db: &DatabaseConnection, track_id: Uuid) -> MetadataRe
 
 /// Response structure expected from the AI for metadata resolution.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct AiMetadataResponse {
     genre: Option<String>,
     year: Option<i16>,
@@ -747,6 +752,7 @@ struct AiMetadataResponse {
 }
 
 /// Check if the AI API is configured (has a non-empty api key).
+#[allow(dead_code)]
 async fn get_ai_config(db: &DatabaseConnection) -> Option<(String, String, String)> {
     let api_key = instance_setting::Entity::find()
         .filter(instance_setting::Column::Key.eq("ai_api_key"))
@@ -780,6 +786,7 @@ async fn get_ai_config(db: &DatabaseConnection) -> Option<(String, String, Strin
 
 /// Try to enrich track metadata using an AI API when MusicBrainz finds nothing.
 /// Only fills in fields that are currently empty.
+#[allow(dead_code)]
 async fn enrich_track_with_ai_fallback(
     db: &DatabaseConnection,
     _client: &Client,
@@ -1185,6 +1192,7 @@ pub async fn resolve_best_source(
 
 /// Register a remote track discovered via federation.
 /// Automatically deduplicates by matching title+artist or musicbrainz_id.
+#[allow(clippy::too_many_arguments)]
 pub async fn register_remote_track(
     db: &DatabaseConnection,
     title: &str,

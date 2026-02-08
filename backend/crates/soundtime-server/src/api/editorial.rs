@@ -210,7 +210,7 @@ pub async fn generate_editorial_playlists(
     } else {
         6
     };
-    let tracks_per_playlist = (all_tracks.len() / num_playlists).min(25).max(5);
+    let tracks_per_playlist = (all_tracks.len() / num_playlists).clamp(5, 25);
 
     let system_prompt = format!(
         r#"You are a music curator for a streaming platform. Create exactly {num_playlists} themed playlists from the available tracks.
@@ -656,7 +656,7 @@ async fn generate_editorial_inner(state: &AppState) -> Result<usize, String> {
     } else {
         6
     };
-    let tracks_per_playlist = (all_tracks.len() / num_playlists).min(25).max(5);
+    let tracks_per_playlist = (all_tracks.len() / num_playlists).clamp(5, 25);
 
     let system_prompt = format!(
         r#"You are a music curator for a streaming platform. Create exactly {num_playlists} themed playlists from the available tracks.

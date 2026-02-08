@@ -130,7 +130,7 @@ mod tests {
         assert!(claims.exp > claims.iat);
         // Access token should expire in ~15 minutes (900s)
         let diff = claims.exp - claims.iat;
-        assert!(diff >= 899 && diff <= 901);
+        assert!((899..=901).contains(&diff));
     }
 
     #[test]
@@ -143,7 +143,7 @@ mod tests {
         assert_eq!(claims.token_type, TokenType::Refresh);
         // Refresh token should expire in ~7 days (604800s)
         let diff = claims.exp - claims.iat;
-        assert!(diff >= 604799 && diff <= 604801);
+        assert!((604799..=604801).contains(&diff));
     }
 
     #[test]

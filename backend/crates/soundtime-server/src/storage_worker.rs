@@ -149,7 +149,7 @@ pub async fn run_integrity_check(
 
         // Update progress every 10 tracks
         if let Some(tr) = tracker {
-            if report.total_checked % 10 == 0 || report.total_checked == total {
+            if report.total_checked.is_multiple_of(10) || report.total_checked == total {
                 let mut lock = tr.lock().await;
                 *lock = Some(TaskStatus::Running {
                     progress: TaskProgress {
@@ -232,7 +232,7 @@ pub async fn run_sync(
 
         // Update progress every 5 files
         if let Some(tr) = tracker {
-            if report.scanned % 5 == 0 || report.scanned == total {
+            if report.scanned.is_multiple_of(5) || report.scanned == total {
                 let mut lock = tr.lock().await;
                 *lock = Some(TaskStatus::Running {
                     progress: TaskProgress {

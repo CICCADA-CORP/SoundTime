@@ -119,7 +119,7 @@ pub async fn register(
             .email
             .split('@')
             .nth(1)
-            .map_or(false, |d| d.contains('.'))
+            .is_some_and(|d| d.contains('.'))
         || body.email.len() > 254
     {
         return Err((

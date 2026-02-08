@@ -334,9 +334,11 @@ pub async fn upload_track(
             Ok(hash) => {
                 tracing::info!(%track_id, %hash, "track published to P2P blob store");
                 // Update the content_hash in the DB
-                let mut update: track::ActiveModel = Default::default();
-                update.id = Set(track_id);
-                update.content_hash = Set(Some(hash.to_string()));
+                let update = track::ActiveModel {
+                    id: Set(track_id),
+                    content_hash: Set(Some(hash.to_string())),
+                    ..Default::default()
+                };
                 if let Err(e) = update.update(&state.db).await {
                     tracing::warn!(%track_id, "failed to save content_hash: {e}");
                 }
@@ -395,6 +397,7 @@ pub async fn upload_track(
     }))
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct StreamParams {
     pub _format: Option<String>,

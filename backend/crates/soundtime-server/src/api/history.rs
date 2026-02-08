@@ -69,7 +69,7 @@ pub async fn list_history(
         }
     }
 
-    let total_pages = (total + per_page - 1) / per_page;
+    let total_pages = total.div_ceil(per_page);
 
     Ok(Json(super::tracks::PaginatedResponse {
         data,

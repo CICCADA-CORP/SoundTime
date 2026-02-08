@@ -78,7 +78,7 @@ pub async fn list_albums(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let total_pages = (total + per_page - 1) / per_page;
+    let total_pages = total.div_ceil(per_page);
 
     // Batch-fetch artist names
     let artist_ids: Vec<Uuid> = albums

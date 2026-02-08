@@ -65,7 +65,7 @@ pub async fn list_artists(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let total_pages = (total + per_page - 1) / per_page;
+    let total_pages = total.div_ceil(per_page);
 
     Ok(Json(super::tracks::PaginatedResponse {
         data: artists.into_iter().map(ArtistResponse::from).collect(),

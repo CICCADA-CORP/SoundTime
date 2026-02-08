@@ -13,6 +13,7 @@ use soundtime_db::AppState;
 #[derive(Debug, Deserialize)]
 pub struct SearchParams {
     pub q: String,
+    #[allow(dead_code)]
     pub page: Option<u64>,
     pub per_page: Option<u64>,
 }

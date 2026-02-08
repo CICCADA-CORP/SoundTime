@@ -145,8 +145,8 @@ pub async fn require_auth_if_private(
             .get("Authorization")
             .and_then(|v| v.to_str().ok())
         {
-            if auth_header.starts_with("Bearer ") {
-                if let Ok(claims) = validate_token(&auth_header[7..], &state.jwt_secret) {
+            if let Some(token) = auth_header.strip_prefix("Bearer ") {
+                if let Ok(claims) = validate_token(token, &state.jwt_secret) {
                     if claims.token_type == TokenType::Access {
                         request.extensions_mut().insert(AuthUser(claims));
                     }
