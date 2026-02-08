@@ -663,8 +663,8 @@ async fn generate_editorial_inner(state: &AppState) -> Result<usize, String> {
 
 Rules:
 - Each playlist should have {tracks_per_playlist} to {} tracks
-- Each playlist needs a creative French name (e.g. "Nuit Électrique", "Voyage Acoustique")
-- Each playlist needs a short French description (1-2 sentences)
+- Each playlist needs a creative name
+- Each playlist needs a short description (1-2 sentences)
 - Group tracks by mood, genre, energy level, or theme
 - A track can appear in multiple playlists
 - Use ONLY track IDs from the provided list
