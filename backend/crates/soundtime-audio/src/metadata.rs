@@ -79,8 +79,8 @@ pub fn extract_metadata_from_file(path: &Path) -> Result<AudioMetadata, Metadata
                 tag.album().map(|a| a.to_string()),
                 tag.genre().map(|g| g.to_string()),
                 tag.year(),
-                tag.track().map(|t| t as u32),
-                tag.disk().map(|d| d as u32),
+                tag.track(),
+                tag.disk(),
                 cover,
             )
         } else {
