@@ -27,11 +27,8 @@ pub async fn is_any_peer_id_blocked(db: &DatabaseConnection, identifiers: &[&str
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_module_compiles() {
         // Basic compile check — integration tests require a real DB
-        assert!(true);
     }
 }

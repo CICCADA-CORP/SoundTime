@@ -945,34 +945,29 @@ impl P2pNode {
         self.registry.upsert_peer(&peer_id, None, 0).await;
 
         // Accept bidirectional streams from this connection
-        loop {
-            match conn.accept_bi().await {
-                Ok((send, mut recv)) => {
-                    let node_id = self.node_id();
+        while let Ok((send, mut recv)) = conn.accept_bi().await {
+            let node_id = self.node_id();
 
-                    // Read length-prefixed message
-                    let mut len_buf = [0u8; 4];
-                    if recv.read_exact(&mut len_buf).await.is_err() {
-                        break;
-                    }
-                    let msg_len = u32::from_be_bytes(len_buf) as usize;
-                    let msg_bytes = match recv.read_to_end(msg_len).await {
-                        Ok(b) => b,
-                        Err(_) => break,
-                    };
-
-                    let msg: P2pMessage = match serde_json::from_slice(&msg_bytes) {
-                        Ok(m) => m,
-                        Err(e) => {
-                            warn!("invalid message from {peer_id}: {e}");
-                            break;
-                        }
-                    };
-
-                    self.handle_message(msg, send, node_id, &peer_id).await?;
-                }
-                Err(_) => break,
+            // Read length-prefixed message
+            let mut len_buf = [0u8; 4];
+            if recv.read_exact(&mut len_buf).await.is_err() {
+                break;
             }
+            let msg_len = u32::from_be_bytes(len_buf) as usize;
+            let msg_bytes = match recv.read_to_end(msg_len).await {
+                Ok(b) => b,
+                Err(_) => break,
+            };
+
+            let msg: P2pMessage = match serde_json::from_slice(&msg_bytes) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!("invalid message from {peer_id}: {e}");
+                    break;
+                }
+            };
+
+            self.handle_message(msg, send, node_id, &peer_id).await?;
         }
 
         Ok(())
@@ -1429,9 +1424,11 @@ impl P2pNode {
         let cover_url = format!("/api/media/{relative}");
 
         // Update the album's cover_url in the database
-        let mut update: album::ActiveModel = Default::default();
-        update.id = Set(album_id);
-        update.cover_url = Set(Some(cover_url.clone()));
+        let update = album::ActiveModel {
+            id: Set(album_id),
+            cover_url: Set(Some(cover_url.clone())),
+            ..Default::default()
+        };
         if let Err(e) = update.update(&self.db).await {
             warn!(%album_id, "failed to update album cover_url: {e}");
         } else {
