@@ -166,8 +166,8 @@
     </div>
 
     {#each queue as item, i (item.file.name + item.file.size)}
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
-      <div class="flex items-center gap-3 p-3 bg-[hsl(var(--card))] rounded-lg" onclick={(e) => e.stopPropagation()} role="listitem">
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div class="flex items-center gap-3 p-3 bg-[hsl(var(--card))] rounded-lg" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="listitem">
         <!-- Icon -->
         <div class="shrink-0">
           {#if item.status === "done"}

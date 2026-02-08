@@ -23,6 +23,9 @@
     LogIn,
     Shield,
   } from "lucide-svelte";
+  import type { Snippet } from "svelte";
+
+  let { children }: { children: Snippet } = $props();
 
   const auth = getAuthStore();
   const player = getPlayerStore();
@@ -73,7 +76,7 @@
 
 {#if $page.url.pathname.startsWith("/setup")}
   <!-- Setup pages use their own minimal layout -->
-  <slot />
+  {@render children()}
 {:else if !setupChecked}
   <div class="flex items-center justify-center h-screen bg-[hsl(var(--background))]">
     <div class="animate-spin w-8 h-8 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full"></div>
@@ -99,7 +102,7 @@
           class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
             {isActive ? 'bg-[hsl(var(--secondary))] text-white' : 'text-[hsl(var(--muted-foreground))] hover:text-white hover:bg-white/5'}"
         >
-          <svelte:component this={item.icon} class="w-[18px] h-[18px]" strokeWidth={1.75} />
+          <item.icon class="w-[18px] h-[18px]" strokeWidth={1.75} />
           {t(item.key)}
         </a>
       {/each}
@@ -117,7 +120,7 @@
               class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
                 {isActive ? 'bg-[hsl(var(--secondary))] text-white' : 'text-[hsl(var(--muted-foreground))] hover:text-white hover:bg-white/5'}"
             >
-              <svelte:component this={item.icon} class="w-[18px] h-[18px]" strokeWidth={1.75} />
+              <item.icon class="w-[18px] h-[18px]" strokeWidth={1.75} />
               {t(item.key)}
             </a>
           {/each}
@@ -164,7 +167,7 @@
     </header>
 
     <div class="p-6">
-      <slot />
+      {@render children()}
     </div>
   </main>
 </div>

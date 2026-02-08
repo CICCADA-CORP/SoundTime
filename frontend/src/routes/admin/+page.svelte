@@ -858,8 +858,9 @@
                 onclick={() => updateSetting('instance_private', 'false')}
                 role="switch"
                 aria-checked={true}
+                aria-label={t('admin.settings.privateInstance')}
               >
-                <span class="inline-block h-4 w-4 rounded-full bg-white transition-transform translate-x-6" />
+                <span class="inline-block h-4 w-4 rounded-full bg-white transition-transform translate-x-6"></span>
               </button>
             {:else}
               <button
@@ -867,8 +868,9 @@
                 onclick={() => updateSetting('instance_private', 'true')}
                 role="switch"
                 aria-checked={false}
+                aria-label={t('admin.settings.privateInstance')}
               >
-                <span class="inline-block h-4 w-4 rounded-full bg-white transition-transform translate-x-1" />
+                <span class="inline-block h-4 w-4 rounded-full bg-white transition-transform translate-x-1"></span>
               </button>
             {/if}
           </div>
