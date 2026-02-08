@@ -134,7 +134,7 @@ cp .env.example .env
 # Edit .env — at minimum, change JWT_SECRET to a random string
 
 # Launch all services
-docker compose up --build
+docker compose up
 ```
 
 Once started:
