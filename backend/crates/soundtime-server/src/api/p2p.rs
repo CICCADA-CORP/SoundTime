@@ -31,11 +31,6 @@ pub struct P2pStatus {
     pub online_peer_count: usize,
 }
 
-#[derive(Serialize)]
-pub struct PeerListResponse {
-    pub peers: Vec<PeerInfo>,
-}
-
 #[derive(Deserialize)]
 pub struct AddPeerRequest {
     /// iroh NodeId (public key) of the peer to add
@@ -83,13 +78,13 @@ pub async fn p2p_status(
 /// GET /api/admin/p2p/peers — list known peers (admin only)
 pub async fn list_peers(
     State(state): State<Arc<AppState>>,
-) -> Json<PeerListResponse> {
+) -> Json<Vec<PeerInfo>> {
     let Some(node) = get_p2p_node(&state) else {
-        return Json(PeerListResponse { peers: vec![] });
+        return Json(vec![]);
     };
 
     let peers = node.registry().list_peers().await;
-    Json(PeerListResponse { peers })
+    Json(peers)
 }
 
 /// POST /api/admin/p2p/peers — add a peer by NodeId (admin only)

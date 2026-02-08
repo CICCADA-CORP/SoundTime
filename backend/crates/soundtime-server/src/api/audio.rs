@@ -403,22 +403,9 @@ pub async fn stream_track(
             )
         })?;
 
-    let file_path = soundtime_audio::ensure_local_file(state.storage.as_ref(), &track_record.file_path)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "Audio file not found" })),
-            )
-        })?;
+    let file_path_str = &track_record.file_path;
 
-    let file_size = tokio::fs::metadata(&file_path).await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Cannot read file" })),
-        )
-    })?.len();
-
+    // Determine content type from format
     let content_type = match track_record.format.as_str() {
         "mp3" => "audio/mpeg",
         "flac" => "audio/flac",
@@ -435,6 +422,81 @@ pub async fn stream_track(
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
         .and_then(parse_range_header);
+
+    // P2P tracks: file_path starts with "p2p://<hash>"
+    if let Some(hash_str) = file_path_str.strip_prefix("p2p://") {
+        let p2p_node = get_p2p_node(&state).ok_or_else(|| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": "P2P node not available" })),
+            )
+        })?;
+
+        let hash: soundtime_p2p::BlobHash = hash_str.parse().map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Invalid P2P hash" })),
+            )
+        })?;
+
+        let data = p2p_node.get_local_track(hash).await.map_err(|_| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "P2P track data not found locally" })),
+            )
+        })?;
+
+        let file_size = data.len() as u64;
+
+        let (start, end) = match range {
+            Some((s, e)) => {
+                let end = e.unwrap_or(file_size - 1).min(file_size - 1);
+                (s, end)
+            }
+            None => (0, file_size - 1),
+        };
+
+        let content_length = end - start + 1;
+        let slice = data.slice(start as usize..(start + content_length) as usize);
+        let body = Body::from(slice);
+
+        let status = if range.is_some() {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        };
+
+        let mut response_headers = HeaderMap::new();
+        response_headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
+        response_headers.insert(header::CONTENT_LENGTH, content_length.to_string().parse().unwrap());
+        response_headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+
+        if range.is_some() {
+            response_headers.insert(
+                header::CONTENT_RANGE,
+                format!("bytes {start}-{end}/{file_size}").parse().unwrap(),
+            );
+        }
+
+        return Ok((status, response_headers, body));
+    }
+
+    // Regular filesystem track
+    let file_path = soundtime_audio::ensure_local_file(state.storage.as_ref(), file_path_str)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Audio file not found" })),
+            )
+        })?;
+
+    let file_size = tokio::fs::metadata(&file_path).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "Cannot read file" })),
+        )
+    })?.len();
 
     let (start, end) = match range {
         Some((s, e)) => {

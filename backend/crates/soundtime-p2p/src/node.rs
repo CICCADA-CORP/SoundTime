@@ -17,7 +17,7 @@ use iroh_blobs::store::fs::Store as FsStore;
 use iroh_blobs::store::{Map, MapEntry, Store as StoreOps};
 use iroh_blobs::{BlobFormat, Hash, TempTag};
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
-use soundtime_db::entities::{album, artist, track};
+use soundtime_db::entities::{album, artist, remote_track, track};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -997,6 +997,30 @@ impl P2pNode {
                                 hash = %ann.hash,
                                 "remote track replicated to local catalog"
                             );
+
+                            // Also create a remote_track record so it appears in the admin "Remote Tracks" page
+                            let remote_track_id = Uuid::new_v4();
+                            let origin = &ann.origin_node;
+                            let new_remote = remote_track::ActiveModel {
+                                id: Set(remote_track_id),
+                                local_track_id: Set(Some(track_id)),
+                                musicbrainz_id: Set(None),
+                                title: Set(ann.title.clone()),
+                                artist_name: Set(ann.artist_name.clone()),
+                                album_title: Set(ann.album_title.clone()),
+                                instance_domain: Set(format!("p2p://{}", origin)),
+                                remote_uri: Set(format!("p2p://{}/{}", origin, ann.hash)),
+                                remote_stream_url: Set(format!("/api/stream/p2p/{}", ann.hash)),
+                                bitrate: Set(ann.bitrate),
+                                sample_rate: Set(ann.sample_rate),
+                                format: Set(Some(ann.format.clone())),
+                                is_available: Set(true),
+                                last_checked_at: Set(Some(chrono::Utc::now().into())),
+                                created_at: Set(chrono::Utc::now().into()),
+                            };
+                            if let Err(e) = new_remote.insert(&self.db).await {
+                                warn!(hash = %ann.hash, "failed to create remote_track record: {e}");
+                            }
                         }
                         Err(e) => {
                             warn!(hash = %ann.hash, "failed to create track record: {e}");

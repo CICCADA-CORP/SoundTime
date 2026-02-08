@@ -15,3 +15,4 @@ pub use node::{P2pConfig, P2pMessage, P2pNode, TrackAnnouncement};
 
 // Re-export iroh types needed by consumers
 pub use iroh::{NodeAddr, NodeId, RelayUrl};
+pub use iroh_blobs::Hash as BlobHash;
