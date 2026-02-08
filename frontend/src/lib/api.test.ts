@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { clearTokens, streamUrl, API_BASE } from '$lib/api';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { clearTokens, streamUrl, apiFetch, api, setTokens, API_BASE } from '$lib/api';
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -18,6 +18,7 @@ describe('API module', () => {
 	beforeEach(() => {
 		localStorageMock.clear();
 		vi.clearAllMocks();
+		vi.restoreAllMocks();
 	});
 
 	describe('clearTokens', () => {
@@ -27,6 +28,14 @@ describe('API module', () => {
 			clearTokens();
 			expect(localStorageMock.removeItem).toHaveBeenCalledWith('soundtime_access_token');
 			expect(localStorageMock.removeItem).toHaveBeenCalledWith('soundtime_refresh_token');
+		});
+	});
+
+	describe('setTokens', () => {
+		it('stores access and refresh tokens in localStorage', () => {
+			setTokens('access123', 'refresh456');
+			expect(localStorageMock.setItem).toHaveBeenCalledWith('soundtime_access_token', 'access123');
+			expect(localStorageMock.setItem).toHaveBeenCalledWith('soundtime_refresh_token', 'refresh456');
 		});
 	});
 
@@ -47,6 +56,306 @@ describe('API module', () => {
 		it('has a default value', () => {
 			expect(API_BASE).toBeDefined();
 			expect(typeof API_BASE).toBe('string');
+		});
+	});
+
+	describe('apiFetch', () => {
+		it('makes a GET request and returns JSON', async () => {
+			const mockData = { id: 1, name: 'test' };
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve(mockData),
+				text: () => Promise.resolve(JSON.stringify(mockData)),
+			}));
+
+			const result = await apiFetch('/test');
+			expect(result).toEqual(mockData);
+		});
+
+		it('sets Authorization header when token exists', async () => {
+			localStorageMock.setItem('soundtime_access_token', 'bearer-token');
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve('{"ok":true}'),
+			}));
+
+			await apiFetch('/protected');
+
+			const [, options] = vi.mocked(fetch).mock.calls[0];
+			const headers = options?.headers as Headers;
+			expect(headers.get('Authorization')).toBe('Bearer bearer-token');
+		});
+
+		it('sets Content-Type to application/json by default', async () => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve('{}'),
+			}));
+
+			await apiFetch('/test');
+
+			const [, options] = vi.mocked(fetch).mock.calls[0];
+			const headers = options?.headers as Headers;
+			expect(headers.get('Content-Type')).toBe('application/json');
+		});
+
+		it('does not set Content-Type for FormData', async () => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve('{}'),
+			}));
+
+			const formData = new FormData();
+			await apiFetch('/upload', { method: 'POST', body: formData });
+
+			const [, options] = vi.mocked(fetch).mock.calls[0];
+			const headers = options?.headers as Headers;
+			expect(headers.has('Content-Type')).toBe(false);
+		});
+
+		it('returns undefined for 204 No Content', async () => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 204,
+				text: () => Promise.resolve(''),
+			}));
+
+			const result = await apiFetch('/delete-thing');
+			expect(result).toBeUndefined();
+		});
+
+		it('returns undefined for empty response body', async () => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve(''),
+			}));
+
+			const result = await apiFetch('/empty');
+			expect(result).toBeUndefined();
+		});
+
+		it('throws on non-ok response', async () => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: false,
+				status: 400,
+				json: () => Promise.resolve({ error: 'Bad request' }),
+			}));
+
+			await expect(apiFetch('/bad')).rejects.toThrow('Bad request');
+		});
+
+		it('throws generic error when error response is not JSON', async () => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: false,
+				status: 500,
+				json: () => Promise.reject(new Error('not json')),
+			}));
+
+			await expect(apiFetch('/server-error')).rejects.toThrow('HTTP 500');
+		});
+
+		it('attempts token refresh on 401', async () => {
+			localStorageMock.setItem('soundtime_access_token', 'expired-token');
+			localStorageMock.setItem('soundtime_refresh_token', 'valid-refresh');
+
+			const fetchMock = vi.fn()
+				.mockResolvedValueOnce({
+					ok: false,
+					status: 401,
+					json: () => Promise.resolve({ error: 'Unauthorized' }),
+				})
+				.mockResolvedValueOnce({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve({ access_token: 'new-access', refresh_token: 'new-refresh' }),
+				})
+				.mockResolvedValueOnce({
+					ok: true,
+					status: 200,
+					text: () => Promise.resolve('{"result": "ok"}'),
+				});
+
+			vi.stubGlobal('fetch', fetchMock);
+
+			const result = await apiFetch('/protected-resource');
+			expect(result).toEqual({ result: 'ok' });
+			expect(fetchMock).toHaveBeenCalledTimes(3);
+		});
+
+		it('does not refresh when no token was set', async () => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: false,
+				status: 401,
+				json: () => Promise.resolve({ error: 'Unauthorized' }),
+			}));
+
+			await expect(apiFetch('/protected')).rejects.toThrow('Unauthorized');
+			expect(fetch).toHaveBeenCalledTimes(1);
+		});
+
+		it('clears tokens when refresh fails', async () => {
+			localStorageMock.setItem('soundtime_access_token', 'expired');
+			localStorageMock.setItem('soundtime_refresh_token', 'bad-refresh');
+
+			const fetchMock = vi.fn()
+				.mockResolvedValueOnce({
+					ok: false,
+					status: 401,
+					json: () => Promise.resolve({ error: 'Unauthorized' }),
+				})
+				.mockResolvedValueOnce({
+					ok: false,
+					status: 401,
+					json: () => Promise.resolve({ error: 'Invalid refresh token' }),
+				});
+
+			vi.stubGlobal('fetch', fetchMock);
+
+			await expect(apiFetch('/thing')).rejects.toThrow('Unauthorized');
+			expect(localStorageMock.removeItem).toHaveBeenCalledWith('soundtime_access_token');
+		});
+	});
+
+	describe('api helper methods', () => {
+		beforeEach(() => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve('{"success":true}'),
+			}));
+		});
+
+		it('api.get makes GET request', async () => {
+			await api.get('/items');
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/items');
+		});
+
+		it('api.post makes POST request with body', async () => {
+			await api.post('/items', { name: 'new' });
+			const [, options] = vi.mocked(fetch).mock.calls[0];
+			expect(options?.method).toBe('POST');
+			expect(options?.body).toBe(JSON.stringify({ name: 'new' }));
+		});
+
+		it('api.post works without body', async () => {
+			await api.post('/trigger');
+			const [, options] = vi.mocked(fetch).mock.calls[0];
+			expect(options?.method).toBe('POST');
+		});
+
+		it('api.put makes PUT request with body', async () => {
+			await api.put('/items/1', { name: 'updated' });
+			const [, options] = vi.mocked(fetch).mock.calls[0];
+			expect(options?.method).toBe('PUT');
+			expect(options?.body).toBe(JSON.stringify({ name: 'updated' }));
+		});
+
+		it('api.delete makes DELETE request', async () => {
+			await api.delete('/items/1');
+			const [, options] = vi.mocked(fetch).mock.calls[0];
+			expect(options?.method).toBe('DELETE');
+		});
+
+		it('api.upload sends FormData via POST', async () => {
+			const formData = new FormData();
+			formData.append('file', new Blob(['test']), 'test.mp3');
+
+			await api.upload('/upload', formData);
+			const [, options] = vi.mocked(fetch).mock.calls[0];
+			expect(options?.method).toBe('POST');
+			expect(options?.body).toBe(formData);
+		});
+	});
+
+	describe('api.uploadWithProgress', () => {
+		function createMockXHR(overrides: Record<string, any> = {}) {
+			const instance = {
+				open: vi.fn(),
+				send: vi.fn(),
+				abort: vi.fn(),
+				setRequestHeader: vi.fn(),
+				upload: { addEventListener: vi.fn() },
+				addEventListener: vi.fn(),
+				status: 200,
+				responseText: '{}',
+				...overrides,
+			};
+			const MockXHR = function (this: any) {
+				Object.assign(this, instance);
+			} as any;
+			vi.stubGlobal('XMLHttpRequest', MockXHR);
+			return instance;
+		}
+
+		it('returns promise and abort function', () => {
+			createMockXHR();
+			const result = api.uploadWithProgress('/upload', new FormData());
+			expect(result.promise).toBeInstanceOf(Promise);
+			expect(typeof result.abort).toBe('function');
+		});
+
+		it('sets Authorization header when token exists', () => {
+			localStorageMock.setItem('soundtime_access_token', 'upload-token');
+			const xhr = createMockXHR();
+			api.uploadWithProgress('/upload', new FormData());
+			expect(xhr.setRequestHeader).toHaveBeenCalledWith('Authorization', 'Bearer upload-token');
+		});
+
+		it('calls onProgress callback', () => {
+			const xhr = createMockXHR();
+			const onProgress = vi.fn();
+			api.uploadWithProgress('/upload', new FormData(), onProgress);
+
+			const progressHandler = xhr.upload.addEventListener.mock.calls[0][1];
+			progressHandler({ lengthComputable: true, loaded: 50, total: 100 });
+			expect(onProgress).toHaveBeenCalledWith(50, 100);
+		});
+
+		it('resolves on successful load', async () => {
+			const xhr = createMockXHR({ status: 200, responseText: '{"id":"123"}' });
+			const { promise } = api.uploadWithProgress('/upload', new FormData());
+
+			const loadCall = xhr.addEventListener.mock.calls.find((c: any[]) => c[0] === 'load');
+			loadCall[1]();
+
+			const result = await promise;
+			expect(result).toEqual({ id: '123' });
+		});
+
+		it('rejects on network error', async () => {
+			const xhr = createMockXHR();
+			const { promise } = api.uploadWithProgress('/upload', new FormData());
+
+			const errorCall = xhr.addEventListener.mock.calls.find((c: any[]) => c[0] === 'error');
+			errorCall[1]();
+
+			await expect(promise).rejects.toThrow('Network error');
+		});
+
+		it('rejects on abort', async () => {
+			const xhr = createMockXHR();
+			const { promise } = api.uploadWithProgress('/upload', new FormData());
+
+			const abortCall = xhr.addEventListener.mock.calls.find((c: any[]) => c[0] === 'abort');
+			abortCall[1]();
+
+			await expect(promise).rejects.toThrow('Upload cancelled');
+		});
+
+		it('rejects with server error on non-2xx', async () => {
+			const xhr = createMockXHR({ status: 413, responseText: '{"error":"File too large"}' });
+			const { promise } = api.uploadWithProgress('/upload', new FormData());
+
+			const loadCall = xhr.addEventListener.mock.calls.find((c: any[]) => c[0] === 'load');
+			loadCall[1]();
+
+			await expect(promise).rejects.toThrow('File too large');
 		});
 	});
 });

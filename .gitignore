@@ -31,3 +31,6 @@
 /data/
 .vscode/
 .github/copilot-instructions.md
+**/coverage/
+**/dist/
+**/build/
