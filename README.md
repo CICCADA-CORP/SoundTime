@@ -121,9 +121,35 @@ Unlike centralized platforms, SoundTime gives you full control over your music. 
 
 ## Quick Start
 
-### Docker Compose (recommended)
+### One-Click Install (recommended)
 
-The fastest way to get SoundTime running:
+The fastest way to get SoundTime running on any machine (Linux, macOS, Windows WSL):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/main/install.sh | bash
+```
+
+or with `wget`:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/main/install.sh | bash
+```
+
+This will automatically:
+- ✅ Check prerequisites (Docker, Docker Compose, git)
+- ✅ Clone the repository to `~/soundtime`
+- ✅ Generate a secure `.env` with random secrets
+- ✅ Pull multi-arch Docker images (works on x86_64 and Apple Silicon / ARM64)
+- ✅ Start all services
+
+> **Custom install path?** Set `SOUNDTIME_INSTALL_DIR` before running:
+> ```bash
+> SOUNDTIME_INSTALL_DIR=/opt/soundtime curl -fsSL https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/main/install.sh | bash
+> ```
+
+### Docker Compose (manual)
+
+If you prefer to set things up manually:
 
 ```bash
 git clone https://github.com/CICCADA-CORP/SoundTime.git
