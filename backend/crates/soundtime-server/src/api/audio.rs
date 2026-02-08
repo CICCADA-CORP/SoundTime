@@ -339,6 +339,19 @@ pub async fn upload_track(
                     tracing::warn!(%track_id, "failed to save content_hash: {e}");
                 }
 
+                // Publish cover art to P2P blob store if available
+                let cover_hash = if let Some(cover_data) = &audio_meta.cover_art {
+                    match p2p.publish_cover(bytes::Bytes::from(cover_data.clone())).await {
+                        Ok(h) => Some(h.to_string()),
+                        Err(e) => {
+                            tracing::warn!(%track_id, "failed to publish cover to P2P: {e}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
                 // Broadcast full track metadata to all connected peers
                 let announcement = soundtime_p2p::TrackAnnouncement {
                     hash: hash.to_string(),
@@ -355,6 +368,7 @@ pub async fn upload_track(
                     bitrate: audio_meta.bitrate.map(|b| b as i32),
                     sample_rate: audio_meta.sample_rate.map(|s| s as i32),
                     origin_node: p2p.node_id().to_string(),
+                    cover_hash,
                 };
                 let p2p_clone = Arc::clone(&p2p);
                 tokio::spawn(async move {

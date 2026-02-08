@@ -29,6 +29,15 @@ use crate::error::P2pError;
 /// ALPN protocol identifier for SoundTime P2P
 pub const SOUNDTIME_ALPN: &[u8] = b"soundtime/p2p/1";
 
+/// Sanitize a string for use as a filesystem directory name.
+fn sanitize_for_path(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// Track metadata sent alongside announcements for catalog replication.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct TrackAnnouncement {
@@ -60,6 +69,8 @@ pub struct TrackAnnouncement {
     pub sample_rate: Option<i32>,
     /// NodeId of the instance that originally uploaded the track
     pub origin_node: String,
+    /// BLAKE3 hash of the cover art blob (if any)
+    pub cover_hash: Option<String>,
 }
 
 /// Protocol message types exchanged between peers.
@@ -94,6 +105,8 @@ pub struct P2pConfig {
     pub enable_local_discovery: bool,
     /// Seed peer NodeIds to connect to on startup (auto-discovery)
     pub seed_peers: Vec<String>,
+    /// Path to the audio file storage (for cover art sync)
+    pub audio_storage_path: PathBuf,
 }
 
 impl Default for P2pConfig {
@@ -104,6 +117,7 @@ impl Default for P2pConfig {
             bind_port: 0,
             enable_local_discovery: true,
             seed_peers: Vec::new(),
+            audio_storage_path: PathBuf::from("data/music"),
         }
     }
 }
@@ -137,12 +151,17 @@ impl P2pConfig {
             .filter(|s| !s.is_empty())
             .collect();
 
+        let audio_storage_path = std::env::var("AUDIO_STORAGE_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("data/music"));
+
         Self {
             blobs_dir,
             secret_key_path,
             bind_port,
             enable_local_discovery,
             seed_peers,
+            audio_storage_path,
         }
     }
 }
@@ -161,6 +180,8 @@ pub struct P2pNode {
     shutdown_tx: watch::Sender<bool>,
     /// Configuration used to create this node
     _config: P2pConfig,
+    /// Path to audio file storage (for writing cover art from peers)
+    audio_storage_path: PathBuf,
 }
 
 impl P2pNode {
@@ -251,6 +272,8 @@ impl P2pNode {
 
         let registry = Arc::new(PeerRegistry::new());
 
+        let audio_storage_path = config.audio_storage_path.clone();
+
         let node = Arc::new(Self {
             endpoint,
             blob_store,
@@ -258,6 +281,7 @@ impl P2pNode {
             registry,
             shutdown_tx,
             _config: config,
+            audio_storage_path,
         });
 
         // Spawn the connection accept loop
@@ -356,6 +380,21 @@ impl P2pNode {
         // The audio data must remain in the store for peers to fetch.
         std::mem::forget(tt);
         info!(%hash, "track published to blob store");
+        Ok(hash)
+    }
+
+    /// Publish cover art data to the local blob store.
+    /// Returns the content hash (BLAKE3) that identifies the blob.
+    pub async fn publish_cover(&self, data: Bytes) -> Result<Hash, P2pError> {
+        let tt: TempTag = self
+            .blob_store
+            .import_bytes(data, BlobFormat::Raw)
+            .await
+            .map_err(|e| P2pError::BlobStore(e.to_string()))?;
+
+        let hash = *tt.hash();
+        std::mem::forget(tt);
+        debug!(%hash, "cover art published to blob store");
         Ok(hash)
     }
 
@@ -647,14 +686,42 @@ impl P2pNode {
                 .map(|a| a.name)
                 .unwrap_or_else(|| "Unknown".to_string());
 
-            let album_title = match t.album_id {
-                Some(aid) => album::Entity::find_by_id(aid)
-                    .one(&self.db)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|a| a.title),
-                None => None,
+            let (album_title, cover_hash) = match t.album_id {
+                Some(aid) => {
+                    let album_opt = album::Entity::find_by_id(aid)
+                        .one(&self.db)
+                        .await
+                        .ok()
+                        .flatten();
+                    match album_opt {
+                        Some(a) => {
+                            let title = Some(a.title);
+                            // Publish cover art to blob store if available
+                            let ch = if let Some(ref url) = a.cover_url {
+                                // cover_url is like "/api/media/<relative_path>"
+                                let rel = url.strip_prefix("/api/media/").unwrap_or(url);
+                                let full = self.audio_storage_path.join(rel);
+                                match tokio::fs::read(&full).await {
+                                    Ok(data) => {
+                                        match self.publish_cover(Bytes::from(data)).await {
+                                            Ok(h) => Some(h.to_string()),
+                                            Err(e) => {
+                                                warn!("failed to publish cover blob: {e}");
+                                                None
+                                            }
+                                        }
+                                    }
+                                    Err(_) => None,
+                                }
+                            } else {
+                                None
+                            };
+                            (title, ch)
+                        }
+                        None => (None, None),
+                    }
+                }
+                None => (None, None),
             };
 
             announcements.push(TrackAnnouncement {
@@ -672,6 +739,7 @@ impl P2pNode {
                 bitrate: t.bitrate,
                 sample_rate: t.sample_rate,
                 origin_node: our_node.clone(),
+                cover_hash,
             });
         }
 
@@ -993,7 +1061,13 @@ impl P2pNode {
                 .one(&self.db)
                 .await
             {
-                Ok(Some(a)) => Some(a.id),
+                Ok(Some(a)) => {
+                    // If album already exists but has no cover, try to sync one
+                    if a.cover_url.is_none() {
+                        self.sync_cover_for_album(a.id, &ann, peer_id).await;
+                    }
+                    Some(a.id)
+                }
                 _ => {
                     let new_id = Uuid::new_v4();
                     let new_album = album::ActiveModel {
@@ -1008,7 +1082,11 @@ impl P2pNode {
                         created_at: Set(chrono::Utc::now().into()),
                     };
                     match new_album.insert(&self.db).await {
-                        Ok(_) => Some(new_id),
+                        Ok(_) => {
+                            // Sync cover for newly created album
+                            self.sync_cover_for_album(new_id, &ann, peer_id).await;
+                            Some(new_id)
+                        }
                         Err(e) => {
                             warn!(album = %album_title, "failed to create album: {e}");
                             album::Entity::find()
@@ -1251,5 +1329,101 @@ impl P2pNode {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
         None
+    }
+
+    /// Fetch a cover art blob from a peer, write it to the local audio storage,
+    /// and update the album's `cover_url` in the database.
+    async fn sync_cover_for_album(
+        &self,
+        album_id: Uuid,
+        ann: &TrackAnnouncement,
+        peer_id: &str,
+    ) {
+        let cover_hash_str = match &ann.cover_hash {
+            Some(h) if !h.is_empty() => h.clone(),
+            _ => return,
+        };
+
+        let blob_hash: Hash = match cover_hash_str.parse() {
+            Ok(h) => h,
+            Err(_) => {
+                warn!(hash = %cover_hash_str, "invalid cover hash");
+                return;
+            }
+        };
+
+        // Fetch the cover blob from the peer
+        let nid: NodeId = match peer_id.parse() {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+
+        let cover_data = if self.has_blob(blob_hash).await {
+            // Already have it locally
+            match self.get_local_track(blob_hash).await {
+                Ok(d) => d,
+                Err(_) => return,
+            }
+        } else {
+            let peer_addr = NodeAddr::new(nid);
+            match self.fetch_track_from_peer(peer_addr, blob_hash).await {
+                Ok(data) => {
+                    // Store in blob store
+                    match self.blob_store.import_bytes(data.clone(), BlobFormat::Raw).await {
+                        Ok(tag) => std::mem::forget(tag),
+                        Err(e) => warn!(hash = %cover_hash_str, "failed to import cover blob: {e}"),
+                    }
+                    data
+                }
+                Err(e) => {
+                    warn!(hash = %cover_hash_str, %peer_id, "failed to fetch cover: {e}");
+                    return;
+                }
+            }
+        };
+
+        // Write cover to the audio storage filesystem
+        let artist_dir = sanitize_for_path(&ann.artist_name);
+        let album_dir = ann
+            .album_title
+            .as_deref()
+            .map(sanitize_for_path)
+            .unwrap_or_else(|| "singles".to_string());
+
+        let cover_dir = self
+            .audio_storage_path
+            .join("p2p-covers")
+            .join(&artist_dir)
+            .join(&album_dir);
+
+        if let Err(e) = tokio::fs::create_dir_all(&cover_dir).await {
+            warn!("failed to create cover directory: {e}");
+            return;
+        }
+
+        let cover_file = cover_dir.join("cover.jpg");
+        if let Err(e) = tokio::fs::write(&cover_file, &cover_data).await {
+            warn!("failed to write cover file: {e}");
+            return;
+        }
+
+        // Build the relative path for the cover_url
+        let relative = cover_file
+            .strip_prefix(&self.audio_storage_path)
+            .unwrap_or(&cover_file)
+            .to_string_lossy()
+            .to_string();
+
+        let cover_url = format!("/api/media/{relative}");
+
+        // Update the album's cover_url in the database
+        let mut update: album::ActiveModel = Default::default();
+        update.id = Set(album_id);
+        update.cover_url = Set(Some(cover_url.clone()));
+        if let Err(e) = update.update(&self.db).await {
+            warn!(%album_id, "failed to update album cover_url: {e}");
+        } else {
+            info!(%album_id, %cover_url, "album cover synced from peer");
+        }
     }
 }
