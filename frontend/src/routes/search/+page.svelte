@@ -7,7 +7,7 @@
   import AlbumCard from "$lib/components/AlbumCard.svelte";
   import ArtistCard from "$lib/components/ArtistCard.svelte";
 
-  let results: SearchResults = { tracks: [], albums: [], artists: [] };
+  let results: SearchResults = { tracks: [], albums: [], artists: [], total: 0 };
   let loading = true;
   let query = "";
 

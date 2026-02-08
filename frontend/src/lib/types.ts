@@ -111,6 +111,28 @@ export interface SearchResults {
   tracks: Track[];
   albums: Album[];
   artists: Artist[];
+  total: number;
+}
+
+/** A search result from a remote P2P peer. */
+export interface NetworkSearchResult {
+  hash: string;
+  title: string;
+  artist_name: string;
+  album_title?: string;
+  duration_secs: number;
+  format: string;
+  genre?: string;
+  year?: number;
+  bitrate?: number;
+  source_node: string;
+  musicbrainz_id?: string;
+  relevance: number;
+}
+
+export interface NetworkSearchResponse {
+  results: NetworkSearchResult[];
+  total: number;
 }
 
 export interface TokenPair {

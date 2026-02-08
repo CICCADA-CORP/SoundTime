@@ -25,6 +25,8 @@ use uuid::Uuid;
 use crate::blocked::is_peer_blocked;
 use crate::discovery::PeerRegistry;
 use crate::error::P2pError;
+use crate::musicbrainz::MusicBrainzClient;
+use crate::search_index::{BloomFilterData, SearchIndex};
 
 /// ALPN protocol identifier for SoundTime P2P
 pub const SOUNDTIME_ALPN: &[u8] = b"soundtime/p2p/1";
@@ -96,6 +98,61 @@ pub enum P2pMessage {
     PeerExchange { peers: Vec<String> },
     /// Full catalog sync — send all locally-uploaded tracks to a peer at once
     CatalogSync(Vec<TrackAnnouncement>),
+    /// Incremental catalog delta — only tracks modified since the given timestamp
+    CatalogDelta {
+        since: chrono::DateTime<chrono::Utc>,
+        tracks: Vec<TrackAnnouncement>,
+    },
+    /// Exchange Bloom filters for search routing
+    BloomExchange { bloom: BloomFilterData },
+    /// Search query sent to peers whose Bloom filter matches
+    SearchQuery {
+        /// Unique request ID for correlating responses
+        request_id: String,
+        /// The search query string
+        query: String,
+        /// Maximum results to return
+        limit: u32,
+    },
+    /// Search results returned by a peer
+    SearchResults {
+        /// Correlating request ID
+        request_id: String,
+        /// Matching tracks from this peer
+        results: Vec<SearchResultItem>,
+        /// Total number of matches on this peer (may exceed returned results)
+        total: u64,
+    },
+}
+
+/// A lightweight search result item returned by distributed search.
+/// Contains just enough metadata to display results without downloading full blobs.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct SearchResultItem {
+    /// BLAKE3 content hash
+    pub hash: String,
+    /// Track title
+    pub title: String,
+    /// Artist name
+    pub artist_name: String,
+    /// Album title (if any)
+    pub album_title: Option<String>,
+    /// Duration in seconds
+    pub duration_secs: f32,
+    /// Audio format
+    pub format: String,
+    /// Genre
+    pub genre: Option<String>,
+    /// Year
+    pub year: Option<i16>,
+    /// Bitrate in bps
+    pub bitrate: Option<i32>,
+    /// The peer NodeId that has this track
+    pub source_node: String,
+    /// MusicBrainz recording ID (if resolved)
+    pub musicbrainz_id: Option<String>,
+    /// Relevance score (ts_rank or similar)
+    pub relevance: f32,
 }
 
 /// Configuration for the P2P node.
@@ -180,6 +237,10 @@ pub struct P2pNode {
     db: DatabaseConnection,
     /// Registry of known peers (in-memory)
     registry: Arc<PeerRegistry>,
+    /// Bloom-filter search index for distributed search routing
+    search_index: Arc<SearchIndex>,
+    /// MusicBrainz client for metadata enrichment
+    mb_client: Arc<MusicBrainzClient>,
     /// Shutdown signal sender
     shutdown_tx: watch::Sender<bool>,
     /// Configuration used to create this node
@@ -279,6 +340,8 @@ impl P2pNode {
         let (shutdown_tx, _) = watch::channel(false);
 
         let registry = Arc::new(PeerRegistry::new());
+        let search_index = Arc::new(SearchIndex::new());
+        let mb_client = Arc::new(MusicBrainzClient::new());
 
         let audio_storage_path = config.audio_storage_path.clone();
 
@@ -287,10 +350,20 @@ impl P2pNode {
             blob_store,
             db,
             registry,
+            search_index,
+            mb_client,
             shutdown_tx,
             _config: config,
             audio_storage_path,
         });
+
+        // Build the local Bloom filter index from existing tracks in DB
+        {
+            let node_clone = Arc::clone(&node);
+            tokio::spawn(async move {
+                node_clone.rebuild_search_index().await;
+            });
+        }
 
         // Spawn the connection accept loop
         let node_clone = Arc::clone(&node);
@@ -309,7 +382,7 @@ impl P2pNode {
             });
         }
 
-        // Spawn periodic peer exchange & refresh (every 5 minutes)
+        // Spawn periodic peer exchange, bloom sync & refresh (every 5 minutes)
         {
             let node_clone = Arc::clone(&node);
             let mut shutdown_rx = node.shutdown_tx.subscribe();
@@ -321,10 +394,12 @@ impl P2pNode {
                         _ = interval.tick() => {
                             let peers = node_clone.registry.online_peers().await;
                             if !peers.is_empty() {
-                                info!(online = peers.len(), "periodic peer exchange");
+                                info!(online = peers.len(), "periodic peer exchange + bloom sync");
                                 if let Ok(nid) = peers[0].node_id.parse::<NodeId>() {
                                     node_clone.discover_via_peer(nid).await;
                                 }
+                                // Exchange Bloom filters with all online peers
+                                node_clone.broadcast_bloom_filter().await;
                             }
                         }
                         _ = shutdown_rx.changed() => {
@@ -347,6 +422,11 @@ impl P2pNode {
     /// Get the peer registry.
     pub fn registry(&self) -> &Arc<PeerRegistry> {
         &self.registry
+    }
+
+    /// Get the search index.
+    pub fn search_index(&self) -> &Arc<SearchIndex> {
+        &self.search_index
     }
 
     /// Get the node address (includes relay URL and direct addresses).
@@ -888,6 +968,443 @@ impl P2pNode {
         info!("P2P node shutdown complete");
     }
 
+    /// Rebuild the local Bloom filter search index from all tracks in the database.
+    async fn rebuild_search_index(&self) {
+        let tracks_with_artists: Vec<(track::Model, Option<artist::Model>)> =
+            match track::Entity::find()
+                .find_also_related(artist::Entity)
+                .all(&self.db)
+                .await
+            {
+                Ok(results) => results,
+                Err(e) => {
+                    warn!("failed to load tracks for search index rebuild: {e}");
+                    return;
+                }
+            };
+
+        let mut index_data: Vec<(String, String, Option<String>)> = Vec::new();
+
+        for (t, artist_opt) in &tracks_with_artists {
+            let artist_name = artist_opt
+                .as_ref()
+                .map(|a| a.name.clone())
+                .unwrap_or_default();
+
+            // Get album title if available
+            let album_title = if let Some(album_id) = t.album_id {
+                album::Entity::find_by_id(album_id)
+                    .one(&self.db)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|a| a.title)
+            } else {
+                None
+            };
+
+            index_data.push((t.title.clone(), artist_name, album_title));
+        }
+
+        self.search_index.rebuild_from_tracks(&index_data).await;
+        info!(tracks = index_data.len(), "search index rebuilt at startup");
+    }
+
+    /// Broadcast our Bloom filter to all online peers for search routing.
+    pub async fn broadcast_bloom_filter(&self) {
+        let bloom_data = self.search_index.export_local_bloom().await;
+        let msg = P2pMessage::BloomExchange { bloom: bloom_data };
+        let peers = self.registry.online_peers().await;
+
+        for peer in &peers {
+            let node_id: NodeId = match peer.node_id.parse() {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+            if let Err(e) = self.send_message_to_peer(node_id, &msg).await {
+                debug!(peer = %peer.node_id, "failed to send bloom filter: {e}");
+            }
+        }
+
+        if !peers.is_empty() {
+            info!(peers = peers.len(), "broadcast bloom filter to peers");
+        }
+    }
+
+    /// Perform a distributed search across the P2P network.
+    /// Uses Bloom filters to route the query only to peers likely to have results.
+    /// Returns search results from all matching peers, merged and sorted by relevance.
+    pub async fn distributed_search(&self, query: &str, limit: u32) -> Vec<SearchResultItem> {
+        let matching_peers = self.search_index.peers_matching_query(query).await;
+
+        if matching_peers.is_empty() {
+            debug!(query = query, "no peers match bloom filter for query");
+            return vec![];
+        }
+
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let msg = P2pMessage::SearchQuery {
+            request_id: request_id.clone(),
+            query: query.to_string(),
+            limit,
+        };
+
+        let mut all_results: Vec<SearchResultItem> = Vec::new();
+
+        // Query matched peers concurrently (up to 10 at a time)
+        let mut futures = Vec::new();
+        for peer_id_str in matching_peers.iter().take(10) {
+            let nid: NodeId = match peer_id_str.parse() {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+            let peer_addr = NodeAddr::new(nid);
+            futures.push((peer_id_str.clone(), peer_addr));
+        }
+
+        for (peer_id_str, peer_addr) in futures {
+            match self.search_peer(peer_addr, &msg).await {
+                Ok(results) => {
+                    info!(
+                        peer = %peer_id_str,
+                        results = results.len(),
+                        "received search results"
+                    );
+                    all_results.extend(results);
+                }
+                Err(e) => {
+                    debug!(peer = %peer_id_str, "search failed: {e}");
+                }
+            }
+        }
+
+        // Sort by relevance (highest first), deduplicate by hash
+        all_results.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Deduplicate by content hash (keep highest relevance)
+        let mut seen_hashes = std::collections::HashSet::new();
+        all_results.retain(|r| seen_hashes.insert(r.hash.clone()));
+
+        // Apply limit
+        all_results.truncate(limit as usize);
+
+        info!(
+            query = query,
+            total_results = all_results.len(),
+            "distributed search complete"
+        );
+
+        all_results
+    }
+
+    /// Send a search query to a specific peer and wait for results.
+    async fn search_peer(
+        &self,
+        peer_addr: NodeAddr,
+        msg: &P2pMessage,
+    ) -> Result<Vec<SearchResultItem>, P2pError> {
+        let conn = self
+            .endpoint
+            .connect(peer_addr, SOUNDTIME_ALPN)
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        let (mut send, mut recv) = conn
+            .open_bi()
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        let msg_bytes = serde_json::to_vec(msg)?;
+        send.write_all(&(msg_bytes.len() as u32).to_be_bytes())
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        send.write_all(&msg_bytes)
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        send.finish()
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        // Read response
+        let mut len_buf = [0u8; 4];
+        recv.read_exact(&mut len_buf)
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        let msg_len = u32::from_be_bytes(len_buf) as usize;
+
+        let response = recv
+            .read_to_end(msg_len)
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        let response_msg: P2pMessage = serde_json::from_slice(&response)?;
+
+        match response_msg {
+            P2pMessage::SearchResults { results, .. } => Ok(results),
+            _ => Ok(vec![]),
+        }
+    }
+
+    /// Handle an incoming SearchQuery: run a local FTS query and return results.
+    async fn handle_search_query(
+        &self,
+        request_id: &str,
+        query: &str,
+        limit: u32,
+        mut send: iroh::endpoint::SendStream,
+    ) -> Result<(), P2pError> {
+        use sea_orm::{FromQueryResult, Statement};
+
+        // Build tsquery from the search string
+        let tsquery = query
+            .split_whitespace()
+            .filter(|w| !w.is_empty())
+            .map(|w| {
+                let clean: String = w
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                    .collect();
+                if clean.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}:*", clean)
+                }
+            })
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" & ");
+
+        if tsquery.is_empty() {
+            let resp = P2pMessage::SearchResults {
+                request_id: request_id.to_string(),
+                results: vec![],
+                total: 0,
+            };
+            let resp_bytes = serde_json::to_vec(&resp)?;
+            send.write_all(&(resp_bytes.len() as u32).to_be_bytes())
+                .await
+                .map_err(|e| P2pError::Connection(e.to_string()))?;
+            send.write_all(&resp_bytes)
+                .await
+                .map_err(|e| P2pError::Connection(e.to_string()))?;
+            send.finish()
+                .map_err(|e| P2pError::Connection(e.to_string()))?;
+            return Ok(());
+        }
+
+        #[derive(Debug, FromQueryResult)]
+        struct SearchRow {
+            hash: Option<String>,
+            title: String,
+            artist_name: String,
+            album_title: Option<String>,
+            duration_secs: f32,
+            format: String,
+            genre: Option<String>,
+            year: Option<i16>,
+            bitrate: Option<i32>,
+            musicbrainz_id: Option<String>,
+            rank: f32,
+        }
+
+        let our_node = self.node_id().to_string();
+
+        let rows: Vec<SearchRow> = SearchRow::find_by_statement(Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            r#"
+            SELECT t.content_hash AS hash, t.title, a.name AS artist_name,
+                   al.title AS album_title, t.duration_secs, t.format,
+                   t.genre, t.year, t.bitrate, t.musicbrainz_id,
+                   ts_rank(
+                       setweight(to_tsvector('english', t.title), 'A') ||
+                       setweight(to_tsvector('english', a.name), 'B') ||
+                       setweight(to_tsvector('english', COALESCE(al.title, '')), 'C'),
+                       to_tsquery('english', $1)
+                   ) AS rank
+            FROM tracks t
+            JOIN artists a ON a.id = t.artist_id
+            LEFT JOIN albums al ON al.id = t.album_id
+            WHERE (
+                to_tsvector('english', t.title) ||
+                to_tsvector('english', a.name) ||
+                to_tsvector('english', COALESCE(al.title, ''))
+            ) @@ to_tsquery('english', $1)
+            ORDER BY rank DESC
+            LIMIT $2
+            "#,
+            vec![tsquery.into(), (limit as i64).into()],
+        ))
+        .all(&self.db)
+        .await
+        .unwrap_or_default();
+
+        let results: Vec<SearchResultItem> = rows
+            .into_iter()
+            .filter(|r| r.hash.is_some())
+            .map(|r| SearchResultItem {
+                hash: r.hash.unwrap_or_default(),
+                title: r.title,
+                artist_name: r.artist_name,
+                album_title: r.album_title,
+                duration_secs: r.duration_secs,
+                format: r.format,
+                genre: r.genre,
+                year: r.year,
+                bitrate: r.bitrate,
+                source_node: our_node.clone(),
+                musicbrainz_id: r.musicbrainz_id,
+                relevance: r.rank,
+            })
+            .collect();
+
+        let total = results.len() as u64;
+        let resp = P2pMessage::SearchResults {
+            request_id: request_id.to_string(),
+            results,
+            total,
+        };
+
+        let resp_bytes = serde_json::to_vec(&resp)?;
+        send.write_all(&(resp_bytes.len() as u32).to_be_bytes())
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        send.write_all(&resp_bytes)
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        send.finish()
+            .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Announce all locally-uploaded tracks to a specific peer using incremental sync
+    /// when possible (if we have a `last_seen` timestamp for this peer), otherwise
+    /// falls back to a full CatalogSync.
+    pub async fn incremental_sync_to_peer(
+        &self,
+        peer_id: NodeId,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
+        let since_ts = since.unwrap_or(chrono::DateTime::UNIX_EPOCH);
+
+        let tracks = match track::Entity::find()
+            .filter(track::Column::ContentHash.is_not_null())
+            .filter(track::Column::CreatedAt.gt(since_ts))
+            .all(&self.db)
+            .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("failed to read tracks for incremental sync: {e}");
+                return;
+            }
+        };
+
+        if tracks.is_empty() {
+            debug!(peer = %peer_id, "no new tracks since last sync");
+            return;
+        }
+
+        let mut announcements = Vec::with_capacity(tracks.len());
+        let our_node = self.node_id().to_string();
+
+        for t in &tracks {
+            if t.file_path.starts_with("p2p://") {
+                continue;
+            }
+            let hash = match &t.content_hash {
+                Some(h) => h.clone(),
+                None => continue,
+            };
+
+            let artist_name = artist::Entity::find_by_id(t.artist_id)
+                .one(&self.db)
+                .await
+                .ok()
+                .flatten()
+                .map(|a| a.name)
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            let (album_title, cover_hash) = match t.album_id {
+                Some(aid) => {
+                    let album_opt = album::Entity::find_by_id(aid)
+                        .one(&self.db)
+                        .await
+                        .ok()
+                        .flatten();
+                    match album_opt {
+                        Some(a) => {
+                            let title = Some(a.title);
+                            let ch = if let Some(ref url) = a.cover_url {
+                                let rel = url.strip_prefix("/api/media/").unwrap_or(url);
+                                let full = self.audio_storage_path.join(rel);
+                                match tokio::fs::read(&full).await {
+                                    Ok(data) => match self.publish_cover(Bytes::from(data)).await {
+                                        Ok(h) => Some(h.to_string()),
+                                        Err(_) => None,
+                                    },
+                                    Err(_) => None,
+                                }
+                            } else {
+                                None
+                            };
+                            (title, ch)
+                        }
+                        None => (None, None),
+                    }
+                }
+                None => (None, None),
+            };
+
+            announcements.push(TrackAnnouncement {
+                hash,
+                title: t.title.clone(),
+                artist_name,
+                album_title,
+                duration_secs: t.duration_secs,
+                format: t.format.clone(),
+                file_size: t.file_size,
+                genre: t.genre.clone(),
+                year: t.year,
+                track_number: t.track_number,
+                disc_number: t.disc_number,
+                bitrate: t.bitrate,
+                sample_rate: t.sample_rate,
+                origin_node: our_node.clone(),
+                cover_hash,
+            });
+        }
+
+        if announcements.is_empty() {
+            return;
+        }
+
+        info!(
+            peer = %peer_id,
+            count = announcements.len(),
+            since = %since_ts,
+            "incremental catalog sync"
+        );
+
+        let msg = P2pMessage::CatalogDelta {
+            since: since_ts,
+            tracks: announcements,
+        };
+        if let Err(e) = self.send_message_to_peer(peer_id, &msg).await {
+            warn!(peer = %peer_id, "failed to send catalog delta: {e}");
+        }
+
+        // Also send our bloom filter so the peer can route searches to us
+        let bloom_data = self.search_index.export_local_bloom().await;
+        let bloom_msg = P2pMessage::BloomExchange { bloom: bloom_data };
+        if let Err(e) = self.send_message_to_peer(peer_id, &bloom_msg).await {
+            debug!(peer = %peer_id, "failed to send bloom filter: {e}");
+        }
+    }
+
     /// Internal: accept incoming connections in a loop.
     async fn accept_loop(self: &Arc<Self>) {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
@@ -1148,6 +1665,11 @@ impl P2pNode {
                     "remote track replicated to local catalog"
                 );
 
+                // Index in Bloom filter for search routing
+                self.search_index
+                    .insert_track(&ann.title, &ann.artist_name, ann.album_title.as_deref())
+                    .await;
+
                 let remote_track_id = Uuid::new_v4();
                 let origin = &ann.origin_node;
                 let new_remote = remote_track::ActiveModel {
@@ -1170,6 +1692,30 @@ impl P2pNode {
                 if let Err(e) = new_remote.insert(&self.db).await {
                     warn!(hash = %ann.hash, "failed to create remote_track record: {e}");
                 }
+
+                // Async MusicBrainz enrichment — spawned to avoid blocking
+                let mb = Arc::clone(&self.mb_client);
+                let db = self.db.clone();
+                let title = ann.title.clone();
+                let artist = ann.artist_name.clone();
+                tokio::spawn(async move {
+                    if let Some(recording) = mb.lookup_recording(&title, &artist).await {
+                        debug!(
+                            mb_id = %recording.id,
+                            title = %title,
+                            score = recording.score,
+                            "MusicBrainz match found"
+                        );
+                        let update = track::ActiveModel {
+                            id: Set(track_id),
+                            musicbrainz_id: Set(Some(recording.id)),
+                            ..Default::default()
+                        };
+                        if let Err(e) = update.update(&db).await {
+                            warn!(track_id = %track_id, "failed to update musicbrainz_id: {e}");
+                        }
+                    }
+                });
             }
             Err(e) => {
                 warn!(hash = %ann.hash, "failed to create track record: {e}");
@@ -1284,7 +1830,34 @@ impl P2pNode {
                 send.finish()
                     .map_err(|e| P2pError::Connection(e.to_string()))?;
             }
-            P2pMessage::TrackData { .. } | P2pMessage::Pong { .. } => {
+            P2pMessage::CatalogDelta { since, tracks } => {
+                info!(count = tracks.len(), %since, %peer_id, "received catalog delta");
+                for ann in tracks {
+                    self.process_track_announcement(ann, peer_id).await;
+                }
+                let _ = send.finish();
+            }
+            P2pMessage::BloomExchange { bloom } => {
+                info!(%peer_id, items = bloom.item_count, "received bloom filter from peer");
+                self.search_index.import_peer_bloom(peer_id, bloom).await;
+                let _ = send.finish();
+            }
+            P2pMessage::SearchQuery {
+                request_id,
+                query,
+                limit,
+            } => {
+                info!(%peer_id, %query, "received search query");
+                if let Err(e) = self
+                    .handle_search_query(&request_id, &query, limit, send)
+                    .await
+                {
+                    warn!(%peer_id, "failed to handle search query: {e}");
+                }
+            }
+            P2pMessage::TrackData { .. }
+            | P2pMessage::Pong { .. }
+            | P2pMessage::SearchResults { .. } => {
                 // These are responses, not requests — ignore if received as requests
                 debug!("received unexpected response message");
             }

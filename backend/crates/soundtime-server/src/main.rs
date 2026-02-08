@@ -269,6 +269,7 @@ async fn main() {
         // Public P2P status endpoint
         .route("/p2p/status", get(api::p2p::p2p_status))
         .route("/p2p/network-graph", get(api::p2p::network_graph))
+        .route("/p2p/search", get(api::p2p::network_search))
         .nest(
             "/admin",
             Router::new()

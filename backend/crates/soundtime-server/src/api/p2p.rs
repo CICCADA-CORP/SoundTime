@@ -1,7 +1,7 @@
-//! P2P API routes — status, peer management, track sharing.
+//! P2P API routes — status, peer management, track sharing, distributed search.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -294,4 +294,48 @@ pub async fn network_graph(State(state): State<Arc<AppState>>) -> Json<NetworkGr
     }
 
     Json(NetworkGraph { nodes, links })
+}
+
+// ── Distributed search ──────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct NetworkSearchQuery {
+    pub q: String,
+    pub limit: Option<u32>,
+}
+
+#[derive(Serialize)]
+pub struct NetworkSearchResponse {
+    pub results: Vec<soundtime_p2p::SearchResultItem>,
+    pub total: usize,
+}
+
+/// GET /api/p2p/search?q=...&limit=... — distributed search across the P2P network.
+/// Queries peers whose Bloom filter indicates they might have matching content.
+pub async fn network_search(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<NetworkSearchQuery>,
+) -> Result<Json<NetworkSearchResponse>, (StatusCode, Json<MessageResponse>)> {
+    let Some(node) = get_p2p_node(&state) else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(MessageResponse {
+                message: "P2P node is not enabled".to_string(),
+            }),
+        ));
+    };
+
+    let query = params.q.trim();
+    if query.is_empty() {
+        return Ok(Json(NetworkSearchResponse {
+            results: vec![],
+            total: 0,
+        }));
+    }
+
+    let limit = params.limit.unwrap_or(20).min(100);
+    let results = node.distributed_search(query, limit).await;
+    let total = results.len();
+
+    Ok(Json(NetworkSearchResponse { results, total }))
 }
