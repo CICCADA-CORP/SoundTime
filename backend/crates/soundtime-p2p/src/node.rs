@@ -352,6 +352,9 @@ impl P2pNode {
             .map_err(|e| P2pError::BlobStore(e.to_string()))?;
 
         let hash = *tt.hash();
+        // Leak the TempTag so the blob is never garbage-collected.
+        // The audio data must remain in the store for peers to fetch.
+        std::mem::forget(tt);
         info!(%hash, "track published to blob store");
         Ok(hash)
     }
@@ -555,6 +558,13 @@ impl P2pNode {
             .map_err(|e| P2pError::Connection(e.to_string()))?;
         send.finish()
             .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+        // CRITICAL: Keep the connection alive so the QUIC transport driver can
+        // flush all buffered stream data to the network.  Without this delay
+        // `conn` would be dropped immediately, sending CONNECTION_CLOSE before
+        // the stream data has been fully transmitted — silently truncating
+        // large messages like CatalogSync.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         Ok(())
     }
@@ -835,7 +845,7 @@ impl P2pNode {
     }
 
     /// Internal: handle a single incoming connection.
-    async fn handle_connection(&self, conn: Connection) -> Result<(), P2pError> {
+    async fn handle_connection(self: &Arc<Self>, conn: Connection) -> Result<(), P2pError> {
         let peer_id = match conn.remote_node_id() {
             Ok(id) => id.to_string(),
             Err(_) => "unknown".to_string(),
@@ -923,8 +933,15 @@ impl P2pNode {
                     let peer_addr = NodeAddr::new(nid);
                     match self.fetch_track_from_peer(peer_addr, h).await {
                         Ok(data) => {
-                            if let Err(e) = self.blob_store.import_bytes(data, BlobFormat::Raw).await {
-                                warn!(hash = %ann.hash, "failed to import blob: {e}");
+                            match self.blob_store.import_bytes(data, BlobFormat::Raw).await {
+                                Ok(tag) => {
+                                    // Leak the TempTag so the blob stays in the
+                                    // store and is available for further peers.
+                                    std::mem::forget(tag);
+                                }
+                                Err(e) => {
+                                    warn!(hash = %ann.hash, "failed to import blob: {e}");
+                                }
                             }
                         }
                         Err(e) => {
@@ -1076,7 +1093,7 @@ impl P2pNode {
 
     /// Internal: handle a single protocol message.
     async fn handle_message(
-        &self,
+        self: &Arc<Self>,
         msg: P2pMessage,
         mut send: iroh::endpoint::SendStream,
         node_id: NodeId,
@@ -1126,18 +1143,27 @@ impl P2pNode {
                 // After responding to a Ping, sync our full catalog to this peer.
                 // This ensures that when a new peer connects, it receives all
                 // existing tracks — not just future uploads.
+                // Spawned asynchronously to avoid blocking the connection handler
+                // (catalog sync may query the DB for every track + fetch blobs).
                 if let Ok(remote_nid) = peer_id.parse::<NodeId>() {
-                    self.announce_all_tracks_to_peer(remote_nid).await;
+                    let node = Arc::clone(self);
+                    tokio::spawn(async move {
+                        node.announce_all_tracks_to_peer(remote_nid).await;
+                    });
                 }
             }
             P2pMessage::AnnounceTrack(ann) => {
                 self.process_track_announcement(ann, peer_id).await;
+                // Properly close our side of the stream
+                let _ = send.finish();
             }
             P2pMessage::CatalogSync(announcements) => {
                 info!(count = announcements.len(), %peer_id, "received catalog sync");
                 for ann in announcements {
                     self.process_track_announcement(ann, peer_id).await;
                 }
+                // Properly close our side of the stream
+                let _ = send.finish();
             }
             P2pMessage::PeerExchange { peers } => {
                 info!(count = peers.len(), %peer_id, "received peer exchange request");
