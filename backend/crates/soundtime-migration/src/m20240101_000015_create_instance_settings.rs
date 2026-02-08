@@ -13,8 +13,18 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(InstanceSettings::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(InstanceSettings::Id).uuid().not_null().primary_key())
-                    .col(ColumnDef::new(InstanceSettings::Key).string_len(255).not_null().unique_key())
+                    .col(
+                        ColumnDef::new(InstanceSettings::Id)
+                            .uuid()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(InstanceSettings::Key)
+                            .string_len(255)
+                            .not_null()
+                            .unique_key(),
+                    )
                     .col(ColumnDef::new(InstanceSettings::Value).text().not_null())
                     .col(
                         ColumnDef::new(InstanceSettings::UpdatedAt)
@@ -31,8 +41,18 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(BlockedDomains::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(BlockedDomains::Id).uuid().not_null().primary_key())
-                    .col(ColumnDef::new(BlockedDomains::Domain).string_len(255).not_null().unique_key())
+                    .col(
+                        ColumnDef::new(BlockedDomains::Id)
+                            .uuid()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(BlockedDomains::Domain)
+                            .string_len(255)
+                            .not_null()
+                            .unique_key(),
+                    )
                     .col(ColumnDef::new(BlockedDomains::Reason).text().null())
                     .col(ColumnDef::new(BlockedDomains::BlockedBy).uuid().null())
                     .col(
@@ -71,8 +91,12 @@ impl MigrationTrait for Migration {
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager.drop_table(Table::drop().table(BlockedDomains::Table).to_owned()).await?;
-        manager.drop_table(Table::drop().table(InstanceSettings::Table).to_owned()).await?;
+        manager
+            .drop_table(Table::drop().table(BlockedDomains::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(InstanceSettings::Table).to_owned())
+            .await?;
         Ok(())
     }
 }

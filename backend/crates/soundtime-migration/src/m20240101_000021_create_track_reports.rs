@@ -11,19 +11,36 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(TrackReport::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(TrackReport::Id).uuid().not_null().primary_key())
+                    .col(
+                        ColumnDef::new(TrackReport::Id)
+                            .uuid()
+                            .not_null()
+                            .primary_key(),
+                    )
                     .col(ColumnDef::new(TrackReport::TrackId).uuid().not_null())
                     .col(ColumnDef::new(TrackReport::UserId).uuid().not_null())
-                    .col(ColumnDef::new(TrackReport::Reason).string_len(500).not_null())
+                    .col(
+                        ColumnDef::new(TrackReport::Reason)
+                            .string_len(500)
+                            .not_null(),
+                    )
                     .col(
                         ColumnDef::new(TrackReport::Status)
                             .string_len(20)
                             .not_null()
                             .default("pending"),
                     )
-                    .col(ColumnDef::new(TrackReport::AdminNote).string_len(500).null())
+                    .col(
+                        ColumnDef::new(TrackReport::AdminNote)
+                            .string_len(500)
+                            .null(),
+                    )
                     .col(ColumnDef::new(TrackReport::ResolvedBy).uuid().null())
-                    .col(ColumnDef::new(TrackReport::ResolvedAt).timestamp_with_time_zone().null())
+                    .col(
+                        ColumnDef::new(TrackReport::ResolvedAt)
+                            .timestamp_with_time_zone()
+                            .null(),
+                    )
                     .col(
                         ColumnDef::new(TrackReport::CreatedAt)
                             .timestamp_with_time_zone()

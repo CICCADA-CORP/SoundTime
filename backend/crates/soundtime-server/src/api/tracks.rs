@@ -3,7 +3,9 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -103,19 +105,31 @@ pub async fn list_tracks(
         .order_by_desc(track::Column::CreatedAt)
         .paginate(&state.db, per_page);
 
-    let total = paginator.num_items().await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let total = paginator
+        .num_items()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let tracks = paginator.fetch_page(page - 1).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let tracks = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     let total_pages = (total + per_page - 1) / per_page;
 
     // Batch-fetch artist and album data
-    let artist_ids: Vec<Uuid> = tracks.iter().map(|t| t.artist_id).collect::<std::collections::HashSet<_>>().into_iter().collect();
-    let album_ids: Vec<Uuid> = tracks.iter().filter_map(|t| t.album_id).collect::<std::collections::HashSet<_>>().into_iter().collect();
+    let artist_ids: Vec<Uuid> = tracks
+        .iter()
+        .map(|t| t.artist_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let album_ids: Vec<Uuid> = tracks
+        .iter()
+        .filter_map(|t| t.album_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
         artist::Entity::find()
@@ -143,21 +157,34 @@ pub async fn list_tracks(
         HashMap::new()
     };
 
-    let data = tracks.into_iter().map(|t| {
-        let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-        let (album_title, cover_url) = t.album_id
-            .and_then(|aid| albums.get(&aid))
-            .map(|a| (Some(a.title.clone()), a.cover_url.clone().map(|url| {
-                if url.starts_with("/api/media/") || url.starts_with("http") { url } else { format!("/api/media/{url}") }
-            })))
-            .unwrap_or((None, None));
+    let data = tracks
+        .into_iter()
+        .map(|t| {
+            let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
+            let (album_title, cover_url) = t
+                .album_id
+                .and_then(|aid| albums.get(&aid))
+                .map(|a| {
+                    (
+                        Some(a.title.clone()),
+                        a.cover_url.clone().map(|url| {
+                            if url.starts_with("/api/media/") || url.starts_with("http") {
+                                url
+                            } else {
+                                format!("/api/media/{url}")
+                            }
+                        }),
+                    )
+                })
+                .unwrap_or((None, None));
 
-        let mut resp = TrackResponse::from(t);
-        resp.artist_name = artist_name;
-        resp.album_title = album_title;
-        resp.cover_url = cover_url;
-        resp
-    }).collect();
+            let mut resp = TrackResponse::from(t);
+            resp.artist_name = artist_name;
+            resp.album_title = album_title;
+            resp.cover_url = cover_url;
+            resp
+        })
+        .collect();
 
     Ok(Json(PaginatedResponse {
         data,
@@ -183,19 +210,31 @@ pub async fn my_uploads(
         .order_by_desc(track::Column::CreatedAt)
         .paginate(&state.db, per_page);
 
-    let total = paginator.num_items().await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let total = paginator
+        .num_items()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let tracks = paginator.fetch_page(page - 1).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let tracks = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     let total_pages = (total + per_page - 1) / per_page;
 
     // Batch-fetch artist and album data
-    let artist_ids: Vec<Uuid> = tracks.iter().map(|t| t.artist_id).collect::<std::collections::HashSet<_>>().into_iter().collect();
-    let album_ids: Vec<Uuid> = tracks.iter().filter_map(|t| t.album_id).collect::<std::collections::HashSet<_>>().into_iter().collect();
+    let artist_ids: Vec<Uuid> = tracks
+        .iter()
+        .map(|t| t.artist_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let album_ids: Vec<Uuid> = tracks
+        .iter()
+        .filter_map(|t| t.album_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
         artist::Entity::find()
@@ -223,21 +262,34 @@ pub async fn my_uploads(
         HashMap::new()
     };
 
-    let data = tracks.into_iter().map(|t| {
-        let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-        let (album_title, cover_url) = t.album_id
-            .and_then(|aid| albums.get(&aid))
-            .map(|a| (Some(a.title.clone()), a.cover_url.clone().map(|url| {
-                if url.starts_with("/api/media/") || url.starts_with("http") { url } else { format!("/api/media/{url}") }
-            })))
-            .unwrap_or((None, None));
+    let data = tracks
+        .into_iter()
+        .map(|t| {
+            let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
+            let (album_title, cover_url) = t
+                .album_id
+                .and_then(|aid| albums.get(&aid))
+                .map(|a| {
+                    (
+                        Some(a.title.clone()),
+                        a.cover_url.clone().map(|url| {
+                            if url.starts_with("/api/media/") || url.starts_with("http") {
+                                url
+                            } else {
+                                format!("/api/media/{url}")
+                            }
+                        }),
+                    )
+                })
+                .unwrap_or((None, None));
 
-        let mut resp = TrackResponse::from(t);
-        resp.artist_name = artist_name;
-        resp.album_title = album_title;
-        resp.cover_url = cover_url;
-        resp
-    }).collect();
+            let mut resp = TrackResponse::from(t);
+            resp.artist_name = artist_name;
+            resp.album_title = album_title;
+            resp.cover_url = cover_url;
+            resp
+        })
+        .collect();
 
     Ok(Json(PaginatedResponse {
         data,
@@ -262,7 +314,10 @@ pub async fn get_track(
     let mut resp = TrackResponse::from(track_model.clone());
 
     // Fetch artist name
-    if let Ok(Some(a)) = artist::Entity::find_by_id(track_model.artist_id).one(&state.db).await {
+    if let Ok(Some(a)) = artist::Entity::find_by_id(track_model.artist_id)
+        .one(&state.db)
+        .await
+    {
         resp.artist_name = Some(a.name);
     }
 
@@ -271,7 +326,11 @@ pub async fn get_track(
         if let Ok(Some(a)) = album::Entity::find_by_id(album_id).one(&state.db).await {
             resp.album_title = Some(a.title);
             resp.cover_url = a.cover_url.map(|url| {
-                if url.starts_with("/api/media/") || url.starts_with("http") { url } else { format!("/api/media/{url}") }
+                if url.starts_with("/api/media/") || url.starts_with("http") {
+                    url
+                } else {
+                    format!("/api/media/{url}")
+                }
             });
         }
     }
@@ -443,7 +502,12 @@ pub async fn update_track(
     // Only the uploader can edit
     match existing.uploaded_by {
         Some(uploader_id) if uploader_id == user.0.sub => {}
-        _ => return Err((StatusCode::FORBIDDEN, "You can only edit your own tracks".to_string())),
+        _ => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "You can only edit your own tracks".to_string(),
+            ))
+        }
     }
 
     let mut active: track::ActiveModel = existing.into();
@@ -463,9 +527,10 @@ pub async fn update_track(
         active.disc_number = Set(Some(disc_number));
     }
 
-    let updated = active.update(&state.db).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let updated = active
+        .update(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     Ok(Json(TrackResponse::from(updated)))
 }
@@ -485,7 +550,12 @@ pub async fn delete_track(
     // Only the uploader can delete
     match existing.uploaded_by {
         Some(uploader_id) if uploader_id == user.0.sub => {}
-        _ => return Err((StatusCode::FORBIDDEN, "You can only delete your own tracks".to_string())),
+        _ => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "You can only delete your own tracks".to_string(),
+            ))
+        }
     }
 
     // Delete the audio file
@@ -540,13 +610,15 @@ pub async fn list_popular_tracks(
         .order_by_desc(track::Column::PlayCount)
         .paginate(&state.db, per_page);
 
-    let total = paginator.num_items().await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let total = paginator
+        .num_items()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let tracks = paginator.fetch_page(page - 1).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let tracks = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     let total_pages = (total + per_page - 1) / per_page;
 

@@ -12,19 +12,42 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(RemoteTrack::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(RemoteTrack::Id).uuid().not_null().primary_key())
+                    .col(
+                        ColumnDef::new(RemoteTrack::Id)
+                            .uuid()
+                            .not_null()
+                            .primary_key(),
+                    )
                     .col(ColumnDef::new(RemoteTrack::LocalTrackId).uuid())
                     .col(ColumnDef::new(RemoteTrack::MusicbrainzId).string())
                     .col(ColumnDef::new(RemoteTrack::Title).string().not_null())
                     .col(ColumnDef::new(RemoteTrack::ArtistName).string().not_null())
                     .col(ColumnDef::new(RemoteTrack::AlbumTitle).string())
-                    .col(ColumnDef::new(RemoteTrack::InstanceDomain).string().not_null())
-                    .col(ColumnDef::new(RemoteTrack::RemoteUri).string().not_null().unique_key())
-                    .col(ColumnDef::new(RemoteTrack::RemoteStreamUrl).string().not_null())
+                    .col(
+                        ColumnDef::new(RemoteTrack::InstanceDomain)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(RemoteTrack::RemoteUri)
+                            .string()
+                            .not_null()
+                            .unique_key(),
+                    )
+                    .col(
+                        ColumnDef::new(RemoteTrack::RemoteStreamUrl)
+                            .string()
+                            .not_null(),
+                    )
                     .col(ColumnDef::new(RemoteTrack::Bitrate).integer())
                     .col(ColumnDef::new(RemoteTrack::SampleRate).integer())
                     .col(ColumnDef::new(RemoteTrack::Format).string())
-                    .col(ColumnDef::new(RemoteTrack::IsAvailable).boolean().not_null().default(true))
+                    .col(
+                        ColumnDef::new(RemoteTrack::IsAvailable)
+                            .boolean()
+                            .not_null()
+                            .default(true),
+                    )
                     .col(ColumnDef::new(RemoteTrack::LastCheckedAt).timestamp_with_time_zone())
                     .col(
                         ColumnDef::new(RemoteTrack::CreatedAt)

@@ -137,7 +137,9 @@ pub async fn generate_editorial_playlists(
     if all_tracks.len() < 5 {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Not enough tracks to generate playlists (minimum 5)" })),
+            Json(
+                serde_json::json!({ "error": "Not enough tracks to generate playlists (minimum 5)" }),
+            ),
         ));
     }
 
@@ -201,7 +203,13 @@ pub async fn generate_editorial_playlists(
     let track_json = serde_json::to_string(&track_list).unwrap_or_default();
 
     // 2. Call AI API
-    let num_playlists = if all_tracks.len() < 15 { 2 } else if all_tracks.len() < 50 { 4 } else { 6 };
+    let num_playlists = if all_tracks.len() < 15 {
+        2
+    } else if all_tracks.len() < 50 {
+        4
+    } else {
+        6
+    };
     let tracks_per_playlist = (all_tracks.len() / num_playlists).min(25).max(5);
 
     let system_prompt = format!(
@@ -258,7 +266,9 @@ Respond ONLY with valid JSON in this exact format:
         tracing::error!("AI API error {status}: {body}");
         return Err((
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": format!("AI API returned status {status}: {body}") })),
+            Json(
+                serde_json::json!({ "error": format!("AI API returned status {status}: {body}") }),
+            ),
         ));
     }
 
@@ -318,7 +328,10 @@ Respond ONLY with valid JSON in this exact format:
 
     // 4. Need a user_id for playlists — use the first admin
     let admin_user = soundtime_db::entities::user::Entity::find()
-        .filter(soundtime_db::entities::user::Column::Role.eq(soundtime_db::entities::user::UserRole::Admin))
+        .filter(
+            soundtime_db::entities::user::Column::Role
+                .eq(soundtime_db::entities::user::UserRole::Admin),
+        )
         .one(&state.db)
         .await
         .map_err(|e| {
@@ -401,7 +414,12 @@ Respond ONLY with valid JSON in this exact format:
     }
 
     // Update last generated timestamp
-    set_setting(&state, "editorial_last_generated", &chrono::Utc::now().to_rfc3339()).await;
+    set_setting(
+        &state,
+        "editorial_last_generated",
+        &chrono::Utc::now().to_rfc3339(),
+    )
+    .await;
 
     tracing::info!("Generated {created_count} editorial playlists via AI");
 
@@ -520,8 +538,7 @@ pub fn spawn_editorial_scheduler(state: Arc<AppState>) {
                         None => true,
                         Some(ts) => {
                             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
-                                let days_since =
-                                    (now - dt.with_timezone(&chrono::Utc)).num_days();
+                                let days_since = (now - dt.with_timezone(&chrono::Utc)).num_days();
                                 is_saturday && days_since >= 6
                             } else {
                                 true
@@ -632,7 +649,13 @@ async fn generate_editorial_inner(state: &AppState) -> Result<usize, String> {
         .collect();
 
     let track_json = serde_json::to_string(&track_list).unwrap_or_default();
-    let num_playlists = if all_tracks.len() < 15 { 2 } else if all_tracks.len() < 50 { 4 } else { 6 };
+    let num_playlists = if all_tracks.len() < 15 {
+        2
+    } else if all_tracks.len() < 50 {
+        4
+    } else {
+        6
+    };
     let tracks_per_playlist = (all_tracks.len() / num_playlists).min(25).max(5);
 
     let system_prompt = format!(
@@ -706,8 +729,8 @@ Respond ONLY with valid JSON in this exact format:
         track_ids: Vec<String>,
     }
 
-    let ai_playlists: Vec<AiPlaylist> =
-        serde_json::from_str(clean_content).map_err(|e| format!("AI returned invalid JSON: {e}"))?;
+    let ai_playlists: Vec<AiPlaylist> = serde_json::from_str(clean_content)
+        .map_err(|e| format!("AI returned invalid JSON: {e}"))?;
 
     // Delete old editorial playlists
     let old_editorials = playlist::Entity::find()
@@ -729,7 +752,10 @@ Respond ONLY with valid JSON in this exact format:
     }
 
     let admin_user = soundtime_db::entities::user::Entity::find()
-        .filter(soundtime_db::entities::user::Column::Role.eq(soundtime_db::entities::user::UserRole::Admin))
+        .filter(
+            soundtime_db::entities::user::Column::Role
+                .eq(soundtime_db::entities::user::UserRole::Admin),
+        )
         .one(&state.db)
         .await
         .map_err(|e| format!("DB error: {e}"))?
@@ -797,6 +823,11 @@ Respond ONLY with valid JSON in this exact format:
         created_count += 1;
     }
 
-    set_setting(state, "editorial_last_generated", &chrono::Utc::now().to_rfc3339()).await;
+    set_setting(
+        state,
+        "editorial_last_generated",
+        &chrono::Utc::now().to_rfc3339(),
+    )
+    .await;
     Ok(created_count)
 }

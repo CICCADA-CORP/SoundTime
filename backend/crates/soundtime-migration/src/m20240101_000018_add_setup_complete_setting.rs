@@ -18,10 +18,8 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
-        db.execute_unprepared(
-            "DELETE FROM instance_settings WHERE key = 'setup_complete'",
-        )
-        .await?;
+        db.execute_unprepared("DELETE FROM instance_settings WHERE key = 'setup_complete'")
+            .await?;
         Ok(())
     }
 }

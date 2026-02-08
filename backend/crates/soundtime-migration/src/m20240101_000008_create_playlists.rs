@@ -13,7 +13,12 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(Playlists::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(Playlists::Id).uuid().not_null().primary_key())
+                    .col(
+                        ColumnDef::new(Playlists::Id)
+                            .uuid()
+                            .not_null()
+                            .primary_key(),
+                    )
                     .col(ColumnDef::new(Playlists::Name).string_len(255).not_null())
                     .col(ColumnDef::new(Playlists::Description).text().null())
                     .col(ColumnDef::new(Playlists::UserId).uuid().not_null())
@@ -24,7 +29,11 @@ impl MigrationTrait for Migration {
                             .default(false),
                     )
                     .col(ColumnDef::new(Playlists::CoverUrl).string_len(512).null())
-                    .col(ColumnDef::new(Playlists::FederationUri).string_len(512).null())
+                    .col(
+                        ColumnDef::new(Playlists::FederationUri)
+                            .string_len(512)
+                            .null(),
+                    )
                     .col(
                         ColumnDef::new(Playlists::CreatedAt)
                             .timestamp_with_time_zone()

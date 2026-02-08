@@ -87,10 +87,7 @@ pub async fn upload_track(
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "file" => {
-                let filename = field
-                    .file_name()
-                    .unwrap_or("upload.mp3")
-                    .to_string();
+                let filename = field.file_name().unwrap_or("upload.mp3").to_string();
                 let data = field.bytes().await.map_err(|e| {
                     (
                         StatusCode::BAD_REQUEST,
@@ -137,13 +134,16 @@ pub async fn upload_track(
     if !validate_audio_magic_bytes(&data) {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "File content does not match a recognized audio format" })),
+            Json(
+                serde_json::json!({ "error": "File content does not match a recognized audio format" }),
+            ),
         ));
     }
 
     // Store file
     let album_name = meta_album.as_deref();
-    let relative_path = state.storage
+    let relative_path = state
+        .storage
         .store_file(user_id, album_name, &filename, &data)
         .await
         .map_err(|e| {
@@ -273,7 +273,11 @@ pub async fn upload_track(
 
         // Store cover art if present
         if let Some(cover_data) = &audio_meta.cover_art {
-            if let Ok(cover_path) = state.storage.store_cover(user_id, Some(&album_title), cover_data).await {
+            if let Ok(cover_path) = state
+                .storage
+                .store_cover(user_id, Some(&album_title), cover_data)
+                .await
+            {
                 let mut update: album::ActiveModel = result.clone().into();
                 update.cover_url = Set(Some(format!("/api/media/{cover_path}")));
                 let _ = update.update(&state.db).await;
@@ -284,15 +288,13 @@ pub async fn upload_track(
     };
 
     // Create track
-    let track_title = meta_title
-        .or(audio_meta.title.clone())
-        .unwrap_or_else(|| {
-            std::path::Path::new(&filename)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("Unknown")
-                .to_string()
-        });
+    let track_title = meta_title.or(audio_meta.title.clone()).unwrap_or_else(|| {
+        std::path::Path::new(&filename)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Unknown")
+            .to_string()
+    });
 
     let track_id = Uuid::new_v4();
     let new_track = track::ActiveModel {
@@ -341,7 +343,10 @@ pub async fn upload_track(
 
                 // Publish cover art to P2P blob store if available
                 let cover_hash = if let Some(cover_data) = &audio_meta.cover_art {
-                    match p2p.publish_cover(bytes::Bytes::from(cover_data.clone())).await {
+                    match p2p
+                        .publish_cover(bytes::Bytes::from(cover_data.clone()))
+                        .await
+                    {
                         Ok(h) => Some(h.to_string()),
                         Err(e) => {
                             tracing::warn!(%track_id, "failed to publish cover to P2P: {e}");
@@ -482,7 +487,10 @@ pub async fn stream_track(
 
         let mut response_headers = HeaderMap::new();
         response_headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
-        response_headers.insert(header::CONTENT_LENGTH, content_length.to_string().parse().unwrap());
+        response_headers.insert(
+            header::CONTENT_LENGTH,
+            content_length.to_string().parse().unwrap(),
+        );
         response_headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
 
         if range.is_some() {
@@ -505,12 +513,15 @@ pub async fn stream_track(
             )
         })?;
 
-    let file_size = tokio::fs::metadata(&file_path).await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Cannot read file" })),
-        )
-    })?.len();
+    let file_size = tokio::fs::metadata(&file_path)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Cannot read file" })),
+            )
+        })?
+        .len();
 
     let (start, end) = match range {
         Some((s, e)) => {
@@ -531,12 +542,14 @@ pub async fn stream_track(
 
     if start > 0 {
         use tokio::io::AsyncSeekExt;
-        file.seek(std::io::SeekFrom::Start(start)).await.map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Seek error" })),
-            )
-        })?;
+        file.seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "Seek error" })),
+                )
+            })?;
     }
 
     let limited = file.take(content_length);
@@ -551,7 +564,10 @@ pub async fn stream_track(
 
     let mut response_headers = HeaderMap::new();
     response_headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
-    response_headers.insert(header::CONTENT_LENGTH, content_length.to_string().parse().unwrap());
+    response_headers.insert(
+        header::CONTENT_LENGTH,
+        content_length.to_string().parse().unwrap(),
+    );
     response_headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
 
     if range.is_some() {
@@ -569,13 +585,9 @@ fn parse_range_header(header: &str) -> Option<(u64, Option<u64>)> {
     let range = header.strip_prefix("bytes=")?;
     let mut parts = range.splitn(2, '-');
     let start: u64 = parts.next()?.parse().ok()?;
-    let end: Option<u64> = parts.next().and_then(|s| {
-        if s.is_empty() {
-            None
-        } else {
-            s.parse().ok()
-        }
-    });
+    let end: Option<u64> = parts
+        .next()
+        .and_then(|s| if s.is_empty() { None } else { s.parse().ok() });
     Some((start, end))
 }
 
@@ -606,11 +618,7 @@ pub async fn serve_media(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
-    let content_type = match canonical
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-    {
+    let content_type = match canonical.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
         "webp" => "image/webp",
@@ -662,10 +670,7 @@ pub async fn upload_tracks_batch(
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
         if name == "files" || name == "file" {
-            let filename = field
-                .file_name()
-                .unwrap_or("upload.mp3")
-                .to_string();
+            let filename = field.file_name().unwrap_or("upload.mp3").to_string();
             let data = field.bytes().await.map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
@@ -676,7 +681,9 @@ pub async fn upload_tracks_batch(
             if files.len() > MAX_BATCH_FILES {
                 return Err((
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({ "error": format!("Too many files. Maximum is {MAX_BATCH_FILES}") })),
+                    Json(
+                        serde_json::json!({ "error": format!("Too many files. Maximum is {MAX_BATCH_FILES}") }),
+                    ),
                 ));
             }
         }
@@ -769,8 +776,8 @@ async fn process_single_upload(
         (full_path, relative_path)
     };
 
-    let audio_meta = extract_metadata_from_file(&full_path)
-        .map_err(|e| format!("Metadata: {e}"))?;
+    let audio_meta =
+        extract_metadata_from_file(&full_path).map_err(|e| format!("Metadata: {e}"))?;
 
     let waveform = soundtime_audio::generate_waveform(&full_path, 200).ok();
 
@@ -953,7 +960,9 @@ pub async fn upload_album_cover(
     if user_track.is_none() && !is_admin {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": "Only the uploader or an admin can change album cover" })),
+            Json(
+                serde_json::json!({ "error": "Only the uploader or an admin can change album cover" }),
+            ),
         ));
     }
 
@@ -985,7 +994,9 @@ pub async fn upload_album_cover(
             if !valid {
                 return Err((
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({ "error": "Invalid image format (JPEG, PNG, or WebP only)" })),
+                    Json(
+                        serde_json::json!({ "error": "Invalid image format (JPEG, PNG, or WebP only)" }),
+                    ),
                 ));
             }
 

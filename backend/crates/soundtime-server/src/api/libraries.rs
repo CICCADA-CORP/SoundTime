@@ -57,13 +57,15 @@ pub async fn list_libraries(
         .order_by_desc(library::Column::CreatedAt)
         .paginate(&state.db, per_page);
 
-    let total = paginator.num_items().await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let total = paginator
+        .num_items()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let libs = paginator.fetch_page(page - 1).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let libs = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     let total_pages = (total + per_page - 1) / per_page;
 

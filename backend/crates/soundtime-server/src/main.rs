@@ -3,27 +3,24 @@ use axum::{
     http::HeaderValue,
     middleware as axum_middleware,
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use sea_orm_migration::MigratorTrait;
 use serde::Serialize;
 use soundtime_db::AppState;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tower_governor::{
-    governor::GovernorConfigBuilder,
-    GovernorLayer,
-};
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
 
-mod auth;
 mod api;
-mod storage_worker;
+mod auth;
 pub mod metadata_lookup;
+mod storage_worker;
 
 #[derive(Serialize)]
 struct ApiStatus {
@@ -70,8 +67,7 @@ async fn main() {
             panic!("Refusing to start: JWT_SECRET must be set to a secure value in production.");
         }
     }
-    let domain =
-        std::env::var("SOUNDTIME_DOMAIN").unwrap_or_else(|_| "localhost:8080".to_string());
+    let domain = std::env::var("SOUNDTIME_DOMAIN").unwrap_or_else(|_| "localhost:8080".to_string());
 
     tracing::info!("instance domain: {}", domain);
 
@@ -84,9 +80,12 @@ async fn main() {
             tracing::info!("initializing S3 storage backend");
             let endpoint = std::env::var("S3_ENDPOINT").ok();
             let region = std::env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
-            let access_key = std::env::var("S3_ACCESS_KEY").expect("S3_ACCESS_KEY is required when STORAGE_BACKEND=s3");
-            let secret_key = std::env::var("S3_SECRET_KEY").expect("S3_SECRET_KEY is required when STORAGE_BACKEND=s3");
-            let bucket = std::env::var("S3_BUCKET").expect("S3_BUCKET is required when STORAGE_BACKEND=s3");
+            let access_key = std::env::var("S3_ACCESS_KEY")
+                .expect("S3_ACCESS_KEY is required when STORAGE_BACKEND=s3");
+            let secret_key = std::env::var("S3_SECRET_KEY")
+                .expect("S3_SECRET_KEY is required when STORAGE_BACKEND=s3");
+            let bucket =
+                std::env::var("S3_BUCKET").expect("S3_BUCKET is required when STORAGE_BACKEND=s3");
             let prefix = std::env::var("S3_PREFIX").unwrap_or_default();
 
             Arc::new(
@@ -146,6 +145,9 @@ async fn main() {
     // Spawn the storage integrity / sync worker (runs daily)
     storage_worker::spawn(state.clone());
 
+    // Task tracker for async storage operations (sync, integrity check)
+    let storage_task_tracker = storage_worker::new_tracker();
+
     // Rate limiter for auth endpoints: 10 requests per 60 seconds per IP
     let auth_governor_conf = Arc::new(
         GovernorConfigBuilder::default()
@@ -166,8 +168,14 @@ async fn main() {
     let auth_protected = Router::new()
         .route("/me", get(auth::routes::me))
         .route("/email", axum::routing::put(auth::routes::change_email))
-        .route("/password", axum::routing::put(auth::routes::change_password))
-        .route("/account", axum::routing::delete(auth::routes::delete_account))
+        .route(
+            "/password",
+            axum::routing::put(auth::routes::change_password),
+        )
+        .route(
+            "/account",
+            axum::routing::delete(auth::routes::delete_account),
+        )
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             auth::middleware::require_auth,
@@ -193,7 +201,10 @@ async fn main() {
         .route("/libraries/{id}", get(api::libraries::get_library))
         .route("/users/{id}", get(api::users::get_user_profile))
         .route("/search", get(api::search::search))
-        .route("/editorial-playlists", get(api::editorial::list_editorial_playlists))
+        .route(
+            "/editorial-playlists",
+            get(api::editorial::list_editorial_playlists),
+        )
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             auth::middleware::require_auth_if_private,
@@ -211,20 +222,39 @@ async fn main() {
                 .route("/upload", post(api::audio::upload_track))
                 .route("/upload/batch", post(api::audio::upload_tracks_batch))
                 .route("/albums/{id}/cover", post(api::audio::upload_album_cover))
-                .layer(DefaultBodyLimit::max(500 * 1024 * 1024)) // 500 MB for audio uploads
+                .layer(DefaultBodyLimit::max(500 * 1024 * 1024)), // 500 MB for audio uploads
         )
         .route("/tracks/my-uploads", get(api::tracks::my_uploads))
         .route("/playlists", post(api::playlists::create_playlist))
-        .route("/playlists/{id}", axum::routing::put(api::playlists::update_playlist).delete(api::playlists::delete_playlist))
-        .route("/playlists/{id}/tracks", post(api::playlists::add_track_to_playlist))
-        .route("/playlists/{id}/tracks/{track_id}", axum::routing::delete(api::playlists::remove_track_from_playlist))
-        .route("/tracks/{id}", axum::routing::put(api::tracks::update_track).delete(api::tracks::delete_track))
+        .route(
+            "/playlists/{id}",
+            axum::routing::put(api::playlists::update_playlist)
+                .delete(api::playlists::delete_playlist),
+        )
+        .route(
+            "/playlists/{id}/tracks",
+            post(api::playlists::add_track_to_playlist),
+        )
+        .route(
+            "/playlists/{id}/tracks/{track_id}",
+            axum::routing::delete(api::playlists::remove_track_from_playlist),
+        )
+        .route(
+            "/tracks/{id}",
+            axum::routing::put(api::tracks::update_track).delete(api::tracks::delete_track),
+        )
         .route("/setup/instance", post(api::setup::setup_instance))
         .route("/setup/complete", post(api::setup::setup_complete))
         .route("/favorites", get(api::favorites::list_favorites))
         .route("/favorites/check", get(api::favorites::check_favorites))
-        .route("/favorites/{track_id}", post(api::favorites::add_favorite).delete(api::favorites::remove_favorite))
-        .route("/history", get(api::history::list_history).post(api::history::log_listen))
+        .route(
+            "/favorites/{track_id}",
+            post(api::favorites::add_favorite).delete(api::favorites::remove_favorite),
+        )
+        .route(
+            "/history",
+            get(api::history::list_history).post(api::history::log_listen),
+        )
         .route("/tracks/{id}/report", post(api::reports::report_track))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
@@ -244,40 +274,87 @@ async fn main() {
             Router::new()
                 .route("/stats", get(api::admin::get_stats))
                 .route("/settings", get(api::admin::get_settings))
-                .route("/settings/{key}", axum::routing::put(api::admin::update_setting))
+                .route(
+                    "/settings/{key}",
+                    axum::routing::put(api::admin::update_setting),
+                )
                 .route(
                     "/blocked-domains",
                     get(api::admin::list_blocked_domains).post(api::admin::block_domain),
                 )
-                .route("/blocked-domains/export", get(api::admin::export_blocked_domains))
-                .route("/blocked-domains/import", post(api::admin::import_blocked_domains))
+                .route(
+                    "/blocked-domains/export",
+                    get(api::admin::export_blocked_domains),
+                )
+                .route(
+                    "/blocked-domains/import",
+                    post(api::admin::import_blocked_domains),
+                )
                 .route(
                     "/blocked-domains/{id}",
                     axum::routing::delete(api::admin::unblock_domain),
                 )
                 .route("/instances", get(api::admin::list_instances))
-                .route("/instances/health-check", post(api::admin::check_instances_health))
+                .route(
+                    "/instances/health-check",
+                    post(api::admin::check_instances_health),
+                )
                 .route("/metadata/status", get(api::admin::metadata_status))
-                .route("/metadata/enrich/{track_id}", post(api::admin::enrich_track_metadata))
-                .route("/metadata/enrich-all", post(api::admin::enrich_all_metadata))
+                .route(
+                    "/metadata/enrich/{track_id}",
+                    post(api::admin::enrich_track_metadata),
+                )
+                .route(
+                    "/metadata/enrich-all",
+                    post(api::admin::enrich_all_metadata),
+                )
                 .route("/remote-tracks", get(api::admin::list_remote_tracks))
                 .route("/users", get(api::admin::list_users))
-                .route("/users/{id}/role", axum::routing::put(api::admin::update_user_role))
-                .route("/users/{id}/ban", axum::routing::put(api::admin::ban_user).delete(api::admin::unban_user))
+                .route(
+                    "/users/{id}/role",
+                    axum::routing::put(api::admin::update_user_role),
+                )
+                .route(
+                    "/users/{id}/ban",
+                    axum::routing::put(api::admin::ban_user).delete(api::admin::unban_user),
+                )
                 .route("/editorial/status", get(api::editorial::editorial_status))
-                .route("/editorial/generate", post(api::editorial::generate_editorial_playlists))
+                .route(
+                    "/editorial/generate",
+                    post(api::editorial::generate_editorial_playlists),
+                )
                 .route("/reports", get(api::reports::list_reports))
                 .route("/reports/stats", get(api::reports::report_stats))
-                .route("/reports/{id}", axum::routing::put(api::reports::resolve_report))
+                .route(
+                    "/reports/{id}",
+                    axum::routing::put(api::reports::resolve_report),
+                )
                 .route("/tracks/browse", get(api::reports::browse_tracks))
-                .route("/tracks/{id}/moderate", axum::routing::delete(api::reports::moderate_track))
-                .route("/tos", axum::routing::put(api::reports::update_tos).delete(api::reports::reset_tos))
+                .route(
+                    "/tracks/{id}/moderate",
+                    axum::routing::delete(api::reports::moderate_track),
+                )
+                .route(
+                    "/tos",
+                    axum::routing::put(api::reports::update_tos).delete(api::reports::reset_tos),
+                )
                 .route("/storage/status", get(api::admin::storage_status))
-                .route("/storage/integrity-check", post(api::admin::run_integrity_check))
+                .route(
+                    "/storage/integrity-check",
+                    post(api::admin::run_integrity_check),
+                )
                 .route("/storage/sync", post(api::admin::run_storage_sync))
+                .route("/storage/task-status", get(api::admin::storage_task_status))
+                .layer(Extension(storage_task_tracker))
                 // P2P admin routes
-                .route("/p2p/peers", get(api::p2p::list_peers).post(api::p2p::add_peer))
-                .route("/p2p/peers/{node_id}", axum::routing::delete(api::p2p::remove_peer))
+                .route(
+                    "/p2p/peers",
+                    get(api::p2p::list_peers).post(api::p2p::add_peer),
+                )
+                .route(
+                    "/p2p/peers/{node_id}",
+                    axum::routing::delete(api::p2p::remove_peer),
+                )
                 .route("/p2p/peers/{node_id}/ping", post(api::p2p::ping_peer))
                 .layer(axum_middleware::from_fn_with_state(
                     state.clone(),
@@ -294,8 +371,17 @@ async fn main() {
             let scheme = std::env::var("SOUNDTIME_SCHEME").unwrap_or_else(|_| "https".to_string());
             let origin = format!("{scheme}://{}", state.domain);
             CorsLayer::new()
-                .allow_origin(AllowOrigin::exact(HeaderValue::from_str(&origin).unwrap_or_else(|_| HeaderValue::from_static("https://localhost"))))
-                .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::PUT, axum::http::Method::DELETE, axum::http::Method::OPTIONS])
+                .allow_origin(AllowOrigin::exact(
+                    HeaderValue::from_str(&origin)
+                        .unwrap_or_else(|_| HeaderValue::from_static("https://localhost")),
+                ))
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::PUT,
+                    axum::http::Method::DELETE,
+                    axum::http::Method::OPTIONS,
+                ])
                 .allow_headers(tower_http::cors::Any)
                 .expose_headers(tower_http::cors::Any)
         } else {
@@ -306,7 +392,13 @@ async fn main() {
             tracing::info!("CORS allowed origins: {:?}", origins);
             CorsLayer::new()
                 .allow_origin(origins)
-                .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::PUT, axum::http::Method::DELETE, axum::http::Method::OPTIONS])
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::PUT,
+                    axum::http::Method::DELETE,
+                    axum::http::Method::OPTIONS,
+                ])
                 .allow_headers(tower_http::cors::Any)
                 .expose_headers(tower_http::cors::Any)
         }

@@ -7,7 +7,9 @@ use uuid::Uuid;
 use super::jwt::{generate_token_pair, validate_token, TokenPair, TokenType};
 use super::middleware::AuthUser;
 use super::password::{hash_password, verify_password};
-use soundtime_db::entities::{favorite, instance_setting, listen_history, playlist, playlist_track, track, track_report, user};
+use soundtime_db::entities::{
+    favorite, instance_setting, listen_history, playlist, playlist_track, track, track_report, user,
+};
 use soundtime_db::AppState;
 
 // ─── Request/Response DTOs ──────────────────────────────────────────
@@ -70,10 +72,7 @@ pub async fn register(
         .map(|s| s.value == "true")
         .unwrap_or(false);
 
-    let user_count: u64 = user::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(0);
+    let user_count: u64 = user::Entity::find().count(&state.db).await.unwrap_or(0);
 
     if !setup_complete && user_count > 0 {
         return Err((
@@ -116,7 +115,11 @@ pub async fn register(
     if !body.email.contains('@')
         || body.email.starts_with('@')
         || body.email.ends_with('@')
-        || !body.email.split('@').nth(1).map_or(false, |d| d.contains('.'))
+        || !body
+            .email
+            .split('@')
+            .nth(1)
+            .map_or(false, |d| d.contains('.'))
         || body.email.len() > 254
     {
         return Err((
@@ -170,7 +173,11 @@ pub async fn register(
     let user_id = Uuid::new_v4();
 
     // Determine role: first user is admin
-    let role = if user_count == 0 { user::UserRole::Admin } else { user::UserRole::User };
+    let role = if user_count == 0 {
+        user::UserRole::Admin
+    } else {
+        user::UserRole::User
+    };
 
     let new_user = user::ActiveModel {
         id: Set(user_id),
@@ -197,17 +204,21 @@ pub async fn register(
         )
     })?;
 
-    let tokens =
-        generate_token_pair(created.id, &created.username, created.role.as_str(), &state.jwt_secret)
-            .map_err(|e| {
-                tracing::error!("token error: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: "Failed to generate tokens".to_string(),
-                    }),
-                )
-            })?;
+    let tokens = generate_token_pair(
+        created.id,
+        &created.username,
+        created.role.as_str(),
+        &state.jwt_secret,
+    )
+    .map_err(|e| {
+        tracing::error!("token error: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to generate tokens".to_string(),
+            }),
+        )
+    })?;
 
     Ok((
         StatusCode::CREATED,
@@ -284,18 +295,21 @@ pub async fn login(
         ));
     }
 
-    let tokens =
-        generate_token_pair(user.id, &user.username, user.role.as_str(), &state.jwt_secret).map_err(
-            |e| {
-                tracing::error!("token error: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: "Failed to generate tokens".to_string(),
-                    }),
-                )
-            },
-        )?;
+    let tokens = generate_token_pair(
+        user.id,
+        &user.username,
+        user.role.as_str(),
+        &state.jwt_secret,
+    )
+    .map_err(|e| {
+        tracing::error!("token error: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to generate tokens".to_string(),
+            }),
+        )
+    })?;
 
     Ok(Json(AuthResponse {
         user: UserResponse {
@@ -366,18 +380,21 @@ pub async fn refresh(
         ));
     }
 
-    let tokens =
-        generate_token_pair(user.id, &user.username, user.role.as_str(), &state.jwt_secret).map_err(
-            |e| {
-                tracing::error!("token error: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: "Failed to generate tokens".to_string(),
-                    }),
-                )
-            },
-        )?;
+    let tokens = generate_token_pair(
+        user.id,
+        &user.username,
+        user.role.as_str(),
+        &state.jwt_secret,
+    )
+    .map_err(|e| {
+        tracing::error!("token error: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to generate tokens".to_string(),
+            }),
+        )
+    })?;
 
     Ok(Json(tokens))
 }
@@ -450,9 +467,12 @@ pub async fn change_email(
 
     // Validate email format
     if !body.new_email.contains('@') || body.new_email.len() < 5 || body.new_email.len() > 255 {
-        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse {
-            error: "Invalid email address".to_string(),
-        })));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid email address".to_string(),
+            }),
+        ));
     }
 
     // Find user and verify password
@@ -461,19 +481,39 @@ pub async fn change_email(
         .await
         .map_err(|e| {
             tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Internal server error".to_string() }))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Internal server error".to_string(),
+                }),
+            )
         })?
         .ok_or_else(|| {
-            (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() }))
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "User not found".to_string(),
+                }),
+            )
         })?;
 
     let valid = verify_password(&body.password, &found.password_hash).map_err(|e| {
         tracing::error!("verify error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Internal server error".to_string() }))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            }),
+        )
     })?;
 
     if !valid {
-        return Err((StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Incorrect password".to_string() })));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Incorrect password".to_string(),
+            }),
+        ));
     }
 
     // Check that new email isn't already taken
@@ -483,13 +523,21 @@ pub async fn change_email(
         .await
         .map_err(|e| {
             tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Internal server error".to_string() }))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Internal server error".to_string(),
+                }),
+            )
         })?;
 
     if existing.is_some() {
-        return Err((StatusCode::CONFLICT, Json(ErrorResponse {
-            error: "This email is already in use".to_string(),
-        })));
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "This email is already in use".to_string(),
+            }),
+        ));
     }
 
     // Update email
@@ -497,7 +545,12 @@ pub async fn change_email(
     user_update.email = Set(body.new_email);
     let updated = user_update.update(&state.db).await.map_err(|e| {
         tracing::error!("update error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to update email".to_string() }))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to update email".to_string(),
+            }),
+        )
     })?;
 
     tracing::info!("User {} changed email", user_id);
@@ -523,15 +576,21 @@ pub async fn change_password(
 
     // Validate new password
     if body.new_password.len() < 8 {
-        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse {
-            error: "Password must be at least 8 characters".to_string(),
-        })));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Password must be at least 8 characters".to_string(),
+            }),
+        ));
     }
 
     if body.new_password.len() > 1024 {
-        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse {
-            error: "Password too long".to_string(),
-        })));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Password too long".to_string(),
+            }),
+        ));
     }
 
     // Find user and verify current password
@@ -540,32 +599,62 @@ pub async fn change_password(
         .await
         .map_err(|e| {
             tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Internal server error".to_string() }))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Internal server error".to_string(),
+                }),
+            )
         })?
         .ok_or_else(|| {
-            (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() }))
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "User not found".to_string(),
+                }),
+            )
         })?;
 
     let valid = verify_password(&body.current_password, &found.password_hash).map_err(|e| {
         tracing::error!("verify error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Internal server error".to_string() }))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            }),
+        )
     })?;
 
     if !valid {
-        return Err((StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Incorrect password".to_string() })));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Incorrect password".to_string(),
+            }),
+        ));
     }
 
     // Hash new password and update
     let new_hash = hash_password(&body.new_password).map_err(|e| {
         tracing::error!("hash error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Internal server error".to_string() }))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            }),
+        )
     })?;
 
     let mut user_update: user::ActiveModel = found.into();
     user_update.password_hash = Set(new_hash);
     user_update.update(&state.db).await.map_err(|e| {
         tracing::error!("update error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to update password".to_string() }))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to update password".to_string(),
+            }),
+        )
     })?;
 
     tracing::info!("User {} changed password", user_id);
@@ -587,19 +676,39 @@ pub async fn delete_account(
         .await
         .map_err(|e| {
             tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Internal server error".to_string() }))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Internal server error".to_string(),
+                }),
+            )
         })?
         .ok_or_else(|| {
-            (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "User not found".to_string() }))
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "User not found".to_string(),
+                }),
+            )
         })?;
 
     let valid = verify_password(&body.password, &found.password_hash).map_err(|e| {
         tracing::error!("verify error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Internal server error".to_string() }))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            }),
+        )
     })?;
 
     if !valid {
-        return Err((StatusCode::UNAUTHORIZED, Json(ErrorResponse { error: "Mot de passe incorrect".to_string() })));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Mot de passe incorrect".to_string(),
+            }),
+        ));
     }
 
     // Prevent admin from deleting their own account if they are the only admin
@@ -622,59 +731,87 @@ pub async fn delete_account(
     // 1. Favorites
     favorite::Entity::delete_many()
         .filter(favorite::Column::UserId.eq(user_id))
-        .exec(&state.db).await.ok();
+        .exec(&state.db)
+        .await
+        .ok();
 
     // 2. Listen history
     listen_history::Entity::delete_many()
         .filter(listen_history::Column::UserId.eq(user_id))
-        .exec(&state.db).await.ok();
+        .exec(&state.db)
+        .await
+        .ok();
 
     // 3. Track reports by this user
     track_report::Entity::delete_many()
         .filter(track_report::Column::UserId.eq(user_id))
-        .exec(&state.db).await.ok();
+        .exec(&state.db)
+        .await
+        .ok();
 
     // 4. Playlist tracks for user's playlists, then playlists
     let user_playlists: Vec<Uuid> = playlist::Entity::find()
         .filter(playlist::Column::UserId.eq(user_id))
-        .all(&state.db).await.unwrap_or_default()
-        .iter().map(|p| p.id).collect();
+        .all(&state.db)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|p| p.id)
+        .collect();
 
     if !user_playlists.is_empty() {
         playlist_track::Entity::delete_many()
             .filter(playlist_track::Column::PlaylistId.is_in(user_playlists.clone()))
-            .exec(&state.db).await.ok();
+            .exec(&state.db)
+            .await
+            .ok();
 
         playlist::Entity::delete_many()
             .filter(playlist::Column::UserId.eq(user_id))
-            .exec(&state.db).await.ok();
+            .exec(&state.db)
+            .await
+            .ok();
     }
 
     // 5. User's uploaded tracks — remove from all references first
     let user_tracks: Vec<Uuid> = track::Entity::find()
         .filter(track::Column::UploadedBy.eq(user_id))
-        .all(&state.db).await.unwrap_or_default()
-        .iter().map(|t| t.id).collect();
+        .all(&state.db)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|t| t.id)
+        .collect();
 
     if !user_tracks.is_empty() {
         // Remove favorites/history/playlist_tracks referencing these tracks
         favorite::Entity::delete_many()
             .filter(favorite::Column::TrackId.is_in(user_tracks.clone()))
-            .exec(&state.db).await.ok();
+            .exec(&state.db)
+            .await
+            .ok();
         listen_history::Entity::delete_many()
             .filter(listen_history::Column::TrackId.is_in(user_tracks.clone()))
-            .exec(&state.db).await.ok();
+            .exec(&state.db)
+            .await
+            .ok();
         playlist_track::Entity::delete_many()
             .filter(playlist_track::Column::TrackId.is_in(user_tracks.clone()))
-            .exec(&state.db).await.ok();
+            .exec(&state.db)
+            .await
+            .ok();
         track_report::Entity::delete_many()
             .filter(track_report::Column::TrackId.is_in(user_tracks.clone()))
-            .exec(&state.db).await.ok();
+            .exec(&state.db)
+            .await
+            .ok();
 
         // Delete tracks (audio files stay on storage for now, admin can clean up)
         track::Entity::delete_many()
             .filter(track::Column::UploadedBy.eq(user_id))
-            .exec(&state.db).await.ok();
+            .exec(&state.db)
+            .await
+            .ok();
     }
 
     // 6. Finally, delete the user
@@ -683,7 +820,12 @@ pub async fn delete_account(
         .await
         .map_err(|e| {
             tracing::error!("Failed to delete user {user_id}: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to delete account".to_string() }))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "Failed to delete account".to_string(),
+                }),
+            )
         })?;
 
     tracing::info!("Account deleted for user {user_id}");

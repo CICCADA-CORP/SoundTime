@@ -404,6 +404,17 @@ export interface SyncReport {
   errors: string[];
 }
 
+export interface TaskProgress {
+  processed: number;
+  total: number | null;
+}
+
+export type StorageTaskStatus =
+  | { status: "idle" }
+  | { status: "running"; progress: TaskProgress }
+  | { status: "completed"; result: { kind: "sync" } & SyncReport | { kind: "integrity" } & IntegrityReport }
+  | { status: "error"; message: string };
+
 // ─── Batch Upload ───────────────────────────────────────────────────
 
 export interface BatchUploadItem {

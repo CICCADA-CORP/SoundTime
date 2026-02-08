@@ -10,7 +10,9 @@ impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
             .get_connection()
-            .execute_unprepared("CREATE TYPE actor_type AS ENUM ('person', 'service', 'application')")
+            .execute_unprepared(
+                "CREATE TYPE actor_type AS ENUM ('person', 'service', 'application')",
+            )
             .await?;
 
         manager

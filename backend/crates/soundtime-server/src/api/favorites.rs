@@ -3,7 +3,9 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+};
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -18,8 +20,10 @@ pub async fn list_favorites(
     State(state): State<Arc<AppState>>,
     axum::Extension(auth_user): axum::Extension<AuthUser>,
     Query(params): Query<PaginationParams>,
-) -> Result<Json<super::tracks::PaginatedResponse<super::tracks::TrackResponse>>, (StatusCode, String)>
-{
+) -> Result<
+    Json<super::tracks::PaginatedResponse<super::tracks::TrackResponse>>,
+    (StatusCode, String),
+> {
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(20).min(100);
 
@@ -28,13 +32,15 @@ pub async fn list_favorites(
         .order_by_desc(favorite::Column::CreatedAt)
         .paginate(&state.db, per_page);
 
-    let total = paginator.num_items().await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let total = paginator
+        .num_items()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let favs = paginator.fetch_page(page - 1).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let favs = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     let mut data = Vec::new();
     for fav in favs {
@@ -82,9 +88,10 @@ pub async fn add_favorite(
         created_at: Set(chrono::Utc::now().fixed_offset()),
     };
 
-    entry.insert(&state.db).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    entry
+        .insert(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -112,7 +119,9 @@ pub async fn check_favorites(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    Ok(Json(favs.into_iter().map(|f| f.track_id.to_string()).collect()))
+    Ok(Json(
+        favs.into_iter().map(|f| f.track_id.to_string()).collect(),
+    ))
 }
 
 #[derive(Deserialize)]

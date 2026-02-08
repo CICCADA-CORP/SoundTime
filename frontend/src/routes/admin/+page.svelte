@@ -92,6 +92,42 @@
   let syncReport = $state<SyncReport | null>(null);
   let storageChecking = $state(false);
   let storageSyncing = $state(false);
+  let taskProgress = $state<{ processed: number; total: number | null } | null>(null);
+
+  /** Poll /admin/storage/task-status until the background task finishes. */
+  async function pollTaskStatus(kind: "sync" | "integrity") {
+    const POLL_INTERVAL = 1500; // ms
+    while (true) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+      try {
+        const status = await api.get<any>("/admin/storage/task-status");
+        if (status.status === "running") {
+          taskProgress = status.progress ?? null;
+          continue;
+        }
+        if (status.status === "completed") {
+          taskProgress = null;
+          if (kind === "sync" && status.result?.kind === "sync") {
+            syncReport = status.result as SyncReport;
+          } else if (kind === "integrity" && status.result?.kind === "integrity") {
+            integrityReport = status.result as IntegrityReport;
+          }
+          return;
+        }
+        if (status.status === "error") {
+          taskProgress = null;
+          error = status.message ?? "Task failed";
+          return;
+        }
+        // idle or unknown → done
+        taskProgress = null;
+        return;
+      } catch {
+        taskProgress = null;
+        return;
+      }
+    }
+  }
 
   // Block domain form
   let blockDomainInput = $state("");
@@ -1720,15 +1756,32 @@
               onclick={async () => {
                 storageChecking = true;
                 error = null;
+                taskProgress = null;
                 try {
-                  integrityReport = await api.post<IntegrityReport>("/admin/storage/integrity-check");
+                  await api.post("/admin/storage/integrity-check");
+                  await pollTaskStatus("integrity");
                 } catch (e: any) { error = e.message; }
-                finally { storageChecking = false; }
+                finally { storageChecking = false; taskProgress = null; }
               }}
             >
               {storageChecking ? t('admin.integrity.checking') : t('admin.integrity.runCheck')}
             </button>
           </div>
+
+          {#if storageChecking && taskProgress}
+            <div class="mb-4">
+              <div class="flex items-center justify-between text-sm text-[hsl(var(--muted-foreground))] mb-1">
+                <span>{t('admin.integrity.checking')}</span>
+                <span>{taskProgress.processed}{taskProgress.total ? ` / ${taskProgress.total}` : ''}</span>
+              </div>
+              <div class="w-full bg-[hsl(var(--secondary))] rounded-full h-2">
+                <div
+                  class="bg-[hsl(var(--primary))] h-2 rounded-full transition-all duration-300"
+                  style="width: {taskProgress.total ? (taskProgress.processed / taskProgress.total * 100) : 50}%"
+                ></div>
+              </div>
+            </div>
+          {/if}
 
           {#if integrityReport}
             <div class="grid grid-cols-3 gap-4 mb-4">
@@ -1792,15 +1845,32 @@
               onclick={async () => {
                 storageSyncing = true;
                 error = null;
+                taskProgress = null;
                 try {
-                  syncReport = await api.post<SyncReport>("/admin/storage/sync");
+                  await api.post("/admin/storage/sync");
+                  await pollTaskStatus("sync");
                 } catch (e: any) { error = e.message; }
-                finally { storageSyncing = false; }
+                finally { storageSyncing = false; taskProgress = null; }
               }}
             >
               {storageSyncing ? t('admin.sync.syncing') : t('admin.sync.runSync')}
             </button>
           </div>
+
+          {#if storageSyncing && taskProgress}
+            <div class="mb-4">
+              <div class="flex items-center justify-between text-sm text-[hsl(var(--muted-foreground))] mb-1">
+                <span>{t('admin.sync.syncing')}</span>
+                <span>{taskProgress.processed}{taskProgress.total ? ` / ${taskProgress.total}` : ''}</span>
+              </div>
+              <div class="w-full bg-[hsl(var(--secondary))] rounded-full h-2">
+                <div
+                  class="bg-[hsl(var(--primary))] h-2 rounded-full transition-all duration-300"
+                  style="width: {taskProgress.total ? (taskProgress.processed / taskProgress.total * 100) : 50}%"
+                ></div>
+              </div>
+            </div>
+          {/if}
 
           {#if syncReport}
             <div class="grid grid-cols-3 gap-4 mb-4">

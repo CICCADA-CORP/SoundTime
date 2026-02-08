@@ -1,10 +1,6 @@
 //! Setup/onboarding API — first-time instance configuration
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Extension, Json,
-};
+use axum::{extract::State, http::StatusCode, Extension, Json};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -48,9 +44,7 @@ pub struct SetupCompleteRequest {
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
-async fn is_setup_complete(
-    db: &sea_orm::DatabaseConnection,
-) -> Result<bool, StatusCode> {
+async fn is_setup_complete(db: &sea_orm::DatabaseConnection) -> Result<bool, StatusCode> {
     let setting = instance_setting::Entity::find()
         .filter(instance_setting::Column::Key.eq("setup_complete"))
         .one(db)
@@ -76,7 +70,9 @@ async fn upsert_setting(
         let mut am: instance_setting::ActiveModel = existing.into();
         am.value = Set(value.to_string());
         am.updated_at = Set(now);
-        am.update(db).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        am.update(db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     } else {
         let am = instance_setting::ActiveModel {
             id: Set(Uuid::new_v4()),
@@ -84,7 +80,9 @@ async fn upsert_setting(
             value: Set(value.to_string()),
             updated_at: Set(now),
         };
-        am.insert(db).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        am.insert(db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
     Ok(())
 }
@@ -96,15 +94,22 @@ pub async fn setup_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SetupStatusResponse>, (StatusCode, Json<ErrorResponse>)> {
     let setup_complete = is_setup_complete(&state.db).await.map_err(|s| {
-        (s, Json(ErrorResponse { error: "Internal server error".to_string() }))
+        (
+            s,
+            Json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            }),
+        )
     })?;
 
-    let user_count = user::Entity::find()
-        .count(&state.db)
-        .await
-        .map_err(|_| {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Internal server error".to_string() }))
-        })?;
+    let user_count = user::Entity::find().count(&state.db).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            }),
+        )
+    })?;
 
     let instance_private = instance_setting::Entity::find()
         .filter(instance_setting::Column::Key.eq("instance_private"))
@@ -128,10 +133,7 @@ pub async fn setup_admin(
     Json(body): Json<SetupAdminRequest>,
 ) -> Result<(StatusCode, Json<AuthResponse>), (StatusCode, Json<ErrorResponse>)> {
     // Guard: only if no users exist
-    let user_count = user::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(1);
+    let user_count = user::Entity::find().count(&state.db).await.unwrap_or(1);
 
     if user_count > 0 {
         return Err((
@@ -162,7 +164,12 @@ pub async fn setup_admin(
 
     let password_hash = hash_password(&body.password).map_err(|e| {
         tracing::error!("hash error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Internal server error".to_string() }))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            }),
+        )
     })?;
 
     let now = chrono::Utc::now().fixed_offset();
@@ -185,7 +192,12 @@ pub async fn setup_admin(
 
     let created = new_user.insert(&state.db).await.map_err(|e| {
         tracing::error!("insert error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to create admin user".to_string() }))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to create admin user".to_string(),
+            }),
+        )
     })?;
 
     let tokens = generate_token_pair(
@@ -196,7 +208,12 @@ pub async fn setup_admin(
     )
     .map_err(|e| {
         tracing::error!("token error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "Failed to generate tokens".to_string() }))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to generate tokens".to_string(),
+            }),
+        )
     })?;
 
     tracing::info!("Setup: admin user '{}' created", created.username);
@@ -228,24 +245,51 @@ pub async fn setup_instance(
     if auth_user.0.role != "admin" {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse { error: "Admin access required".to_string() }),
+            Json(ErrorResponse {
+                error: "Admin access required".to_string(),
+            }),
         ));
     }
     let setup_complete = is_setup_complete(&state.db).await.map_err(|s| {
-        (s, Json(ErrorResponse { error: "Internal server error".to_string() }))
+        (
+            s,
+            Json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            }),
+        )
     })?;
     if setup_complete {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse { error: "Setup already complete".to_string() }),
+            Json(ErrorResponse {
+                error: "Setup already complete".to_string(),
+            }),
         ));
     }
 
-    upsert_setting(&state.db, "instance_name", &body.instance_name).await.map_err(|s| {
-        (s, Json(ErrorResponse { error: "Failed to save settings".to_string() }))
-    })?;
-    upsert_setting(&state.db, "instance_description", &body.instance_description).await.map_err(|s| {
-        (s, Json(ErrorResponse { error: "Failed to save settings".to_string() }))
+    upsert_setting(&state.db, "instance_name", &body.instance_name)
+        .await
+        .map_err(|s| {
+            (
+                s,
+                Json(ErrorResponse {
+                    error: "Failed to save settings".to_string(),
+                }),
+            )
+        })?;
+    upsert_setting(
+        &state.db,
+        "instance_description",
+        &body.instance_description,
+    )
+    .await
+    .map_err(|s| {
+        (
+            s,
+            Json(ErrorResponse {
+                error: "Failed to save settings".to_string(),
+            }),
+        )
     })?;
 
     tracing::info!("Setup: instance configured as '{}'", body.instance_name);
@@ -263,24 +307,64 @@ pub async fn setup_complete(
     if auth_user.0.role != "admin" {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse { error: "Admin access required".to_string() }),
+            Json(ErrorResponse {
+                error: "Admin access required".to_string(),
+            }),
         ));
     }
     let already_complete = is_setup_complete(&state.db).await.map_err(|s| {
-        (s, Json(ErrorResponse { error: "Internal server error".to_string() }))
+        (
+            s,
+            Json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            }),
+        )
     })?;
     if already_complete {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(ErrorResponse { error: "Setup already complete".to_string() }),
+            Json(ErrorResponse {
+                error: "Setup already complete".to_string(),
+            }),
         ));
     }
 
-    let err = |s| (s, Json(ErrorResponse { error: "Failed to save settings".to_string() }));
-    upsert_setting(&state.db, "p2p_enabled", if body.p2p_enabled { "true" } else { "false" }).await.map_err(err)?;
-    upsert_setting(&state.db, "open_registrations", if body.open_registrations { "true" } else { "false" }).await.map_err(err)?;
-    upsert_setting(&state.db, "max_upload_size_mb", &body.max_upload_size_mb.to_string()).await.map_err(err)?;
-    upsert_setting(&state.db, "setup_complete", "true").await.map_err(err)?;
+    let err = |s| {
+        (
+            s,
+            Json(ErrorResponse {
+                error: "Failed to save settings".to_string(),
+            }),
+        )
+    };
+    upsert_setting(
+        &state.db,
+        "p2p_enabled",
+        if body.p2p_enabled { "true" } else { "false" },
+    )
+    .await
+    .map_err(err)?;
+    upsert_setting(
+        &state.db,
+        "open_registrations",
+        if body.open_registrations {
+            "true"
+        } else {
+            "false"
+        },
+    )
+    .await
+    .map_err(err)?;
+    upsert_setting(
+        &state.db,
+        "max_upload_size_mb",
+        &body.max_upload_size_mb.to_string(),
+    )
+    .await
+    .map_err(err)?;
+    upsert_setting(&state.db, "setup_complete", "true")
+        .await
+        .map_err(err)?;
 
     tracing::info!("Setup complete! Instance is ready.");
 
@@ -306,7 +390,8 @@ mod tests {
 
     #[test]
     fn test_setup_admin_request_deserialization() {
-        let json = r#"{"username": "admin", "email": "admin@example.com", "password": "secret123"}"#;
+        let json =
+            r#"{"username": "admin", "email": "admin@example.com", "password": "secret123"}"#;
         let req: SetupAdminRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.username, "admin");
         assert_eq!(req.email, "admin@example.com");
@@ -322,7 +407,8 @@ mod tests {
 
     #[test]
     fn test_setup_complete_request_deserialization() {
-        let json = r#"{"p2p_enabled": true, "open_registrations": false, "max_upload_size_mb": 50}"#;
+        let json =
+            r#"{"p2p_enabled": true, "open_registrations": false, "max_upload_size_mb": 50}"#;
         let req: SetupCompleteRequest = serde_json::from_str(json).unwrap();
         assert!(req.p2p_enabled);
         assert!(!req.open_registrations);

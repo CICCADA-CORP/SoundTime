@@ -11,11 +11,7 @@ impl MigrationTrait for Migration {
             .alter_table(
                 Table::alter()
                     .table(Alias::new("tracks"))
-                    .add_column(
-                        ColumnDef::new(Alias::new("uploaded_by"))
-                            .uuid()
-                            .null(),
-                    )
+                    .add_column(ColumnDef::new(Alias::new("uploaded_by")).uuid().null())
                     .add_foreign_key(
                         &TableForeignKey::new()
                             .name("fk_tracks_uploaded_by")

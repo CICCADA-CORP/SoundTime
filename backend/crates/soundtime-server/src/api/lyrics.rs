@@ -6,8 +6,8 @@ use axum::{
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 use soundtime_db::entities::instance_setting;
-use std::sync::Arc;
 use soundtime_db::AppState;
+use std::sync::Arc;
 
 #[derive(Debug, Serialize)]
 pub struct LyricsResponse {
@@ -89,13 +89,11 @@ pub async fn get_track_lyrics(
 
     // Read lyrics settings from instance_settings
     let settings = instance_setting::Entity::find()
-        .filter(
-            instance_setting::Column::Key.is_in([
-                "lyrics_provider",
-                "lyrics_musixmatch_key",
-                "lyrics_lyricscom_key",
-            ]),
-        )
+        .filter(instance_setting::Column::Key.is_in([
+            "lyrics_provider",
+            "lyrics_musixmatch_key",
+            "lyrics_lyricscom_key",
+        ]))
         .all(&state.db)
         .await
         .map_err(|e| {

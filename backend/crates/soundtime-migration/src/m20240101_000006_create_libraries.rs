@@ -13,7 +13,12 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(Libraries::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(Libraries::Id).uuid().not_null().primary_key())
+                    .col(
+                        ColumnDef::new(Libraries::Id)
+                            .uuid()
+                            .not_null()
+                            .primary_key(),
+                    )
                     .col(ColumnDef::new(Libraries::Name).string_len(255).not_null())
                     .col(ColumnDef::new(Libraries::Description).text().null())
                     .col(ColumnDef::new(Libraries::UserId).uuid().not_null())
@@ -23,7 +28,11 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default(false),
                     )
-                    .col(ColumnDef::new(Libraries::FederationUri).string_len(512).null())
+                    .col(
+                        ColumnDef::new(Libraries::FederationUri)
+                            .string_len(512)
+                            .null(),
+                    )
                     .col(
                         ColumnDef::new(Libraries::TotalTracks)
                             .integer()

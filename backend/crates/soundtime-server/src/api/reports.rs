@@ -401,11 +401,7 @@ pub async fn browse_tracks(
         }
     }
 
-    let total = query
-        .clone()
-        .count(&state.db)
-        .await
-        .unwrap_or(0);
+    let total = query.clone().count(&state.db).await.unwrap_or(0);
 
     let tracks = query
         .paginate(&state.db, per_page)
@@ -515,7 +511,9 @@ pub async fn moderate_track(
     for r in pending_reports {
         let mut active: track_report::ActiveModel = r.into();
         active.status = Set("resolved".to_string());
-        active.admin_note = Set(Some("Piste supprimée/déréférencée par l'administrateur.".to_string()));
+        active.admin_note = Set(Some(
+            "Piste supprimée/déréférencée par l'administrateur.".to_string(),
+        ));
         active.resolved_at = Set(Some(now));
         active.update(&state.db).await.ok();
     }
@@ -575,9 +573,7 @@ pub struct TosResponse {
 }
 
 /// GET /api/tos — public, get Terms of Service
-pub async fn get_tos(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<TosResponse>, StatusCode> {
+pub async fn get_tos(State(state): State<Arc<AppState>>) -> Result<Json<TosResponse>, StatusCode> {
     let setting = instance_setting::Entity::find()
         .filter(instance_setting::Column::Key.eq("tos_content"))
         .one(&state.db)
@@ -618,9 +614,10 @@ pub async fn update_tos(
         let mut active: instance_setting::ActiveModel = s.into();
         active.value = Set(body.content);
         active.updated_at = Set(now);
-        active.update(&state.db).await.map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-        })?;
+        active
+            .update(&state.db)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
     } else {
         let new_setting = instance_setting::ActiveModel {
             id: Set(Uuid::new_v4()),
@@ -628,12 +625,15 @@ pub async fn update_tos(
             value: Set(body.content),
             updated_at: Set(now),
         };
-        new_setting.insert(&state.db).await.map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-        })?;
+        new_setting
+            .insert(&state.db)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
     }
 
-    Ok(Json(serde_json::json!({ "message": "Conditions d'utilisation mises à jour." })))
+    Ok(Json(
+        serde_json::json!({ "message": "Conditions d'utilisation mises à jour." }),
+    ))
 }
 
 /// DELETE /api/admin/tos — reset ToS to default
@@ -646,5 +646,7 @@ pub async fn reset_tos(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    Ok(Json(serde_json::json!({ "message": "Conditions d'utilisation réinitialisées au modèle par défaut." })))
+    Ok(Json(
+        serde_json::json!({ "message": "Conditions d'utilisation réinitialisées au modèle par défaut." }),
+    ))
 }

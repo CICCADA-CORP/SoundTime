@@ -3,7 +3,9 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -41,13 +43,15 @@ pub async fn list_history(
         .order_by_desc(listen_history::Column::ListenedAt)
         .paginate(&state.db, per_page);
 
-    let total = paginator.num_items().await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let total = paginator
+        .num_items()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let entries = paginator.fetch_page(page - 1).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let entries = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     let mut data = Vec::new();
     for entry in entries {
@@ -90,9 +94,10 @@ pub async fn log_listen(
         duration_listened: Set(body.duration_listened),
     };
 
-    entry.insert(&state.db).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    entry
+        .insert(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     // Increment play_count on the track
     let track_model = track::Entity::find_by_id(body.track_id)

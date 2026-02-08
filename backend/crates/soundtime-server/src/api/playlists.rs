@@ -3,7 +3,9 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -85,13 +87,15 @@ pub async fn list_playlists(
         .order_by_desc(playlist::Column::UpdatedAt)
         .paginate(&state.db, per_page);
 
-    let total = paginator.num_items().await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let total = paginator
+        .num_items()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let playlists = paginator.fetch_page(page - 1).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let playlists = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     // Populate track counts
     let mut data: Vec<PlaylistResponse> = Vec::with_capacity(playlists.len());
@@ -196,9 +200,10 @@ pub async fn create_playlist(
         updated_at: Set(now),
     };
 
-    let created = new_playlist.insert(&state.db).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let created = new_playlist
+        .insert(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     Ok((StatusCode::CREATED, Json(PlaylistResponse::from(created))))
 }
@@ -235,9 +240,10 @@ pub async fn update_playlist(
     }
     active.updated_at = Set(chrono::Utc::now().fixed_offset());
 
-    let updated = active.update(&state.db).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let updated = active
+        .update(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     Ok(Json(PlaylistResponse::from(updated)))
 }
@@ -302,9 +308,10 @@ pub async fn add_track_to_playlist(
         position: Set(position),
     };
 
-    new_entry.insert(&state.db).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    new_entry
+        .insert(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     Ok(StatusCode::CREATED)
 }

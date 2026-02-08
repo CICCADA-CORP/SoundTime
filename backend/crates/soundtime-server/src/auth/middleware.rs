@@ -263,13 +263,8 @@ mod tests {
         let state = test_state();
         let app = auth_app(state.clone());
 
-        let pair = generate_token_pair(
-            uuid::Uuid::new_v4(),
-            "testuser",
-            "user",
-            &state.jwt_secret,
-        )
-        .unwrap();
+        let pair = generate_token_pair(uuid::Uuid::new_v4(), "testuser", "user", &state.jwt_secret)
+            .unwrap();
 
         let req = HttpRequest::builder()
             .uri("/protected")
@@ -286,13 +281,8 @@ mod tests {
         let state = test_state();
         let app = auth_app(state.clone());
 
-        let pair = generate_token_pair(
-            uuid::Uuid::new_v4(),
-            "testuser",
-            "user",
-            &state.jwt_secret,
-        )
-        .unwrap();
+        let pair = generate_token_pair(uuid::Uuid::new_v4(), "testuser", "user", &state.jwt_secret)
+            .unwrap();
 
         let req = HttpRequest::builder()
             .uri("/protected")
@@ -341,13 +331,8 @@ mod tests {
         let state = test_state();
         let app = admin_app(state.clone());
 
-        let pair = generate_token_pair(
-            uuid::Uuid::new_v4(),
-            "admin",
-            "admin",
-            &state.jwt_secret,
-        )
-        .unwrap();
+        let pair =
+            generate_token_pair(uuid::Uuid::new_v4(), "admin", "admin", &state.jwt_secret).unwrap();
 
         let req = HttpRequest::builder()
             .uri("/admin")
@@ -404,13 +389,8 @@ mod tests {
         let app = auth_app(state);
 
         // Generate token with a different secret
-        let pair = generate_token_pair(
-            uuid::Uuid::new_v4(),
-            "testuser",
-            "user",
-            "wrong-secret",
-        )
-        .unwrap();
+        let pair =
+            generate_token_pair(uuid::Uuid::new_v4(), "testuser", "user", "wrong-secret").unwrap();
 
         let req = HttpRequest::builder()
             .uri("/protected")

@@ -20,7 +20,12 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Tracks::ArtistId).uuid().not_null())
                     .col(ColumnDef::new(Tracks::AlbumId).uuid().null())
                     .col(ColumnDef::new(Tracks::TrackNumber).small_integer().null())
-                    .col(ColumnDef::new(Tracks::DiscNumber).small_integer().null().default(1))
+                    .col(
+                        ColumnDef::new(Tracks::DiscNumber)
+                            .small_integer()
+                            .null()
+                            .default(1),
+                    )
                     .col(ColumnDef::new(Tracks::DurationSecs).float().not_null())
                     .col(ColumnDef::new(Tracks::Genre).string_len(128).null())
                     .col(ColumnDef::new(Tracks::Year).small_integer().null())

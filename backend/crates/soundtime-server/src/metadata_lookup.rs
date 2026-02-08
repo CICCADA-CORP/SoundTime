@@ -4,8 +4,8 @@
 //! and Cover Art Archive to fetch cover images.
 
 use reqwest::Client;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use sea_orm::DatabaseConnection;
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 use soundtime_audio::{AudioStorage, StorageBackend};
 use soundtime_db::entities::{album, artist, instance_setting, track};
@@ -215,7 +215,11 @@ async fn search_recording(
 }
 
 /// Fetch cover art from Cover Art Archive for a release MBID.
-async fn fetch_cover_art_url(client: &Client, release_mbid: &str, caa_base_url: &str) -> Option<String> {
+async fn fetch_cover_art_url(
+    client: &Client,
+    release_mbid: &str,
+    caa_base_url: &str,
+) -> Option<String> {
     // Rate limit: respect external API policies
     tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
 
@@ -372,7 +376,9 @@ async fn fetch_artist_bio_image(
         tracing::debug!("found wikidata relation: {wd_url}, resolving sitelinks");
         resolve_wikidata_to_wikipedia(client, wd_url).await
     } else {
-        tracing::debug!("no wikipedia/wikidata relation, falling back to artist name: {artist_name}");
+        tracing::debug!(
+            "no wikipedia/wikidata relation, falling back to artist name: {artist_name}"
+        );
         // Fallback: use artist name directly (replace spaces with underscores)
         let title = artist_name.replace(' ', "_");
         Some(("en".to_string(), title))
@@ -385,9 +391,7 @@ async fn fetch_artist_bio_image(
     if let Some((lang, title)) = wiki_article {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-        let summary_url = format!(
-            "https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title}"
-        );
+        let summary_url = format!("https://{lang}.wikipedia.org/api/rest_v1/page/summary/{title}");
         tracing::info!("fetching Wikipedia summary: {summary_url}");
 
         match client.get(&summary_url).send().await {
@@ -468,7 +472,9 @@ async fn resolve_wikidata_to_wikipedia(
 /// Parse a Wikipedia URL into (language_code, article_title).
 /// e.g. "https://en.wikipedia.org/wiki/Daft_Punk" → ("en", "Daft_Punk")
 fn parse_wikipedia_url(url: &str) -> Option<(String, String)> {
-    let url = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let url = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
     let (domain, path) = url.split_once('/')?;
     let lang = domain.split('.').next()?.to_string();
     let title = path.strip_prefix("wiki/")?.to_string();
@@ -479,10 +485,7 @@ fn parse_wikipedia_url(url: &str) -> Option<(String, String)> {
 
 /// Enrich a single track with MusicBrainz metadata.
 /// Returns a `MetadataResult` describing what was found/updated.
-pub async fn enrich_track(
-    db: &DatabaseConnection,
-    track_id: Uuid,
-) -> MetadataResult {
+pub async fn enrich_track(db: &DatabaseConnection, track_id: Uuid) -> MetadataResult {
     let base_result = MetadataResult {
         track_id,
         status: MetadataStatus::Error,
@@ -521,7 +524,10 @@ pub async fn enrich_track(
     }
 
     // 2. Get artist name
-    let artist_model = match artist::Entity::find_by_id(track_model.artist_id).one(db).await {
+    let artist_model = match artist::Entity::find_by_id(track_model.artist_id)
+        .one(db)
+        .await
+    {
         Ok(Some(a)) => a,
         _ => return base_result,
     };
@@ -533,7 +539,14 @@ pub async fn enrich_track(
         Err(_) => return base_result,
     };
 
-    let recording = match search_recording(&client, &track_model.title, &artist_model.name, &mb_base_url).await {
+    let recording = match search_recording(
+        &client,
+        &track_model.title,
+        &artist_model.name,
+        &mb_base_url,
+    )
+    .await
+    {
         Ok(Some(r)) => Some(r),
         Ok(None) => {
             tracing::info!(track_id = %track_id, "MusicBrainz found nothing, will try AI fallback");
@@ -589,7 +602,15 @@ pub async fn enrich_track(
     // Only update title if it looks like a filename or is very generic
     if let Some(ref title) = corrected_title {
         let current = &track_model.title;
-        let looks_like_filename = current.contains('.') && (current.ends_with(".mp3") || current.ends_with(".flac") || current.ends_with(".ogg") || current.ends_with(".wav") || current.ends_with(".m4a") || current.ends_with(".opus") || current.ends_with(".aiff") || current.ends_with(".aif"));
+        let looks_like_filename = current.contains('.')
+            && (current.ends_with(".mp3")
+                || current.ends_with(".flac")
+                || current.ends_with(".ogg")
+                || current.ends_with(".wav")
+                || current.ends_with(".m4a")
+                || current.ends_with(".opus")
+                || current.ends_with(".aiff")
+                || current.ends_with(".aif"));
         if looks_like_filename {
             track_update.title = Set(title.clone());
         }
@@ -610,7 +631,8 @@ pub async fn enrich_track(
 
             // Fetch bio and image from Wikipedia via MusicBrainz relations
             if artist_model.bio.is_none() || artist_model.image_url.is_none() {
-                let (bio, image) = fetch_artist_bio_image(&client, mbid, &artist_model.name, &mb_base_url).await;
+                let (bio, image) =
+                    fetch_artist_bio_image(&client, mbid, &artist_model.name, &mb_base_url).await;
                 if artist_model.bio.is_none() {
                     if let Some(ref bio_text) = bio {
                         artist_update.bio = Set(Some(bio_text.clone()));
@@ -625,7 +647,9 @@ pub async fn enrich_track(
         }
         // Only overwrite artist name if the current one looks generic
         if let Some(ref name) = mb_artist_name {
-            if !name.is_empty() && (artist_model.name == "Unknown Artist" || artist_model.name == "Inconnu") {
+            if !name.is_empty()
+                && (artist_model.name == "Unknown Artist" || artist_model.name == "Inconnu")
+            {
                 artist_update.name = Set(name.clone());
             }
         }
@@ -660,13 +684,14 @@ pub async fn enrich_track(
             // Fetch and store cover art if album has none
             if album_model.cover_url.is_none() {
                 if let Some(ref rel_mbid) = album_mbid {
-                    if let Some(cover_url) = fetch_cover_art_url(&client, rel_mbid, &caa_base_url).await {
+                    if let Some(cover_url) =
+                        fetch_cover_art_url(&client, rel_mbid, &caa_base_url).await
+                    {
                         // Download and store locally
                         if let Some(cover_bytes) = download_cover(&client, &cover_url).await {
                             let storage = AudioStorage::from_env();
                             // Use a deterministic path for the cover
-                            let cover_dir =
-                                format!("covers/{}", album_id);
+                            let cover_dir = format!("covers/{}", album_id);
                             let cover_filename = "cover.jpg";
                             let cover_path = format!("{cover_dir}/{cover_filename}");
                             let full_cover_path = storage.full_path(&cover_path);
@@ -675,7 +700,10 @@ pub async fn enrich_track(
                             if let Some(parent) = full_cover_path.parent() {
                                 let _ = tokio::fs::create_dir_all(parent).await;
                             }
-                            if (tokio::fs::write(&full_cover_path, &cover_bytes).await as Result<(), std::io::Error>).is_ok() {
+                            if (tokio::fs::write(&full_cover_path, &cover_bytes).await
+                                as Result<(), std::io::Error>)
+                                .is_ok()
+                            {
                                 let media_url = format!("/api/media/{cover_path}");
                                 album_update.cover_url = Set(Some(media_url.clone()));
                                 result_cover_url = Some(media_url);
@@ -798,10 +826,7 @@ Fields:
 - "corrected_artist": the corrected/proper artist name (only if the provided name seems wrong)
 
 Respond ONLY with valid JSON, no markdown, no explanation."#,
-        track_model.title,
-        artist_model.name,
-        track_model.format,
-        track_model.duration_secs,
+        track_model.title, artist_model.name, track_model.format, track_model.duration_secs,
     );
 
     let request_body = serde_json::json!({
@@ -880,7 +905,9 @@ Respond ONLY with valid JSON, no markdown, no explanation."#,
     let ai_meta: AiMetadataResponse = match serde_json::from_str(clean) {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!("Failed to parse AI metadata JSON for track {track_id}: {e} — raw: {clean}");
+            tracing::warn!(
+                "Failed to parse AI metadata JSON for track {track_id}: {e} — raw: {clean}"
+            );
             return MetadataResult {
                 status: MetadataStatus::NotFound,
                 ..base_result

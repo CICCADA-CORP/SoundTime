@@ -15,26 +15,20 @@ impl MigrationTrait for Migration {
 
         // ── Drop foreign‐key constraints referencing actors ─────────────
         // Tracks → actors
-        db.execute_unprepared(
-            "ALTER TABLE tracks DROP CONSTRAINT IF EXISTS fk_tracks_actor_id",
-        )
-        .await?;
+        db.execute_unprepared("ALTER TABLE tracks DROP CONSTRAINT IF EXISTS fk_tracks_actor_id")
+            .await?;
         db.execute_unprepared("ALTER TABLE tracks DROP COLUMN IF EXISTS actor_id")
             .await?;
 
         // Artists → actors
-        db.execute_unprepared(
-            "ALTER TABLE artists DROP CONSTRAINT IF EXISTS fk_artists_actor_id",
-        )
-        .await?;
+        db.execute_unprepared("ALTER TABLE artists DROP CONSTRAINT IF EXISTS fk_artists_actor_id")
+            .await?;
         db.execute_unprepared("ALTER TABLE artists DROP COLUMN IF EXISTS actor_id")
             .await?;
 
         // Albums → actors
-        db.execute_unprepared(
-            "ALTER TABLE albums DROP CONSTRAINT IF EXISTS fk_albums_actor_id",
-        )
-        .await?;
+        db.execute_unprepared("ALTER TABLE albums DROP CONSTRAINT IF EXISTS fk_albums_actor_id")
+            .await?;
         db.execute_unprepared("ALTER TABLE albums DROP COLUMN IF EXISTS actor_id")
             .await?;
 

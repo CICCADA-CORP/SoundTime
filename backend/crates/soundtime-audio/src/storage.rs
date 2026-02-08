@@ -67,8 +67,8 @@ impl AudioStorage {
     }
 
     pub fn from_env() -> Self {
-        let base = std::env::var("AUDIO_STORAGE_PATH")
-            .unwrap_or_else(|_| "./data/music".to_string());
+        let base =
+            std::env::var("AUDIO_STORAGE_PATH").unwrap_or_else(|_| "./data/music".to_string());
         Self::new(base)
     }
 
@@ -228,13 +228,8 @@ impl S3Storage {
         bucket: &str,
         prefix: &str,
     ) -> Result<Self, StorageError> {
-        let creds = aws_sdk_s3::config::Credentials::new(
-            access_key,
-            secret_key,
-            None,
-            None,
-            "soundtime",
-        );
+        let creds =
+            aws_sdk_s3::config::Credentials::new(access_key, secret_key, None, None, "soundtime");
 
         let mut config_builder = aws_sdk_s3::Config::builder()
             .region(aws_sdk_s3::config::Region::new(region.to_string()))
@@ -242,16 +237,15 @@ impl S3Storage {
             .behavior_version_latest();
 
         if let Some(ep) = endpoint {
-            config_builder = config_builder
-                .endpoint_url(ep)
-                .force_path_style(true);
+            config_builder = config_builder.endpoint_url(ep).force_path_style(true);
         }
 
         let config = config_builder.build();
         let client = aws_sdk_s3::Client::from_conf(config);
 
         let cache_path = PathBuf::from(
-            std::env::var("S3_CACHE_PATH").unwrap_or_else(|_| "/tmp/soundtime-s3-cache".to_string()),
+            std::env::var("S3_CACHE_PATH")
+                .unwrap_or_else(|_| "/tmp/soundtime-s3-cache".to_string()),
         );
         fs::create_dir_all(&cache_path)
             .await
@@ -401,9 +395,7 @@ impl StorageBackend for S3Storage {
     async fn read_file(&self, relative_path: &str) -> Result<Vec<u8>, StorageError> {
         let cache_file = self.cache_path.join(relative_path);
         if cache_file.exists() {
-            return fs::read(&cache_file)
-                .await
-                .map_err(StorageError::Io);
+            return fs::read(&cache_file).await.map_err(StorageError::Io);
         }
 
         let key = self.s3_key(relative_path);
@@ -495,7 +487,8 @@ pub async fn ensure_local_file(
 }
 
 pub fn sanitize_filename(name: &str) -> String {
-    let sanitized: String = name.chars()
+    let sanitized: String = name
+        .chars()
         .map(|c| match c {
             '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             _ => c,
@@ -657,10 +650,7 @@ mod tests {
             .await
             .unwrap();
 
-        let files = storage
-            .list_files(&user_id.to_string())
-            .await
-            .unwrap();
+        let files = storage.list_files(&user_id.to_string()).await.unwrap();
 
         assert_eq!(files.len(), 2);
     }

@@ -68,18 +68,25 @@ pub async fn list_albums(
         .order_by_desc(album::Column::CreatedAt)
         .paginate(&state.db, per_page);
 
-    let total = paginator.num_items().await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let total = paginator
+        .num_items()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let albums = paginator.fetch_page(page - 1).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let albums = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     let total_pages = (total + per_page - 1) / per_page;
 
     // Batch-fetch artist names
-    let artist_ids: Vec<Uuid> = albums.iter().map(|a| a.artist_id).collect::<std::collections::HashSet<_>>().into_iter().collect();
+    let artist_ids: Vec<Uuid> = albums
+        .iter()
+        .map(|a| a.artist_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
     let artists: std::collections::HashMap<Uuid, String> = if !artist_ids.is_empty() {
         artist::Entity::find()
             .filter(artist::Column::Id.is_in(artist_ids))
@@ -143,13 +150,16 @@ pub async fn get_album(
         }
     });
 
-    let enriched_tracks = tracks.into_iter().map(|t| {
-        let mut resp = super::tracks::TrackResponse::from(t);
-        resp.artist_name = artist_name.clone();
-        resp.album_title = Some(album_model.title.clone());
-        resp.cover_url = album_cover.clone();
-        resp
-    }).collect();
+    let enriched_tracks = tracks
+        .into_iter()
+        .map(|t| {
+            let mut resp = super::tracks::TrackResponse::from(t);
+            resp.artist_name = artist_name.clone();
+            resp.album_title = Some(album_model.title.clone());
+            resp.cover_url = album_cover.clone();
+            resp
+        })
+        .collect();
 
     Ok(Json(AlbumDetailResponse {
         album: AlbumResponse::from_model(album_model, artist_name),
@@ -190,7 +200,10 @@ mod tests {
     fn test_album_cover_url_prepend_api() {
         let model = make_album_model();
         let resp = AlbumResponse::from_model(model, None);
-        assert_eq!(resp.cover_url.as_deref(), Some("/api/media/covers/test.jpg"));
+        assert_eq!(
+            resp.cover_url.as_deref(),
+            Some("/api/media/covers/test.jpg")
+        );
     }
 
     #[test]
@@ -198,7 +211,10 @@ mod tests {
         let mut model = make_album_model();
         model.cover_url = Some("/api/media/covers/test.jpg".into());
         let resp = AlbumResponse::from_model(model, None);
-        assert_eq!(resp.cover_url.as_deref(), Some("/api/media/covers/test.jpg"));
+        assert_eq!(
+            resp.cover_url.as_deref(),
+            Some("/api/media/covers/test.jpg")
+        );
     }
 
     #[test]
@@ -206,7 +222,10 @@ mod tests {
         let mut model = make_album_model();
         model.cover_url = Some("https://example.com/cover.jpg".into());
         let resp = AlbumResponse::from_model(model, None);
-        assert_eq!(resp.cover_url.as_deref(), Some("https://example.com/cover.jpg"));
+        assert_eq!(
+            resp.cover_url.as_deref(),
+            Some("https://example.com/cover.jpg")
+        );
     }
 
     #[test]

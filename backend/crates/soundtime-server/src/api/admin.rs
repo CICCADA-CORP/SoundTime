@@ -14,10 +14,7 @@ use uuid::Uuid;
 
 use crate::auth::middleware::AuthUser;
 use crate::metadata_lookup;
-use soundtime_db::entities::{
-    blocked_domain, instance_setting,
-    remote_track, track, user,
-};
+use soundtime_db::entities::{blocked_domain, instance_setting, remote_track, track, user};
 
 /// Extract p2p node from type-erased state
 fn get_p2p_node(state: &soundtime_db::AppState) -> Option<Arc<soundtime_p2p::P2pNode>> {
@@ -265,7 +262,12 @@ pub async fn import_blocked_domains(
     let existing: std::collections::HashSet<String> = blocked_domain::Entity::find()
         .all(&state.db)
         .await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "DB error"}))))?
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "DB error"})),
+            )
+        })?
         .into_iter()
         .map(|d| d.domain)
         .collect();
@@ -290,7 +292,12 @@ pub async fn import_blocked_domains(
         }
         .insert(&state.db)
         .await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Insert failed"}))))?;
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Insert failed"})),
+            )
+        })?;
 
         imported += 1;
     }
@@ -311,20 +318,12 @@ pub struct AdminStats {
 }
 
 /// GET /api/admin/stats
-pub async fn get_stats(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<AdminStats>, StatusCode> {
+pub async fn get_stats(State(state): State<Arc<AppState>>) -> Result<Json<AdminStats>, StatusCode> {
     use soundtime_db::entities::track;
 
-    let total_users = user::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(0);
+    let total_users = user::Entity::find().count(&state.db).await.unwrap_or(0);
 
-    let total_tracks = track::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(0);
+    let total_tracks = track::Entity::find().count(&state.db).await.unwrap_or(0);
 
     let total_blocked_domains = blocked_domain::Entity::find()
         .count(&state.db)
@@ -603,10 +602,7 @@ pub async fn metadata_status(
 ) -> Result<Json<MetadataStatusResponse>, StatusCode> {
     use soundtime_db::entities::track;
 
-    let total_tracks = track::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(0);
+    let total_tracks = track::Entity::find().count(&state.db).await.unwrap_or(0);
 
     let enriched_tracks = track::Entity::find()
         .filter(track::Column::MusicbrainzId.is_not_null())
@@ -627,10 +623,7 @@ pub async fn metadata_status(
         .await
         .unwrap_or(0);
 
-    let total_albums = album::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(0);
+    let total_albums = album::Entity::find().count(&state.db).await.unwrap_or(0);
 
     let total_remote_tracks = remote_track::Entity::find()
         .count(&state.db)
@@ -788,31 +781,114 @@ pub async fn storage_status(
 }
 
 /// POST /api/admin/storage/integrity-check
+///
+/// Launches the integrity check as a background task and returns immediately.
 pub async fn run_integrity_check(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<crate::storage_worker::IntegrityReport>, (StatusCode, Json<serde_json::Value>)> {
-    let report = crate::storage_worker::run_integrity_check(&state)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e })),
-            )
-        })?;
-    Ok(Json(report))
+    Extension(tracker): Extension<crate::storage_worker::TaskTrackerHandle>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Reject if a task is already running
+    {
+        let lock = tracker.lock().await;
+        if let Some(crate::storage_worker::TaskStatus::Running { .. }) = &*lock {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "A storage task is already running" })),
+            ));
+        }
+    }
+
+    // Mark as running
+    {
+        let mut lock = tracker.lock().await;
+        *lock = Some(crate::storage_worker::TaskStatus::Running {
+            progress: crate::storage_worker::TaskProgress {
+                processed: 0,
+                total: None,
+            },
+        });
+    }
+
+    let tracker_clone = tracker.clone();
+    tokio::spawn(async move {
+        match crate::storage_worker::run_integrity_check(&state, Some(&tracker_clone)).await {
+            Ok(report) => {
+                let mut lock = tracker_clone.lock().await;
+                *lock = Some(crate::storage_worker::TaskStatus::Completed {
+                    result: crate::storage_worker::TaskResult::Integrity(report),
+                });
+            }
+            Err(e) => {
+                let mut lock = tracker_clone.lock().await;
+                *lock = Some(crate::storage_worker::TaskStatus::Error { message: e });
+            }
+        }
+    });
+
+    Ok(Json(
+        serde_json::json!({ "status": "started", "task": "integrity-check" }),
+    ))
 }
 
 /// POST /api/admin/storage/sync
+///
+/// Launches the storage sync as a background task and returns immediately.
 pub async fn run_storage_sync(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<crate::storage_worker::SyncReport>, (StatusCode, Json<serde_json::Value>)> {
-    let report = crate::storage_worker::run_sync(&state)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e })),
-            )
-        })?;
-    Ok(Json(report))
+    Extension(tracker): Extension<crate::storage_worker::TaskTrackerHandle>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Reject if a task is already running
+    {
+        let lock = tracker.lock().await;
+        if let Some(crate::storage_worker::TaskStatus::Running { .. }) = &*lock {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "A storage task is already running" })),
+            ));
+        }
+    }
+
+    // Mark as running
+    {
+        let mut lock = tracker.lock().await;
+        *lock = Some(crate::storage_worker::TaskStatus::Running {
+            progress: crate::storage_worker::TaskProgress {
+                processed: 0,
+                total: None,
+            },
+        });
+    }
+
+    let tracker_clone = tracker.clone();
+    tokio::spawn(async move {
+        match crate::storage_worker::run_sync(&state, Some(&tracker_clone)).await {
+            Ok(report) => {
+                let mut lock = tracker_clone.lock().await;
+                *lock = Some(crate::storage_worker::TaskStatus::Completed {
+                    result: crate::storage_worker::TaskResult::Sync(report),
+                });
+            }
+            Err(e) => {
+                let mut lock = tracker_clone.lock().await;
+                *lock = Some(crate::storage_worker::TaskStatus::Error { message: e });
+            }
+        }
+    });
+
+    Ok(Json(
+        serde_json::json!({ "status": "started", "task": "sync" }),
+    ))
+}
+
+/// GET /api/admin/storage/task-status
+///
+/// Returns the current status of a running or completed storage task.
+pub async fn storage_task_status(
+    Extension(tracker): Extension<crate::storage_worker::TaskTrackerHandle>,
+) -> Json<serde_json::Value> {
+    let lock = tracker.lock().await;
+    match &*lock {
+        Some(status) => Json(serde_json::json!(status)),
+        None => Json(serde_json::json!({ "status": "idle" })),
+    }
 }

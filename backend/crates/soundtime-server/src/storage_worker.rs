@@ -4,12 +4,17 @@
 //!   computes a SHA-256 hash to detect corruption.
 //! - **Sync / import**: scans the storage backend for audio files that
 //!   are not yet referenced in the database and imports them.
+//!
+//! Both operations run as background tasks to avoid HTTP timeouts.
+//! The admin API triggers them asynchronously and polls for results
+//! via `TaskTracker`.
 
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, ActiveModelTrait};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::Serialize;
 use soundtime_db::entities::track;
 use soundtime_db::AppState;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 /// Interval between automatic runs (24 hours).
@@ -43,6 +48,46 @@ pub struct SyncReport {
     pub errors: Vec<String>,
 }
 
+// ─── Async task tracker ────────────────────────────────────────────
+
+/// Status of a background storage task (sync or integrity check).
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status")]
+pub enum TaskStatus {
+    /// Task is currently running.
+    #[serde(rename = "running")]
+    Running { progress: TaskProgress },
+    /// Task completed successfully.
+    #[serde(rename = "completed")]
+    Completed { result: TaskResult },
+    /// Task failed with an error.
+    #[serde(rename = "error")]
+    Error { message: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskProgress {
+    pub processed: u64,
+    pub total: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind")]
+pub enum TaskResult {
+    #[serde(rename = "sync")]
+    Sync(SyncReport),
+    #[serde(rename = "integrity")]
+    Integrity(IntegrityReport),
+}
+
+/// Shared handle to track the current background task.
+pub type TaskTrackerHandle = Arc<Mutex<Option<TaskStatus>>>;
+
+/// Create a new task tracker.
+pub fn new_tracker() -> TaskTrackerHandle {
+    Arc::new(Mutex::new(None))
+}
+
 // ─── Background spawner ────────────────────────────────────────────
 
 pub fn spawn(state: Arc<AppState>) {
@@ -51,7 +96,7 @@ pub fn spawn(state: Arc<AppState>) {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(DAILY_INTERVAL_SECS)).await;
             tracing::info!("storage worker: starting daily integrity check");
-            match run_integrity_check(&state).await {
+            match run_integrity_check(&state, None).await {
                 Ok(report) => {
                     tracing::info!(
                         "integrity check done: {} checked, {} healthy, {} missing",
@@ -64,7 +109,7 @@ pub fn spawn(state: Arc<AppState>) {
             }
 
             tracing::info!("storage worker: starting daily sync");
-            match run_sync(&state).await {
+            match run_sync(&state, None).await {
                 Ok(report) => {
                     tracing::info!(
                         "sync done: {} scanned, {} imported, {} skipped",
@@ -81,11 +126,16 @@ pub fn spawn(state: Arc<AppState>) {
 
 // ─── Integrity check (public for manual trigger) ──────────────────
 
-pub async fn run_integrity_check(state: &AppState) -> Result<IntegrityReport, String> {
+pub async fn run_integrity_check(
+    state: &AppState,
+    tracker: Option<&TaskTrackerHandle>,
+) -> Result<IntegrityReport, String> {
     let all_tracks = track::Entity::find()
         .all(&state.db)
         .await
         .map_err(|e| format!("DB query: {e}"))?;
+
+    let total = all_tracks.len() as u64;
 
     let mut report = IntegrityReport {
         total_checked: 0,
@@ -96,6 +146,19 @@ pub async fn run_integrity_check(state: &AppState) -> Result<IntegrityReport, St
 
     for t in &all_tracks {
         report.total_checked += 1;
+
+        // Update progress every 10 tracks
+        if let Some(tr) = tracker {
+            if report.total_checked % 10 == 0 || report.total_checked == total {
+                let mut lock = tr.lock().await;
+                *lock = Some(TaskStatus::Running {
+                    progress: TaskProgress {
+                        processed: report.total_checked,
+                        total: Some(total),
+                    },
+                });
+            }
+        }
 
         if !state.storage.file_exists(&t.file_path).await {
             report.missing.push(MissingTrack {
@@ -110,10 +173,9 @@ pub async fn run_integrity_check(state: &AppState) -> Result<IntegrityReport, St
         match state.storage.hash_file(&t.file_path).await {
             Ok(_) => report.healthy += 1,
             Err(e) => {
-                report.errors.push(format!(
-                    "Track {} ({}): hash error — {}",
-                    t.id, t.title, e
-                ));
+                report
+                    .errors
+                    .push(format!("Track {} ({}): hash error — {}", t.id, t.title, e));
             }
         }
     }
@@ -123,7 +185,10 @@ pub async fn run_integrity_check(state: &AppState) -> Result<IntegrityReport, St
 
 // ─── Sync / import from storage ────────────────────────────────────
 
-pub async fn run_sync(state: &AppState) -> Result<SyncReport, String> {
+pub async fn run_sync(
+    state: &AppState,
+    tracker: Option<&TaskTrackerHandle>,
+) -> Result<SyncReport, String> {
     let mut report = SyncReport {
         scanned: 0,
         imported: 0,
@@ -147,19 +212,36 @@ pub async fn run_sync(state: &AppState) -> Result<SyncReport, String> {
         .await
         .map_err(|e| format!("list_files: {e}"))?;
 
-    for file_path in all_files {
-        let ext = std::path::Path::new(&file_path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
+    // Pre-filter audio files so we can report accurate totals
+    let audio_files: Vec<String> = all_files
+        .into_iter()
+        .filter(|file_path| {
+            let ext = std::path::Path::new(file_path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            AUDIO_EXTENSIONS.contains(&ext.as_str())
+        })
+        .collect();
 
-        // Skip non-audio files (covers, etc.)
-        if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
-            continue;
-        }
+    let total = audio_files.len() as u64;
 
+    for file_path in audio_files {
         report.scanned += 1;
+
+        // Update progress every 5 files
+        if let Some(tr) = tracker {
+            if report.scanned % 5 == 0 || report.scanned == total {
+                let mut lock = tr.lock().await;
+                *lock = Some(TaskStatus::Running {
+                    progress: TaskProgress {
+                        processed: report.scanned,
+                        total: Some(total),
+                    },
+                });
+            }
+        }
 
         if known_paths.contains(&file_path) {
             report.skipped += 1;
@@ -200,7 +282,10 @@ async fn import_file(state: &AppState, relative_path: &str) -> Result<Uuid, Stri
         .next()
         .and_then(|s| Uuid::parse_str(s).ok());
 
-    let artist_name = meta.artist.clone().unwrap_or_else(|| "Unknown Artist".to_string());
+    let artist_name = meta
+        .artist
+        .clone()
+        .unwrap_or_else(|| "Unknown Artist".to_string());
 
     // Find or create artist
     let artist_id = {
@@ -269,7 +354,8 @@ async fn import_file(state: &AppState, relative_path: &str) -> Result<Uuid, Stri
                     )
                     .await
                 {
-                    let mut update: soundtime_db::entities::album::ActiveModel = result.clone().into();
+                    let mut update: soundtime_db::entities::album::ActiveModel =
+                        result.clone().into();
                     update.cover_url = Set(Some(format!("/api/media/{cover_path}")));
                     let _ = update.update(&state.db).await;
                 }

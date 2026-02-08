@@ -32,7 +32,13 @@ pub const SOUNDTIME_ALPN: &[u8] = b"soundtime/p2p/1";
 /// Sanitize a string for use as a filesystem directory name.
 fn sanitize_for_path(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim()
         .to_string()
@@ -131,9 +137,7 @@ impl P2pConfig {
 
         let secret_key_path = std::env::var("P2P_SECRET_KEY_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| blobs_dir.parent()
-                .unwrap_or(&blobs_dir)
-                .join("secret_key"));
+            .unwrap_or_else(|_| blobs_dir.parent().unwrap_or(&blobs_dir).join("secret_key"));
 
         let bind_port = std::env::var("P2P_BIND_PORT")
             .ok()
@@ -235,8 +239,12 @@ impl P2pNode {
 
         // Bind to the configured port (0 = random)
         if config.bind_port > 0 {
-            builder = builder.bind_addr_v4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, config.bind_port));
-            info!(port = config.bind_port, "binding P2P endpoint to configured port");
+            builder =
+                builder.bind_addr_v4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, config.bind_port));
+            info!(
+                port = config.bind_port,
+                "binding P2P endpoint to configured port"
+            );
         }
 
         let endpoint = builder
@@ -551,7 +559,10 @@ impl P2pNode {
             info!(peer = %peer_id_str, "pinging seed peer");
 
             match self.ping_peer(peer_addr).await {
-                Ok(P2pMessage::Pong { node_id: nid, track_count }) => {
+                Ok(P2pMessage::Pong {
+                    node_id: nid,
+                    track_count,
+                }) => {
                     self.registry.upsert_peer(&nid, None, track_count).await;
                     info!(peer = %nid, %track_count, "seed peer connected and registered");
                     // Exchange peer lists to discover the wider network
@@ -575,7 +586,11 @@ impl P2pNode {
     }
 
     /// Send a message to a specific peer.
-    async fn send_message_to_peer(&self, node_id: NodeId, msg: &P2pMessage) -> Result<(), P2pError> {
+    async fn send_message_to_peer(
+        &self,
+        node_id: NodeId,
+        msg: &P2pMessage,
+    ) -> Result<(), P2pError> {
         let peer_addr = NodeAddr::new(node_id);
         let conn = self
             .endpoint
@@ -702,15 +717,13 @@ impl P2pNode {
                                 let rel = url.strip_prefix("/api/media/").unwrap_or(url);
                                 let full = self.audio_storage_path.join(rel);
                                 match tokio::fs::read(&full).await {
-                                    Ok(data) => {
-                                        match self.publish_cover(Bytes::from(data)).await {
-                                            Ok(h) => Some(h.to_string()),
-                                            Err(e) => {
-                                                warn!("failed to publish cover blob: {e}");
-                                                None
-                                            }
+                                    Ok(data) => match self.publish_cover(Bytes::from(data)).await {
+                                        Ok(h) => Some(h.to_string()),
+                                        Err(e) => {
+                                            warn!("failed to publish cover blob: {e}");
+                                            None
                                         }
-                                    }
+                                    },
                                     Err(_) => None,
                                 }
                             } else {
@@ -1333,12 +1346,7 @@ impl P2pNode {
 
     /// Fetch a cover art blob from a peer, write it to the local audio storage,
     /// and update the album's `cover_url` in the database.
-    async fn sync_cover_for_album(
-        &self,
-        album_id: Uuid,
-        ann: &TrackAnnouncement,
-        peer_id: &str,
-    ) {
+    async fn sync_cover_for_album(&self, album_id: Uuid, ann: &TrackAnnouncement, peer_id: &str) {
         let cover_hash_str = match &ann.cover_hash {
             Some(h) if !h.is_empty() => h.clone(),
             _ => return,
@@ -1369,7 +1377,11 @@ impl P2pNode {
             match self.fetch_track_from_peer(peer_addr, blob_hash).await {
                 Ok(data) => {
                     // Store in blob store
-                    match self.blob_store.import_bytes(data.clone(), BlobFormat::Raw).await {
+                    match self
+                        .blob_store
+                        .import_bytes(data.clone(), BlobFormat::Raw)
+                        .await
+                    {
                         Ok(tag) => std::mem::forget(tag),
                         Err(e) => warn!(hash = %cover_hash_str, "failed to import cover blob: {e}"),
                     }

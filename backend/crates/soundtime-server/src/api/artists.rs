@@ -55,13 +55,15 @@ pub async fn list_artists(
         .order_by_asc(artist::Column::Name)
         .paginate(&state.db, per_page);
 
-    let total = paginator.num_items().await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let total = paginator
+        .num_items()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let artists = paginator.fetch_page(page - 1).await.map_err(|e| {
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}"))
-    })?;
+    let artists = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     let total_pages = (total + per_page - 1) / per_page;
 
@@ -101,12 +103,18 @@ pub async fn get_artist(
 
     Ok(Json(ArtistDetailResponse {
         artist: ArtistResponse::from(artist_model.clone()),
-        albums: albums.into_iter().map(|a| super::albums::AlbumResponse::from_model(a, Some(artist_model.name.clone()))).collect(),
-        tracks: tracks.into_iter().map(|t| {
-            let mut resp = super::tracks::TrackResponse::from(t);
-            resp.artist_name = Some(artist_model.name.clone());
-            resp
-        }).collect(),
+        albums: albums
+            .into_iter()
+            .map(|a| super::albums::AlbumResponse::from_model(a, Some(artist_model.name.clone())))
+            .collect(),
+        tracks: tracks
+            .into_iter()
+            .map(|t| {
+                let mut resp = super::tracks::TrackResponse::from(t);
+                resp.artist_name = Some(artist_model.name.clone());
+                resp
+            })
+            .collect(),
     }))
 }
 

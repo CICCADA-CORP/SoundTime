@@ -20,7 +20,12 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(Deliveries::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(Deliveries::Id).uuid().not_null().primary_key())
+                    .col(
+                        ColumnDef::new(Deliveries::Id)
+                            .uuid()
+                            .not_null()
+                            .primary_key(),
+                    )
                     .col(ColumnDef::new(Deliveries::ActivityId).uuid().not_null())
                     .col(
                         ColumnDef::new(Deliveries::InboxUrl)

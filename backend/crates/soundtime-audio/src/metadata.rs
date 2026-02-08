@@ -33,7 +33,9 @@ pub struct AudioMetadata {
 }
 
 /// Supported audio formats
-const SUPPORTED_EXTENSIONS: &[&str] = &["mp3", "flac", "ogg", "wav", "aac", "opus", "m4a", "aif", "aiff"];
+const SUPPORTED_EXTENSIONS: &[&str] = &[
+    "mp3", "flac", "ogg", "wav", "aac", "opus", "m4a", "aif", "aiff",
+];
 
 /// Check if a file extension is supported
 pub fn is_supported_format(extension: &str) -> bool {
@@ -63,14 +65,13 @@ pub fn extract_metadata_from_file(path: &Path) -> Result<AudioMetadata, Metadata
     let channels = properties.channels();
 
     // Extract tags (try primary tag first, then others)
-    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
+    let tag = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag());
 
     let (title, artist, album, genre, year, track_number, disc_number, cover_art) =
         if let Some(tag) = tag {
-            let cover = tag
-                .pictures()
-                .first()
-                .map(|p| p.data().to_vec());
+            let cover = tag.pictures().first().map(|p| p.data().to_vec());
 
             (
                 tag.title().map(|t| t.to_string()),

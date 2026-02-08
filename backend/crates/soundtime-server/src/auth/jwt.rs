@@ -84,10 +84,7 @@ pub fn generate_token_pair(
 }
 
 /// Validate a JWT token and return claims
-pub fn validate_token(
-    token: &str,
-    secret: &str,
-) -> Result<Claims, jsonwebtoken::errors::Error> {
+pub fn validate_token(token: &str, secret: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
     let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
@@ -197,7 +194,10 @@ mod tests {
         let user_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let pair = generate_token_pair(user_id, "testuser", "user", SECRET).unwrap();
         let claims = validate_token(&pair.access_token, SECRET).unwrap();
-        assert_eq!(claims.sub.to_string(), "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(
+            claims.sub.to_string(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
     }
 
     #[test]

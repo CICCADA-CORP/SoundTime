@@ -36,12 +36,16 @@ pub async fn convert_aiff_to_flac(input: &Path) -> Result<PathBuf, ConvertError>
             "-i",
             input.to_str().unwrap_or_default(),
             // Copy all metadata (tags, cover art)
-            "-map_metadata", "0",
+            "-map_metadata",
+            "0",
             // FLAC codec with high compression
-            "-c:a", "flac",
-            "-compression_level", "8",
+            "-c:a",
+            "flac",
+            "-compression_level",
+            "8",
             // Also copy attached images (cover art)
-            "-c:v", "copy",
+            "-c:v",
+            "copy",
             // Overwrite without asking
             "-y",
             output.to_str().unwrap_or_default(),

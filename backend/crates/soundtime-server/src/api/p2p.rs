@@ -45,9 +45,7 @@ pub struct MessageResponse {
 // ── Handlers ────────────────────────────────────────────────────
 
 /// GET /api/p2p/status — P2P node status (public, gated by instance privacy)
-pub async fn p2p_status(
-    State(state): State<Arc<AppState>>,
-) -> Json<P2pStatus> {
+pub async fn p2p_status(State(state): State<Arc<AppState>>) -> Json<P2pStatus> {
     let Some(node) = get_p2p_node(&state) else {
         return Json(P2pStatus {
             enabled: false,
@@ -76,9 +74,7 @@ pub async fn p2p_status(
 }
 
 /// GET /api/admin/p2p/peers — list known peers (admin only)
-pub async fn list_peers(
-    State(state): State<Arc<AppState>>,
-) -> Json<Vec<PeerInfo>> {
+pub async fn list_peers(State(state): State<Arc<AppState>>) -> Json<Vec<PeerInfo>> {
     let Some(node) = get_p2p_node(&state) else {
         return Json(vec![]);
     };
@@ -93,29 +89,42 @@ pub async fn add_peer(
     Json(payload): Json<AddPeerRequest>,
 ) -> Result<Json<MessageResponse>, (StatusCode, Json<MessageResponse>)> {
     let Some(node) = get_p2p_node(&state) else {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, Json(MessageResponse {
-            message: "P2P node is not enabled".to_string(),
-        })));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(MessageResponse {
+                message: "P2P node is not enabled".to_string(),
+            }),
+        ));
     };
 
-    let node_id: soundtime_p2p::NodeId = payload
-        .node_id
-        .parse()
-        .map_err(|_| (StatusCode::BAD_REQUEST, Json(MessageResponse {
-            message: "Invalid node ID format".to_string(),
-        })))?;
+    let node_id: soundtime_p2p::NodeId = payload.node_id.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(MessageResponse {
+                message: "Invalid node ID format".to_string(),
+            }),
+        )
+    })?;
 
     let peer_addr = soundtime_p2p::NodeAddr::new(node_id);
     match node.ping_peer(peer_addr).await {
-        Ok(P2pMessage::Pong { node_id: peer_nid, track_count }) => {
-            node.registry().upsert_peer(&peer_nid, None, track_count).await;
+        Ok(P2pMessage::Pong {
+            node_id: peer_nid,
+            track_count,
+        }) => {
+            node.registry()
+                .upsert_peer(&peer_nid, None, track_count)
+                .await;
             // Trigger peer exchange in background to discover wider network
             let p2p_clone = Arc::clone(&node);
             tokio::spawn(async move {
                 p2p_clone.discover_via_peer(node_id).await;
             });
             Ok(Json(MessageResponse {
-                message: format!("peer {} added and responded to ping ({} tracks)", payload.node_id, track_count),
+                message: format!(
+                    "peer {} added and responded to ping ({} tracks)",
+                    payload.node_id, track_count
+                ),
             }))
         }
         Ok(_) => {
@@ -143,16 +152,22 @@ pub async fn ping_peer(
     Path(peer_node_id): Path<String>,
 ) -> Result<Json<MessageResponse>, (StatusCode, Json<MessageResponse>)> {
     let Some(node) = get_p2p_node(&state) else {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, Json(MessageResponse {
-            message: "P2P node is not enabled".to_string(),
-        })));
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(MessageResponse {
+                message: "P2P node is not enabled".to_string(),
+            }),
+        ));
     };
 
-    let node_id: soundtime_p2p::NodeId = peer_node_id
-        .parse()
-        .map_err(|_| (StatusCode::BAD_REQUEST, Json(MessageResponse {
-            message: "Invalid node ID format".to_string(),
-        })))?;
+    let node_id: soundtime_p2p::NodeId = peer_node_id.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(MessageResponse {
+                message: "Invalid node ID format".to_string(),
+            }),
+        )
+    })?;
 
     let peer_addr = soundtime_p2p::NodeAddr::new(node_id);
     match node.ping_peer(peer_addr).await {
@@ -204,9 +219,7 @@ pub struct NetworkGraph {
 }
 
 /// GET /api/p2p/network-graph — P2P network topology for D3 visualization
-pub async fn network_graph(
-    State(state): State<Arc<AppState>>,
-) -> Json<NetworkGraph> {
+pub async fn network_graph(State(state): State<Arc<AppState>>) -> Json<NetworkGraph> {
     let Some(node) = get_p2p_node(&state) else {
         return Json(NetworkGraph {
             nodes: vec![],
@@ -218,7 +231,11 @@ pub async fn network_graph(
     let mut links = Vec::new();
 
     let node_id = node.node_id().to_string();
-    let short_id = if node_id.len() > 8 { &node_id[..8] } else { &node_id };
+    let short_id = if node_id.len() > 8 {
+        &node_id[..8]
+    } else {
+        &node_id
+    };
 
     // Self node (always present)
     nodes.push(NetworkGraphNode {

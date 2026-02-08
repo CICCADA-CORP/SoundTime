@@ -87,11 +87,7 @@ impl PeerRegistry {
     /// Get online peers only.
     pub async fn online_peers(&self) -> Vec<PeerInfo> {
         let peers = self.peers.read().await;
-        peers
-            .values()
-            .filter(|p| p.is_online)
-            .cloned()
-            .collect()
+        peers.values().filter(|p| p.is_online).cloned().collect()
     }
 
     /// Get a specific peer by node_id.
@@ -128,13 +124,8 @@ pub async fn add_and_ping_peer(
             node_id,
             track_count,
         }) => {
-            registry
-                .upsert_peer(&node_id, None, track_count)
-                .await;
-            let info = registry
-                .get_peer(&node_id)
-                .await
-                .expect("just inserted");
+            registry.upsert_peer(&node_id, None, track_count).await;
+            let info = registry.get_peer(&node_id).await.expect("just inserted");
             Ok(info)
         }
         Ok(_) => {
@@ -191,7 +182,9 @@ mod tests {
         let registry = PeerRegistry::new();
 
         // Insert a peer
-        registry.upsert_peer("peer1", Some("Alpha".to_string()), 10).await;
+        registry
+            .upsert_peer("peer1", Some("Alpha".to_string()), 10)
+            .await;
         assert_eq!(registry.peer_count().await, 1);
 
         // Read it back

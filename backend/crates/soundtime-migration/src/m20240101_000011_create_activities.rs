@@ -13,7 +13,12 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(Activities::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(Activities::Id).uuid().not_null().primary_key())
+                    .col(
+                        ColumnDef::new(Activities::Id)
+                            .uuid()
+                            .not_null()
+                            .primary_key(),
+                    )
                     .col(ColumnDef::new(Activities::ActorId).uuid().not_null())
                     .col(
                         ColumnDef::new(Activities::ActivityType)
