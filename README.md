@@ -17,6 +17,12 @@
 </p>
 
 <p align="center">
+  <a href="https://discord.gg/UVCZCNcJvM">
+    <img src="https://img.shields.io/badge/Discord-Join%20the%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join Discord" />
+  </a>
+</p>
+
+<p align="center">
   <a href="#features">Features</a> •
   <a href="#screenshots">Screenshots</a> •
   <a href="#quick-start">Quick Start</a> •
@@ -24,6 +30,7 @@
   <a href="docs/api-reference.md">API Reference</a> •
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
+
 
 ---
 
@@ -235,7 +242,7 @@ We welcome contributions of all kinds! Whether you're fixing a typo, adding a fe
 - 🔐 Security issue? See our [Security Policy](SECURITY.md)
 
 ## Community
-
+- 🎮 [**Join our Discord**](https://discord.gg/UVCZCNcJvM) — Chat with the developers, get support, and share feedback
 - 📋 [GitHub Issues](https://github.com/CICCADA-CORP/SoundTime/issues) — Bug reports & feature requests
 - 💬 [GitHub Discussions](https://github.com/CICCADA-CORP/SoundTime/discussions) — Questions & ideas
 
