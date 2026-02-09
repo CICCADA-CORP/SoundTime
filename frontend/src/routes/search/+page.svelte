@@ -9,15 +9,16 @@
 
   let results: SearchResults = { tracks: [], albums: [], artists: [], total: 0 };
   let loading = true;
-  let query = "";
 
-  $: query = $page.url.searchParams.get("q") ?? "";
+  let query = $derived($page.url.searchParams.get("q") ?? "");
 
   onMount(async () => {
     await doSearch();
   });
 
-  $: if (query) doSearch();
+  $effect(() => {
+    if (query) doSearch();
+  });
 
   async function doSearch() {
     if (!query) { loading = false; return; }

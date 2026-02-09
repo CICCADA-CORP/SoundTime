@@ -1,5 +1,5 @@
 <script lang="ts">
-  export let instance: string = "";
+  let { instance = "" }: { instance?: string } = $props();
 </script>
 
 <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-purple-500/20 text-purple-400 border border-purple-500/30">

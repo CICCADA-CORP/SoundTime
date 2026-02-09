@@ -1,10 +1,9 @@
 <script lang="ts">
   import { api } from "$lib/api";
   import type { UploadResponse } from "$lib/types";
-  import { createEventDispatcher } from "svelte";
   import { Upload, X, CheckCircle, AlertCircle, Music } from "lucide-svelte";
 
-  const dispatch = createEventDispatcher<{ uploaded: UploadResponse }>();
+  let { onuploaded }: { onuploaded?: (result: UploadResponse) => void } = $props();
 
   interface FileQueueItem {
     file: File;
@@ -97,7 +96,7 @@
       next.progress = 100;
       next.result = result;
       queue = [...queue];
-      dispatch("uploaded", result);
+      onuploaded?.(result);
     } catch (e) {
       next.status = "error";
       next.error = e instanceof Error ? e.message : "Upload failed";

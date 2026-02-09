@@ -46,7 +46,7 @@
   {:else if history.length > 0}
     <div class="space-y-1">
       {#each history as entry}
-        <button class="w-full flex items-center gap-4 px-4 py-3 rounded-lg hover:bg-[hsl(var(--secondary))] transition text-left" on:click={() => entry.track && player.play(entry.track as any)}>
+        <button class="w-full flex items-center gap-4 px-4 py-3 rounded-lg hover:bg-[hsl(var(--secondary))] transition text-left" onclick={() => entry.track && player.play(entry.track as any)}>
           <div class="flex-1 min-w-0">
             <p class="text-sm font-medium truncate">{entry.track?.title ?? "Unknown"}</p>
             <p class="text-xs text-[hsl(var(--muted-foreground))]">{entry.track?.artist_name ?? ""}</p>

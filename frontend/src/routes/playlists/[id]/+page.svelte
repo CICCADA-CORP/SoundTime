@@ -17,7 +17,7 @@
   let error: string | null = null;
   let success: string | null = null;
 
-  $: isOwner = playlist && auth.user && (playlist as any).user_id === auth.user.id;
+  let isOwner = $derived(playlist && auth.user && (playlist as any).user_id === auth.user.id);
 
   onMount(async () => {
     const id = $page.params.id;
@@ -122,20 +122,20 @@
     </div>
 
     <div class="flex gap-3">
-      <button aria-label="Play all" class="w-12 h-12 rounded-full bg-[hsl(var(--primary))] text-white flex items-center justify-center hover:scale-105 transition" on:click={playAll}>
+      <button aria-label="Play all" class="w-12 h-12 rounded-full bg-[hsl(var(--primary))] text-white flex items-center justify-center hover:scale-105 transition" onclick={playAll}>
         <svg class="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
 
       {#if isOwner}
         <button
           class="px-4 py-2 bg-[hsl(var(--secondary))] hover:opacity-90 rounded-lg text-sm font-medium transition"
-          on:click={() => { editing = !editing; success = null; }}
+          onclick={() => { editing = !editing; success = null; }}
         >
           {editing ? "Annuler" : "Modifier"}
         </button>
         <button
           class="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg text-sm font-medium transition"
-          on:click={deletePlaylist}
+          onclick={deletePlaylist}
           disabled={deleting}
         >
           {deleting ? "Suppression..." : "Supprimer"}
@@ -145,7 +145,7 @@
 
     <!-- Edit Form -->
     {#if editing && isOwner}
-      <form class="bg-[hsl(var(--card))] rounded-lg p-6 space-y-4" on:submit|preventDefault={saveEdit}>
+      <form class="bg-[hsl(var(--card))] rounded-lg p-6 space-y-4" onsubmit={(e) => { e.preventDefault(); saveEdit(); }}>
         <div>
           <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-name">Nom</label>
           <input id="edit-name" type="text" bind:value={editForm.name} class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />

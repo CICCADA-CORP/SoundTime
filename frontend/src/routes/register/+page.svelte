@@ -42,7 +42,7 @@
       <p class="text-sm text-[hsl(var(--muted-foreground))] mt-2">{t('auth.registerSubtitle')}</p>
     </div>
 
-    <form class="space-y-4" on:submit|preventDefault={handleRegister}>
+    <form class="space-y-4" onsubmit={(e) => { e.preventDefault(); handleRegister(); }}>
       <div>
         <label for="email" class="text-sm font-medium block mb-1">{t('auth.email')}</label>
         <input id="email" type="email" bind:value={email} required class="w-full px-4 py-2.5 rounded-lg bg-[hsl(var(--secondary))] text-sm border border-[hsl(var(--border))] outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />

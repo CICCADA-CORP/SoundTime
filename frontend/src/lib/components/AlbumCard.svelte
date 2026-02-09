@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Album } from "$lib/types";
 
-  export let album: Album;
+  let { album }: { album: Album } = $props();
 </script>
 
 <a href="/albums/{album.id}" class="group block">

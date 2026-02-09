@@ -7,8 +7,8 @@
   const auth = getAuthStore();
   let uploads: UploadResponse[] = [];
 
-  function handleUploaded(e: CustomEvent<UploadResponse>) {
-    uploads = [e.detail, ...uploads];
+  function handleUploaded(result: UploadResponse) {
+    uploads = [result, ...uploads];
   }
 </script>
 
@@ -23,7 +23,7 @@
       <a href="/login" class="inline-block px-6 py-2 bg-[hsl(var(--primary))] text-white rounded-full text-sm font-medium">Sign In</a>
     </div>
   {:else}
-    <UploadDropzone on:uploaded={handleUploaded} />
+    <UploadDropzone onuploaded={handleUploaded} />
 
     {#if uploads.length > 0}
       <div class="space-y-3">

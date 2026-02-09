@@ -32,7 +32,7 @@
       <p class="text-sm text-[hsl(var(--muted-foreground))] mt-2">{t('auth.loginSubtitle')}</p>
     </div>
 
-    <form class="space-y-4" on:submit|preventDefault={handleLogin}>
+    <form class="space-y-4" onsubmit={(e) => { e.preventDefault(); handleLogin(); }}>
       <div>
         <label for="username" class="text-sm font-medium block mb-1">{t('auth.username')}</label>
         <input id="username" type="text" bind:value={username} required class="w-full px-4 py-2.5 rounded-lg bg-[hsl(var(--secondary))] text-sm border border-[hsl(var(--border))] outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />

@@ -1,12 +1,14 @@
 <script lang="ts">
-  export let data: number[] = [];
-  export let progress = 0;
-  export let height = 60;
+  let { data = [], progress = 0, height = 60 }: {
+    data?: number[];
+    progress?: number;
+    height?: number;
+  } = $props();
 
-  let containerWidth = 0;
+  let containerWidth = $state(0);
 
-  $: barWidth = data.length > 0 ? Math.max(1, containerWidth / data.length - 1) : 2;
-  $: progressPercent = progress * 100;
+  let barWidth = $derived(data.length > 0 ? Math.max(1, containerWidth / data.length - 1) : 2);
+  let progressPercent = $derived(progress * 100);
 </script>
 
 <div class="w-full relative" style="height: {height}px" bind:clientWidth={containerWidth}>

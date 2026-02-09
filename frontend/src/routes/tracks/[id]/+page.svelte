@@ -21,7 +21,7 @@
   let reportError = "";
   let reportSuccess = "";
 
-  $: isOwner = credits?.uploaded_by && auth.user?.id === credits.uploaded_by;
+  let isOwner = $derived(credits?.uploaded_by && auth.user?.id === credits.uploaded_by);
 
   onMount(async () => {
     const id = $page.params.id;
@@ -128,13 +128,13 @@
       <div class="flex gap-3">
         <button
           class="px-4 py-2 bg-[hsl(var(--secondary))] hover:opacity-90 rounded-lg text-sm font-medium transition"
-          on:click={() => { editing = !editing; success = null; }}
+          onclick={() => { editing = !editing; success = null; }}
         >
           {editing ? "Annuler" : "Modifier les métadonnées"}
         </button>
         <button
           class="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg text-sm font-medium transition"
-          on:click={deleteTrack}
+          onclick={deleteTrack}
           disabled={deleting}
         >
           {deleting ? "Suppression..." : "Supprimer le morceau"}
@@ -161,18 +161,18 @@
             ></textarea>
             <p class="text-xs text-[hsl(var(--muted-foreground))] text-right">{reportReason.length}/500</p>
             <div class="flex gap-3">
-              <button class="px-4 py-2 text-sm rounded-lg bg-[hsl(var(--secondary))] hover:opacity-80 transition" on:click={() => showReportForm = false}>Annuler</button>
+              <button class="px-4 py-2 text-sm rounded-lg bg-[hsl(var(--secondary))] hover:opacity-80 transition" onclick={() => showReportForm = false}>Annuler</button>
               <button
                 class="px-4 py-2 text-sm rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 font-medium transition disabled:opacity-50"
                 disabled={!reportReason.trim()}
-                on:click={submitReport}
+                onclick={submitReport}
               >Envoyer</button>
             </div>
           </div>
         {:else}
           <button
             class="px-4 py-2 text-sm rounded-lg border border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:text-red-400 hover:border-red-400/30 transition flex items-center gap-2"
-            on:click={() => showReportForm = true}
+            onclick={() => showReportForm = true}
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3v18m0-18l9 6-9 6"/></svg>
             Signaler cette piste
@@ -183,7 +183,7 @@
 
     <!-- Edit Form -->
     {#if editing && isOwner}
-      <form class="bg-[hsl(var(--card))] rounded-lg p-6 space-y-4" on:submit|preventDefault={saveEdit}>
+      <form class="bg-[hsl(var(--card))] rounded-lg p-6 space-y-4" onsubmit={(e) => { e.preventDefault(); saveEdit(); }}>
         <div>
           <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-title">Titre</label>
           <input id="edit-title" type="text" bind:value={editForm.title} class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />

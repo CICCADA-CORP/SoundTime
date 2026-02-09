@@ -22,7 +22,7 @@
     if (album?.tracks) queue.playQueue(album.tracks);
   }
 
-  $: totalDuration = album?.tracks?.reduce((sum, t) => sum + t.duration_secs, 0) ?? 0;
+  let totalDuration = $derived(album?.tracks?.reduce((sum, t) => sum + t.duration_secs, 0) ?? 0);
 </script>
 
 <svelte:head><title>{album?.title ?? "Album"} — SoundTime</title></svelte:head>
@@ -54,7 +54,7 @@
     </div>
 
     <div class="flex gap-3">
-      <button aria-label="Play all" class="w-12 h-12 rounded-full bg-[hsl(var(--primary))] text-white flex items-center justify-center hover:scale-105 transition" on:click={playAll}>
+      <button aria-label="Play all" class="w-12 h-12 rounded-full bg-[hsl(var(--primary))] text-white flex items-center justify-center hover:scale-105 transition" onclick={playAll}>
         <svg class="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
       </button>
     </div>

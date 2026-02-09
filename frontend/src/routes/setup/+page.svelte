@@ -186,7 +186,7 @@
           </p>
         </div>
 
-        <form on:submit|preventDefault={handleCreateAdmin} class="space-y-4">
+        <form onsubmit={(e) => { e.preventDefault(); handleCreateAdmin(); }} class="space-y-4">
           <div>
             <label for="username" class="block text-sm font-medium mb-1.5">Nom d'utilisateur</label>
             <input
@@ -264,7 +264,7 @@
           </p>
         </div>
 
-        <form on:submit|preventDefault={handleConfigureInstance} class="space-y-4">
+        <form onsubmit={(e) => { e.preventDefault(); handleConfigureInstance(); }} class="space-y-4">
           <div>
             <label for="instance-name" class="block text-sm font-medium mb-1.5">Nom de l'instance</label>
             <input
@@ -291,7 +291,7 @@
           <div class="flex gap-3">
             <button
               type="button"
-              on:click={() => { currentStep = 1; error = ''; }}
+              onclick={() => { currentStep = 1; error = ''; }}
               class="flex-1 py-2.5 bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-md font-medium hover:opacity-90 transition"
             >
               Retour
@@ -390,14 +390,14 @@
         <div class="flex gap-3 mt-6">
           <button
             type="button"
-            on:click={() => { currentStep = 2; error = ''; }}
+            onclick={() => { currentStep = 2; error = ''; }}
             class="flex-1 py-2.5 bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-md font-medium hover:opacity-90 transition"
           >
             Retour
           </button>
           <button
             type="button"
-            on:click={handleComplete}
+            onclick={handleComplete}
             disabled={submitting}
             class="flex-1 py-2.5 bg-[hsl(var(--primary))] text-white rounded-md font-medium hover:opacity-90 transition disabled:opacity-50"
           >

@@ -18,14 +18,6 @@ vi.mock('$lib/api', () => ({
   api: mockApi,
 }));
 
-vi.mock('svelte', async () => {
-  const actual = await vi.importActual('svelte');
-  return {
-    ...actual,
-    createEventDispatcher: () => vi.fn(),
-  };
-});
-
 vi.mock('lucide-svelte', () => {
   const noop = function($$anchor: any, $$props?: any) {};
   return {
