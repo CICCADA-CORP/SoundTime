@@ -253,21 +253,24 @@ Respond ONLY with valid JSON in this exact format:
         .send()
         .await
         .map_err(|e| {
-            tracing::error!("AI API request failed: {e}");
+            tracing::error!("AI API request failed (details redacted)");
+            tracing::debug!("AI API request error kind: {:?}", e.without_url());
             (
                 StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({ "error": format!("AI API request failed: {e}") })),
+                Json(serde_json::json!({ "error": "AI API request failed" })),
             )
         })?;
 
     if !ai_response.status().is_success() {
         let status = ai_response.status();
         let body = ai_response.text().await.unwrap_or_default();
-        tracing::error!("AI API error {status}: {body}");
+        let truncated = if body.len() > 200 { &body[..200] } else { &body };
+        tracing::error!(%status, "AI API returned error");
+        tracing::debug!(body = truncated, "AI API error response (truncated)");
         return Err((
             StatusCode::BAD_GATEWAY,
             Json(
-                serde_json::json!({ "error": format!("AI API returned status {status}: {body}") }),
+                serde_json::json!({ "error": format!("AI API returned status {status}") }),
             ),
         ));
     }
@@ -299,7 +302,13 @@ Respond ONLY with valid JSON in this exact format:
     }
 
     let ai_playlists: Vec<AiPlaylist> = serde_json::from_str(clean_content).map_err(|e| {
-        tracing::error!("Failed to parse AI playlists JSON: {e}. Content: {clean_content}");
+        let preview = if clean_content.len() > 200 {
+            &clean_content[..200]
+        } else {
+            clean_content
+        };
+        tracing::error!("Failed to parse AI playlists JSON: {e}");
+        tracing::debug!(content_preview = preview, "AI response content (truncated)");
         (
             StatusCode::BAD_GATEWAY,
             Json(serde_json::json!({ "error": format!("AI returned invalid JSON: {e}") })),
@@ -430,7 +439,7 @@ Respond ONLY with valid JSON in this exact format:
 }
 
 /// GET /api/admin/editorial/status — check AI config and last generation time
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct EditorialStatus {
     pub ai_configured: bool,
     pub ai_base_url: String,
@@ -698,12 +707,15 @@ Respond ONLY with valid JSON in this exact format:
         .json(&request_body)
         .send()
         .await
-        .map_err(|e| format!("AI API request failed: {e}"))?;
+        .map_err(|e| {
+            tracing::debug!("AI API request error kind: {:?}", e.without_url());
+            "AI API request failed".to_string()
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("AI API returned {status}: {body}"));
+        let _body = resp.text().await.unwrap_or_default();
+        return Err(format!("AI API returned status {status}"));
     }
 
     let ai_body: serde_json::Value = resp
