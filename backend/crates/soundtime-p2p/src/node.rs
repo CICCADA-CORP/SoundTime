@@ -10,6 +10,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
@@ -27,6 +28,7 @@ use crate::discovery::PeerRegistry;
 use crate::error::P2pError;
 use crate::musicbrainz::MusicBrainzClient;
 use crate::search_index::{BloomFilterData, SearchIndex};
+use crate::track_health::{spawn_health_monitor, PeerTrackInfo, TrackFetcher, TrackHealthManager};
 
 /// ALPN protocol identifier for SoundTime P2P
 pub const SOUNDTIME_ALPN: &[u8] = b"soundtime/p2p/1";
@@ -399,6 +401,17 @@ impl P2pNode {
                     }
                 }
             });
+        }
+
+        // Spawn periodic health monitor for remote tracks
+        {
+            let node_clone: Arc<P2pNode> = Arc::clone(&node);
+            let health_manager = Arc::new(TrackHealthManager::new());
+            let shutdown_rx = node.shutdown_tx.subscribe();
+            let db_clone = node_clone.db.clone();
+            // TrackFetcher is implemented for Arc<P2pNode>, so we wrap in Arc
+            let fetcher: Arc<Arc<P2pNode>> = Arc::new(node_clone);
+            spawn_health_monitor(health_manager, fetcher, db_clone, shutdown_rx);
         }
 
         info!("P2P node started successfully");
@@ -1991,6 +2004,78 @@ impl P2pNode {
         } else {
             info!(%album_id, %cover_url, "album cover synced from peer");
         }
+    }
+}
+
+// ── TrackFetcher implementation for P2pNode ──────────────────────────
+
+#[async_trait]
+impl TrackFetcher for Arc<P2pNode> {
+    async fn fetch_track(&self, peer_id: &str, hash: &str) -> Result<Bytes, P2pError> {
+        let nid: EndpointId = peer_id
+            .parse()
+            .map_err(|_| P2pError::Connection(format!("invalid peer id: {}", peer_id)))?;
+        let peer_addr = EndpointAddr::new(nid);
+
+        let blob_hash: Hash = hash
+            .parse()
+            .map_err(|_| P2pError::TrackNotFound(format!("invalid hash: {}", hash)))?;
+
+        self.fetch_track_from_peer(peer_addr, blob_hash).await
+    }
+
+    async fn check_blob_exists(&self, hash: &str) -> bool {
+        if let Ok(h) = hash.parse::<Hash>() {
+            self.has_blob(h).await
+        } else {
+            false
+        }
+    }
+
+    async fn peer_is_online(&self, peer_id: &str) -> bool {
+        self.registry
+            .get_peer(peer_id)
+            .await
+            .map(|p| p.is_online)
+            .unwrap_or(false)
+    }
+
+    async fn alternative_sources(&self, hash: &str) -> Vec<PeerTrackInfo> {
+        // Query remote_tracks that share the same content hash
+        use sea_orm::QueryFilter;
+
+        let remotes = remote_track::Entity::find()
+            .filter(remote_track::Column::RemoteUri.ends_with(format!("/{}", hash)))
+            .all(&self.db)
+            .await
+            .unwrap_or_default();
+
+        let mut sources = Vec::new();
+        for rt in remotes {
+            let origin = rt
+                .instance_domain
+                .strip_prefix("p2p://")
+                .unwrap_or(&rt.instance_domain)
+                .to_string();
+
+            let is_online = self
+                .registry
+                .get_peer(&origin)
+                .await
+                .map(|p| p.is_online)
+                .unwrap_or(false);
+
+            sources.push(PeerTrackInfo {
+                peer_id: origin,
+                format: rt.format.unwrap_or_default(),
+                bitrate: rt.bitrate,
+                sample_rate: rt.sample_rate,
+                is_online,
+                file_size: 0,
+            });
+        }
+
+        sources
     }
 }
 

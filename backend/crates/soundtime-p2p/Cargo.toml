@@ -24,6 +24,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 urlencoding = "2"
 anyhow = "1"
 tokio-util = { version = "0.7", features = ["io"] }
+async-trait = "0.1"
 
 soundtime-db = { path = "../soundtime-db" }
 soundtime-audio = { path = "../soundtime-audio" }

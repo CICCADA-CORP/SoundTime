@@ -12,12 +12,18 @@ pub mod error;
 pub mod musicbrainz;
 pub mod node;
 pub mod search_index;
+pub mod track_health;
 
 pub use discovery::{PeerInfo, PeerRegistry};
 pub use error::P2pError;
 pub use musicbrainz::MusicBrainzClient;
 pub use node::{P2pConfig, P2pMessage, P2pNode, SearchResultItem, TrackAnnouncement};
 pub use search_index::{BloomFilterData, SearchIndex};
+pub use track_health::{
+    auto_repair_on_failure, persist_track_status, run_health_sweep, spawn_health_monitor,
+    BatchCheckResult, HealthMonitorConfig, HealthStatus, PeerTrackInfo, RecoveryResult,
+    TrackCheckItem, TrackFetcher, TrackHealthManager,
+};
 
 // Re-export iroh types needed by consumers
 pub use iroh::{EndpointAddr, EndpointId};
