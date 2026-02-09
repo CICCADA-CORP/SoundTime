@@ -305,7 +305,7 @@ export default {
   "admin.settings.publicListingDesc": "将此实例发布到 SoundTime 公共节点目录。其他用户可以发现您的实例。",
   "admin.settings.publicListingActive": "此实例已在 SoundTime 公共目录中列出，所有人均可见。",
   "admin.settings.listingUrl": "目录服务器 URL",
-  "admin.settings.listingUrlDesc": "要注册的目录服务器 URL。任何人都可以托管自己的目录服务器。默认：https://listing.soundtime.app",
+  "admin.settings.listingUrlDesc": "要注册的目录服务器 URL。任何人都可以托管自己的目录服务器。默认：https://soundtime-listing-production.up.railway.app",
   "admin.blocked.domainPlaceholder": "节点 ID 或域名",
   "admin.blocked.reasonPlaceholder": "原因（可选）",
   "admin.blocked.block": "屏蔽",

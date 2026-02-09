@@ -14,7 +14,7 @@ use uuid::Uuid;
 const HEARTBEAT_INTERVAL_SECS: u64 = 300;
 
 /// Default listing server URL.
-const DEFAULT_LISTING_URL: &str = "https://listing.soundtime.app";
+const DEFAULT_LISTING_URL: &str = "https://soundtime-listing-production.up.railway.app";
 
 /// Spawn the listing heartbeat worker.
 pub fn spawn(state: Arc<AppState>) {

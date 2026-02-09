@@ -315,7 +315,7 @@ export default {
   "admin.settings.publicListingDesc": "Publish this instance to the public SoundTime node directory. Other users can discover your instance.",
   "admin.settings.publicListingActive": "This instance is listed on the public SoundTime directory and visible to everyone.",
   "admin.settings.listingUrl": "Listing Server URL",
-  "admin.settings.listingUrlDesc": "URL of the listing server to register on. Anyone can host their own listing server. Default: https://listing.soundtime.app",
+  "admin.settings.listingUrlDesc": "URL of the listing server to register on. Anyone can host their own listing server. Default: https://soundtime-listing-production.up.railway.app",
 
   // Admin — blocked peers
   "admin.blocked.domainPlaceholder": "peer-node-id or domain",

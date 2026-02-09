@@ -922,7 +922,7 @@
               <div class="flex gap-2">
                 <input
                   type="url"
-                  placeholder="https://listing.soundtime.app"
+                  placeholder="https://soundtime-listing-production.up.railway.app"
                   value={settings.find(s => s.key === 'listing_url')?.value || ''}
                   class="flex-1 bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-md px-3 py-2 text-sm border border-[hsl(var(--border))] outline-none focus:border-[hsl(var(--primary))] transition-colors"
                   onchange={(e) => updateSetting('listing_url', (e.target as HTMLInputElement).value.replace(/\/$/, ''))}
