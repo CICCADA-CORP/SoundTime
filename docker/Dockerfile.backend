@@ -4,9 +4,31 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 
 WORKDIR /app
 
+# 1. Copy only manifests + lockfile to cache dependency compilation
+COPY Cargo.toml Cargo.lock ./
+COPY crates/soundtime-server/Cargo.toml crates/soundtime-server/Cargo.toml
+COPY crates/soundtime-audio/Cargo.toml crates/soundtime-audio/Cargo.toml
+COPY crates/soundtime-db/Cargo.toml crates/soundtime-db/Cargo.toml
+COPY crates/soundtime-migration/Cargo.toml crates/soundtime-migration/Cargo.toml
+COPY crates/soundtime-p2p/Cargo.toml crates/soundtime-p2p/Cargo.toml
+
+# 2. Create stub lib.rs / main.rs so cargo can resolve the workspace
+RUN mkdir -p crates/soundtime-server/src && echo "fn main() {}" > crates/soundtime-server/src/main.rs \
+    && mkdir -p crates/soundtime-audio/src && echo "" > crates/soundtime-audio/src/lib.rs \
+    && mkdir -p crates/soundtime-db/src && echo "" > crates/soundtime-db/src/lib.rs \
+    && mkdir -p crates/soundtime-migration/src && echo "" > crates/soundtime-migration/src/lib.rs \
+    && mkdir -p crates/soundtime-p2p/src && echo "" > crates/soundtime-p2p/src/lib.rs
+
+# 3. Build only dependencies (this layer is cached unless Cargo.toml/lock changes)
+RUN cargo build --release -p soundtime-server 2>/dev/null || true
+RUN rm -rf crates/*/src
+
+# 4. Copy real source code
 COPY . ./
 
-RUN cargo build --release -p soundtime-server
+# 5. Touch files so cargo knows they changed, then build
+RUN find crates -name "*.rs" -exec touch {} + \
+    && cargo build --release -p soundtime-server
 
 FROM debian:bookworm-slim
 

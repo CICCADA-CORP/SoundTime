@@ -9,10 +9,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
+  CARGO_INCREMENTAL: 0
+  SCCACHE_GHA_ENABLED: true
+  RUSTC_WRAPPER: sccache
 
 jobs:
   backend-check:
-    name: Backend (check, clippy, fmt)
+    name: Backend (fmt, clippy, test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,15 +25,8 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - name: Cache cargo registry & build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            backend/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('backend/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.7
 
       - name: Check formatting
         working-directory: backend
@@ -39,10 +35,6 @@ jobs:
       - name: Clippy
         working-directory: backend
         run: cargo clippy --all-targets --all-features
-
-      - name: Build
-        working-directory: backend
-        run: cargo build --release
 
       - name: Run tests
         working-directory: backend

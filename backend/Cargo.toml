@@ -7,3 +7,31 @@ members = [
   "crates/soundtime-migration",
   "crates/soundtime-p2p",
 ]
+
+# ── Build profiles ───────────────────────────────────────────────────
+
+# CI profile: fast compilation, minimal optimization (used by CI checks)
+[profile.ci]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16
+strip = "none"
+
+# Release: optimized for binary size and speed
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Dev: fast incremental builds
+[profile.dev]
+opt-level = 0
+debug = true
+incremental = true
+
+# Dev dependencies at higher opt-level (speeds up symphonia/iroh in dev)
+[profile.dev.package."*"]
+opt-level = 1
