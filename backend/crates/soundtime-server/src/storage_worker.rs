@@ -135,7 +135,13 @@ pub async fn run_integrity_check(
         .await
         .map_err(|e| format!("DB query: {e}"))?;
 
-    let total = all_tracks.len() as u64;
+    // Exclude P2P tracks — their files live on remote peers, not local storage
+    let local_tracks: Vec<_> = all_tracks
+        .into_iter()
+        .filter(|t| !t.file_path.starts_with("p2p://"))
+        .collect();
+
+    let total = local_tracks.len() as u64;
 
     let mut report = IntegrityReport {
         total_checked: 0,
@@ -144,7 +150,7 @@ pub async fn run_integrity_check(
         errors: Vec::new(),
     };
 
-    for t in &all_tracks {
+    for t in &local_tracks {
         report.total_checked += 1;
 
         // Update progress every 10 tracks
