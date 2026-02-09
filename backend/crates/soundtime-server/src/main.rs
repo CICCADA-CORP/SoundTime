@@ -19,6 +19,7 @@ use tower_http::{
 
 mod api;
 mod auth;
+mod listing_worker;
 pub mod metadata_lookup;
 mod storage_worker;
 
@@ -145,6 +146,9 @@ async fn main() {
     // Spawn the storage integrity / sync worker (runs daily)
     storage_worker::spawn(state.clone());
 
+    // Spawn the listing heartbeat worker (announces to public directory)
+    listing_worker::spawn(state.clone());
+
     // Task tracker for async storage operations (sync, integrity check)
     let storage_task_tracker = storage_worker::new_tracker();
 
@@ -266,6 +270,8 @@ async fn main() {
         .merge(always_public_api)
         .merge(public_api)
         .merge(protected_api)
+        // Public node info endpoint (for listing server)
+        .route("/nodeinfo", get(api::admin::nodeinfo))
         // Public P2P status endpoint
         .route("/p2p/status", get(api::p2p::p2p_status))
         .route("/p2p/network-graph", get(api::p2p::network_graph))

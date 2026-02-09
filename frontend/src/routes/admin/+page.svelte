@@ -882,6 +882,43 @@
           {/if}
         </div>
 
+        <!-- Public Listing Toggle -->
+        <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-5 mb-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold">{t('admin.settings.publicListing')}</h3>
+              <p class="text-xs text-[hsl(var(--muted-foreground))] mt-1">{t('admin.settings.publicListingDesc')}</p>
+            </div>
+            {#if settings.find(s => s.key === 'listing_public')?.value === 'true'}
+              <button
+                class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors bg-[hsl(var(--primary))]"
+                onclick={() => updateSetting('listing_public', 'false')}
+                role="switch"
+                aria-checked={true}
+                aria-label={t('admin.settings.publicListing')}
+              >
+                <span class="inline-block h-4 w-4 rounded-full bg-white transition-transform translate-x-6"></span>
+              </button>
+            {:else}
+              <button
+                class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors bg-[hsl(var(--secondary))]"
+                onclick={() => updateSetting('listing_public', 'true')}
+                role="switch"
+                aria-checked={false}
+                aria-label={t('admin.settings.publicListing')}
+              >
+                <span class="inline-block h-4 w-4 rounded-full bg-white transition-transform translate-x-1"></span>
+              </button>
+            {/if}
+          </div>
+          {#if settings.find(s => s.key === 'listing_public')?.value === 'true'}
+            <div class="mt-3 flex items-center gap-2 text-xs text-green-400 bg-green-500/10 rounded-md px-3 py-2">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+              {t('admin.settings.publicListingActive')}
+            </div>
+          {/if}
+        </div>
+
         <div class="bg-[hsl(var(--card))] rounded-lg divide-y divide-[hsl(var(--border))]">
           {#each settings as setting}
             <div class="p-4 flex items-center justify-between gap-4">

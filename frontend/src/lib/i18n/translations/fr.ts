@@ -311,6 +311,9 @@ export default {
   "admin.settings.privateInstance": "Instance privée",
   "admin.settings.privateInstanceDesc": "Lorsqu'elle est activée, seuls les utilisateurs authentifiés peuvent accéder à la musique de cette instance.",
   "admin.settings.privateWarning": "Cette instance est actuellement privée. Les utilisateurs non connectés seront redirigés vers la page de connexion.",
+  "admin.settings.publicListing": "Annuaire public",
+  "admin.settings.publicListingDesc": "Publier cette instance dans l'annuaire public SoundTime. D'autres utilisateurs pourront découvrir votre instance.",
+  "admin.settings.publicListingActive": "Cette instance est référencée dans l'annuaire public SoundTime et visible par tous.",
 
   // Admin — pairs bloqués
   "admin.blocked.domainPlaceholder": "ID du pair ou domaine",

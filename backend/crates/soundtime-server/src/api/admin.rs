@@ -349,6 +349,69 @@ pub async fn get_stats(State(state): State<Arc<AppState>>) -> Result<Json<AdminS
     }))
 }
 
+// ─── Public Node Info (for listing server) ──────────────────────────
+
+#[derive(Serialize)]
+pub struct NodeInfo {
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub track_count: u64,
+    pub user_count: u64,
+    pub open_registration: bool,
+    pub p2p_enabled: bool,
+    pub p2p_node_id: Option<String>,
+}
+
+/// GET /api/nodeinfo — public instance info consumed by the listing server
+pub async fn nodeinfo(State(state): State<Arc<AppState>>) -> Result<Json<NodeInfo>, StatusCode> {
+    let total_tracks = track::Entity::find()
+        .count(&state.db)
+        .await
+        .unwrap_or(0);
+
+    let total_users = user::Entity::find().count(&state.db).await.unwrap_or(0);
+
+    let p2p_node = get_p2p_node(&state);
+    let p2p_enabled = p2p_node.is_some();
+    let p2p_node_id = p2p_node.map(|n| n.node_id().to_string());
+
+    // Read instance settings
+    let settings = instance_setting::Entity::find()
+        .all(&state.db)
+        .await
+        .unwrap_or_default();
+
+    let name = settings
+        .iter()
+        .find(|s| s.key == "instance_name")
+        .map(|s| s.value.clone())
+        .unwrap_or_else(|| "SoundTime".to_string());
+
+    let description = settings
+        .iter()
+        .find(|s| s.key == "instance_description")
+        .map(|s| s.value.clone())
+        .unwrap_or_default();
+
+    let open_registration = settings
+        .iter()
+        .find(|s| s.key == "instance_private")
+        .map(|s| s.value != "true")
+        .unwrap_or(true);
+
+    Ok(Json(NodeInfo {
+        name,
+        description,
+        version: "0.1.0".to_string(),
+        track_count: total_tracks,
+        user_count: total_users,
+        open_registration,
+        p2p_enabled,
+        p2p_node_id,
+    }))
+}
+
 // ─── Known Instances (from remote tracks) ───────────────────────────
 
 #[derive(Serialize)]

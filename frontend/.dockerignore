@@ -5,3 +5,4 @@ build/
 .gitignore
 .env
 *.md
+coverage/

@@ -311,6 +311,9 @@ export default {
   "admin.settings.privateInstance": "Private Instance",
   "admin.settings.privateInstanceDesc": "When enabled, only authenticated users can access and listen to music on this instance.",
   "admin.settings.privateWarning": "This instance is currently private. Unauthenticated users will be redirected to the login page.",
+  "admin.settings.publicListing": "Public Directory",
+  "admin.settings.publicListingDesc": "Publish this instance to the public SoundTime node directory. Other users can discover your instance.",
+  "admin.settings.publicListingActive": "This instance is listed on the public SoundTime directory and visible to everyone.",
 
   // Admin — blocked peers
   "admin.blocked.domainPlaceholder": "peer-node-id or domain",
