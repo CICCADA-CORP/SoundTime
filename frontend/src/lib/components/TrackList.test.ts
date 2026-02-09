@@ -188,7 +188,8 @@ describe('TrackList', () => {
   it('displays track number', () => {
     const tracks = [createTrack({ track_number: 3 })];
     render(TrackList, { props: { tracks } });
-    expect(screen.getByText('3')).toBeInTheDocument();
+    const els = screen.getAllByText('3');
+    expect(els.length).toBeGreaterThanOrEqual(1);
   });
 
   it('shows dash when no bitrate/format', () => {

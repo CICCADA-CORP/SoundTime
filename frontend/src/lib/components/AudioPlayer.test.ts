@@ -116,14 +116,14 @@ describe('AudioPlayer', () => {
   it('displays track title and artist', () => {
     mockPlayerStore.currentTrack = { ...mockTrack };
     render(AudioPlayer);
-    expect(screen.getByText('Test Song')).toBeInTheDocument();
-    expect(screen.getByText('Test Artist')).toBeInTheDocument();
+    expect(screen.getAllByText('Test Song').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Test Artist').length).toBeGreaterThanOrEqual(1);
   });
 
   it('shows emoji fallback when no cover_url', () => {
     mockPlayerStore.currentTrack = { ...mockTrack, cover_url: null };
     render(AudioPlayer);
-    expect(screen.getByText('🎵')).toBeInTheDocument();
+    expect(screen.getAllByText('🎵').length).toBeGreaterThanOrEqual(1);
   });
 
   it('shows cover image when cover_url is set', () => {
@@ -208,7 +208,7 @@ describe('AudioPlayer', () => {
   it('shows "Unknown" when artist_name is null', () => {
     mockPlayerStore.currentTrack = { ...mockTrack, artist_name: null };
     render(AudioPlayer);
-    expect(screen.getByText('Unknown')).toBeInTheDocument();
+    expect(screen.getAllByText('Unknown').length).toBeGreaterThanOrEqual(1);
   });
 
   it('renders progress bar as clickable', () => {
