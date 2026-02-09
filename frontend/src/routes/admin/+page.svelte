@@ -266,7 +266,12 @@
   async function updateSetting(key: string, value: string) {
     try {
       await api.put(`/admin/settings/${key}`, { value });
-      settings = settings.map((s) => (s.key === key ? { ...s, value } : s));
+      const exists = settings.some((s) => s.key === key);
+      if (exists) {
+        settings = settings.map((s) => (s.key === key ? { ...s, value } : s));
+      } else {
+        settings = [...settings, { key, value }];
+      }
     } catch (e: any) {
       error = e.message;
     }
@@ -889,10 +894,10 @@
               <h3 class="text-sm font-semibold">{t('admin.settings.publicListing')}</h3>
               <p class="text-xs text-[hsl(var(--muted-foreground))] mt-1">{t('admin.settings.publicListingDesc')}</p>
             </div>
-            {#if settings.find(s => s.key === 'listing_public')?.value === 'true'}
+            {#if (settings.find(s => s.key === 'listing_public')?.value ?? 'true') === 'true'}
               <button
                 class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors bg-[hsl(var(--primary))]"
-                onclick={() => updateSetting('listing_public', 'false')}
+                onclick={async () => { await updateSetting('listing_public', 'false'); }}
                 role="switch"
                 aria-checked={true}
                 aria-label={t('admin.settings.publicListing')}
@@ -902,7 +907,7 @@
             {:else}
               <button
                 class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors bg-[hsl(var(--secondary))]"
-                onclick={() => updateSetting('listing_public', 'true')}
+                onclick={async () => { await updateSetting('listing_public', 'true'); try { await api.post('/admin/listing/trigger', {}); } catch {} }}
                 role="switch"
                 aria-checked={false}
                 aria-label={t('admin.settings.publicListing')}
@@ -911,16 +916,17 @@
               </button>
             {/if}
           </div>
-          {#if settings.find(s => s.key === 'listing_public')?.value === 'true'}
+          {#if (settings.find(s => s.key === 'listing_public')?.value ?? 'true') === 'true'}
             <div class="mt-3 flex items-center gap-2 text-xs text-green-400 bg-green-500/10 rounded-md px-3 py-2">
               <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
               {t('admin.settings.publicListingActive')}
             </div>
             <!-- Listing URL -->
             <div class="mt-3">
-              <label class="block text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1.5">{t('admin.settings.listingUrl')}</label>
+              <label for="listing-url-input" class="block text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1.5">{t('admin.settings.listingUrl')}</label>
               <div class="flex gap-2">
                 <input
+                  id="listing-url-input"
                   type="url"
                   placeholder="https://soundtime-listing-production.up.railway.app"
                   value={settings.find(s => s.key === 'listing_url')?.value || ''}

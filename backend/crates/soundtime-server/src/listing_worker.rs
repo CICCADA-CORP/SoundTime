@@ -1,13 +1,20 @@
 //! Listing worker — periodically announces this instance to the public SoundTime node directory.
 //!
-//! When the admin enables `listing_public` in instance settings,
-//! a heartbeat is sent every 5 minutes to the listing server.
+//! Listing is **enabled by default** (opt-out via `listing_public = false`).
+//! A heartbeat is sent every 5 minutes to the listing server.
 //! The listing server checks node health and removes offline nodes after 48h.
+//!
+//! The module also exposes a `trigger_heartbeat` endpoint so the admin UI can
+//! request an immediate heartbeat after toggling the setting.
 
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
-use soundtime_db::entities::instance_setting;
+use axum::extract::State as AxumState;
+use axum::http::StatusCode;
+use axum::Json;
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, Set};
+use soundtime_db::entities::{instance_setting, track, user};
 use soundtime_db::AppState;
 use std::sync::Arc;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 /// How often to send a heartbeat (5 minutes).
@@ -16,13 +23,34 @@ const HEARTBEAT_INTERVAL_SECS: u64 = 300;
 /// Default listing server URL.
 const DEFAULT_LISTING_URL: &str = "https://soundtime-listing-production.up.railway.app";
 
+/// Shared notifier so the admin API can wake up the worker immediately.
+static HEARTBEAT_NOTIFY: std::sync::LazyLock<Notify> = std::sync::LazyLock::new(Notify::new);
+
+/// POST /api/admin/listing/trigger — force an immediate heartbeat.
+pub async fn trigger_heartbeat(
+    AxumState(state): AxumState<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let is_enabled = is_listing_enabled(&state).await;
+    if !is_enabled {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "listing is disabled" })),
+        ));
+    }
+
+    // Wake the worker immediately
+    HEARTBEAT_NOTIFY.notify_one();
+
+    Ok(Json(serde_json::json!({ "status": "heartbeat triggered" })))
+}
+
 /// Spawn the listing heartbeat worker.
 pub fn spawn(state: Arc<AppState>) {
     tokio::spawn(async move {
-        tracing::info!("listing worker started (heartbeat every 5m)");
+        tracing::info!("listing worker started (heartbeat every 5m, enabled by default)");
 
-        // Wait 30s before first attempt to let the server fully start
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        // Wait 10s before first attempt to let the server fully start
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
@@ -36,12 +64,26 @@ pub fn spawn(state: Arc<AppState>) {
 
             if is_enabled {
                 let listing_url = get_listing_url(&state).await;
-                if let Err(e) = send_heartbeat(&state, &client, &listing_url).await {
-                    tracing::warn!("listing heartbeat failed: {e}");
+                tracing::info!(
+                    domain = %state.domain,
+                    listing_url = %listing_url,
+                    "sending listing heartbeat"
+                );
+                match send_heartbeat(&state, &client, &listing_url).await {
+                    Ok(()) => tracing::info!("listing heartbeat successful"),
+                    Err(e) => tracing::warn!("listing heartbeat failed: {e}"),
                 }
+            } else {
+                tracing::debug!("listing disabled, skipping heartbeat");
             }
 
-            tokio::time::sleep(std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
+            // Wait for either the interval or a manual trigger
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS)) => {},
+                _ = HEARTBEAT_NOTIFY.notified() => {
+                    tracing::info!("listing heartbeat triggered manually");
+                },
+            }
         }
     });
 }
@@ -65,6 +107,7 @@ async fn get_listing_url(state: &AppState) -> String {
 }
 
 /// Check if the `listing_public` setting is enabled.
+/// Defaults to `true` — listing is opt-out, not opt-in.
 async fn is_listing_enabled(state: &AppState) -> bool {
     instance_setting::Entity::find()
         .filter(instance_setting::Column::Key.eq("listing_public"))
@@ -73,7 +116,7 @@ async fn is_listing_enabled(state: &AppState) -> bool {
         .ok()
         .flatten()
         .map(|s| s.value == "true")
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 /// Read the listing token from instance settings.
@@ -147,15 +190,48 @@ async fn send_heartbeat(
     listing_url: &str,
 ) -> Result<(), String> {
     let domain = &state.domain;
+
+    // Warn if domain looks like a localhost address — listing server won't be able to reach us
+    if domain.starts_with("localhost") || domain.starts_with("127.") || domain.starts_with("0.0.0.0") {
+        tracing::warn!(
+            domain = %domain,
+            "listing heartbeat: domain is a local address — the listing server will not be able \
+             to reach this instance for health checks. Set SOUNDTIME_DOMAIN to your public \
+             domain (e.g. music.example.com) for listing to work properly."
+        );
+    }
+
     let name = get_instance_name(state).await;
     let description = get_instance_description(state).await;
     let token = get_listing_token(state).await;
+
+    // Gather instance stats for richer listing
+    let track_count = track::Entity::find()
+        .count(&state.db)
+        .await
+        .unwrap_or(0);
+    let user_count = user::Entity::find()
+        .count(&state.db)
+        .await
+        .unwrap_or(0);
+
+    let open_registration = instance_setting::Entity::find()
+        .filter(instance_setting::Column::Key.eq("instance_private"))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .map(|s| s.value != "true")
+        .unwrap_or(true);
 
     let mut payload = serde_json::json!({
         "domain": domain,
         "name": name,
         "description": description,
         "version": "0.1.0",
+        "track_count": track_count,
+        "user_count": user_count,
+        "open_registration": open_registration,
     });
 
     // Include token for heartbeat (subsequent calls)
