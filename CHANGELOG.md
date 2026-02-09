@@ -59,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Dead code warning for `clean_domain` in listing worker (now `#[cfg(test)]`).
 
-## [1.0.0] - 2024-05-20
+## [1.0.0] - 2026-02-01
 
 **Initial Public Release** of SoundTime, the sovereign audio streaming platform.
 
