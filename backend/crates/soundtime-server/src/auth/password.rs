@@ -38,7 +38,7 @@ mod tests {
     fn test_hash_is_not_plaintext() {
         let password = &format!("{}Password", "My");
         let hash = hash_password(password).unwrap();
-        assert_ne!(hash, password);
+        assert_ne!(&hash, password);
         assert!(hash.starts_with("$argon2"));
     }
 
