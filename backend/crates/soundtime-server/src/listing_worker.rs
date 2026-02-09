@@ -192,7 +192,10 @@ async fn send_heartbeat(
     let domain = &state.domain;
 
     // Warn if domain looks like a localhost address — listing server won't be able to reach us
-    if domain.starts_with("localhost") || domain.starts_with("127.") || domain.starts_with("0.0.0.0") {
+    if domain.starts_with("localhost")
+        || domain.starts_with("127.")
+        || domain.starts_with("0.0.0.0")
+    {
         tracing::warn!(
             domain = %domain,
             "listing heartbeat: domain is a local address — the listing server will not be able \
@@ -206,14 +209,8 @@ async fn send_heartbeat(
     let token = get_listing_token(state).await;
 
     // Gather instance stats for richer listing
-    let track_count = track::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(0);
-    let user_count = user::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(0);
+    let track_count = track::Entity::find().count(&state.db).await.unwrap_or(0);
+    let user_count = user::Entity::find().count(&state.db).await.unwrap_or(0);
 
     let open_registration = instance_setting::Entity::find()
         .filter(instance_setting::Column::Key.eq("instance_private"))

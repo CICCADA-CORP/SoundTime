@@ -306,10 +306,7 @@ async fn main() {
                     "/instances/health-check",
                     post(api::admin::check_instances_health),
                 )
-                .route(
-                    "/listing/trigger",
-                    post(listing_worker::trigger_heartbeat),
-                )
+                .route("/listing/trigger", post(listing_worker::trigger_heartbeat))
                 .route("/metadata/status", get(api::admin::metadata_status))
                 .route(
                     "/metadata/enrich/{track_id}",
