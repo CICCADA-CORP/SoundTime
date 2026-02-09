@@ -31,3 +31,4 @@ soundtime-audio = { path = "../soundtime-audio" }
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }
+wiremock = "0.6"

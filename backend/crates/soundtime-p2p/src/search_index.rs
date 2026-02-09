@@ -337,4 +337,345 @@ mod tests {
         assert!(idx.local_might_match("artist").await);
         assert!(idx.local_might_match("album").await);
     }
+
+    // ── normalize_terms edge cases ───────────────────────────────────
+
+    #[test]
+    fn test_normalize_terms_basic() {
+        let terms = SearchIndex::normalize_terms("Hello World");
+        assert_eq!(terms, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn test_normalize_terms_short_words_filtered() {
+        // Words with < 2 characters should be filtered out
+        let terms = SearchIndex::normalize_terms("I am a DJ");
+        // "i" and "a" are 1 char → filtered; "am" (2 chars) kept, "dj" kept
+        assert_eq!(terms, vec!["am", "dj"]);
+    }
+
+    #[test]
+    fn test_normalize_terms_empty_string() {
+        let terms = SearchIndex::normalize_terms("");
+        assert!(terms.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_terms_only_short_words() {
+        let terms = SearchIndex::normalize_terms("I a");
+        assert!(terms.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_terms_unicode() {
+        let terms = SearchIndex::normalize_terms("Étoile café");
+        assert_eq!(terms, vec!["étoile", "café"]);
+    }
+
+    #[test]
+    fn test_normalize_terms_extra_whitespace() {
+        let terms = SearchIndex::normalize_terms("  hello   world  ");
+        assert_eq!(terms, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn test_normalize_terms_mixed_case() {
+        let terms = SearchIndex::normalize_terms("Bohemian RHAPSODY");
+        assert_eq!(terms, vec!["bohemian", "rhapsody"]);
+    }
+
+    // ── local_might_match edge cases ─────────────────────────────────
+
+    #[tokio::test]
+    async fn test_local_might_match_empty_query() {
+        let idx = SearchIndex::new();
+        idx.insert_track("Something", "Someone", None).await;
+        // Empty query → normalize_terms is empty → `.all()` on empty iter returns true
+        assert!(idx.local_might_match("").await);
+    }
+
+    #[tokio::test]
+    async fn test_local_might_match_and_semantics() {
+        let idx = SearchIndex::new();
+        idx.insert_track("Bohemian Rhapsody", "Queen", None).await;
+        // Both terms present → true
+        assert!(idx.local_might_match("bohemian queen").await);
+        // One term missing → false (AND semantics)
+        assert!(!idx.local_might_match("bohemian metallica").await);
+    }
+
+    #[tokio::test]
+    async fn test_local_might_match_case_insensitive() {
+        let idx = SearchIndex::new();
+        idx.insert_track("LOUD TRACK", "ARTIST", None).await;
+        assert!(idx.local_might_match("loud").await);
+        assert!(idx.local_might_match("LOUD").await);
+        assert!(idx.local_might_match("Loud").await);
+    }
+
+    // ── export_local_bloom structure ─────────────────────────────────
+
+    #[tokio::test]
+    async fn test_export_bloom_structure() {
+        let idx = SearchIndex::new();
+        idx.insert_track("Test", "Artist", Some("Album")).await;
+        let bloom = idx.export_local_bloom().await;
+
+        assert!(!bloom.bitmap.is_empty());
+        assert!(bloom.num_hashes > 0);
+        assert!(bloom.bitmap_bits > 0);
+        assert!(bloom.item_count > 0);
+        // SIP keys should be set
+        assert!(bloom.sip_keys[0] != (0, 0) || bloom.sip_keys[1] != (0, 0));
+    }
+
+    #[tokio::test]
+    async fn test_export_bloom_empty_index() {
+        let idx = SearchIndex::new();
+        let bloom = idx.export_local_bloom().await;
+        assert_eq!(bloom.item_count, 0);
+        assert!(!bloom.bitmap.is_empty()); // bitmap exists even when empty
+    }
+
+    // ── peer_might_match edge cases ──────────────────────────────────
+
+    #[tokio::test]
+    async fn test_peer_might_match_unknown_peer() {
+        let idx = SearchIndex::new();
+        // No bloom imported → should return true (assume peer might have results)
+        assert!(idx.peer_might_match("unknown_peer", "anything").await);
+    }
+
+    #[tokio::test]
+    async fn test_peer_might_match_no_match() {
+        let idx = SearchIndex::new();
+
+        let jazz = SearchIndex::new();
+        jazz.insert_track("Take Five", "Dave Brubeck", None).await;
+        let bloom = jazz.export_local_bloom().await;
+        idx.import_peer_bloom("jazz_peer", bloom).await;
+
+        assert!(!idx.peer_might_match("jazz_peer", "metallica").await);
+    }
+
+    // ── peers_matching_query edge cases ──────────────────────────────
+
+    #[tokio::test]
+    async fn test_peers_matching_query_empty_query() {
+        let idx = SearchIndex::new();
+
+        let peer = SearchIndex::new();
+        peer.insert_track("Track", "Artist", None).await;
+        let bloom = peer.export_local_bloom().await;
+        idx.import_peer_bloom("peer1", bloom).await;
+
+        // Empty query → returns all peers
+        let matches = idx.peers_matching_query("").await;
+        assert_eq!(matches.len(), 1);
+        assert!(matches.contains(&"peer1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_peers_matching_query_no_peers() {
+        let idx = SearchIndex::new();
+        let matches = idx.peers_matching_query("anything").await;
+        assert!(matches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_peers_matching_query_all_match() {
+        let idx = SearchIndex::new();
+
+        // Both peers have "music" in their index
+        for peer_id in &["peer1", "peer2"] {
+            let peer = SearchIndex::new();
+            peer.insert_track("Music Track", "Artist", None).await;
+            let bloom = peer.export_local_bloom().await;
+            idx.import_peer_bloom(peer_id, bloom).await;
+        }
+
+        let matches = idx.peers_matching_query("music").await;
+        assert_eq!(matches.len(), 2);
+    }
+
+    // ── remove_peer ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_remove_peer() {
+        let idx = SearchIndex::new();
+        let peer = SearchIndex::new();
+        peer.insert_track("Track", "Artist", None).await;
+        let bloom = peer.export_local_bloom().await;
+        idx.import_peer_bloom("peer1", bloom).await;
+
+        assert_eq!(idx.indexed_peer_count().await, 1);
+        idx.remove_peer("peer1").await;
+        assert_eq!(idx.indexed_peer_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_remove_peer_nonexistent() {
+        let idx = SearchIndex::new();
+        // Should not panic
+        idx.remove_peer("ghost").await;
+        assert_eq!(idx.indexed_peer_count().await, 0);
+    }
+
+    // ── indexed_peer_count ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_indexed_peer_count() {
+        let idx = SearchIndex::new();
+        assert_eq!(idx.indexed_peer_count().await, 0);
+
+        for i in 0..5 {
+            let peer = SearchIndex::new();
+            peer.insert_track(&format!("Track {i}"), "Artist", None)
+                .await;
+            idx.import_peer_bloom(&format!("peer{i}"), peer.export_local_bloom().await)
+                .await;
+        }
+        assert_eq!(idx.indexed_peer_count().await, 5);
+    }
+
+    // ── rebuild_from_tracks edge cases ───────────────────────────────
+
+    #[tokio::test]
+    async fn test_rebuild_from_empty_tracks() {
+        let idx = SearchIndex::new();
+        // Insert something first
+        idx.insert_track("Old Track", "Old Artist", None).await;
+        assert!(idx.local_might_match("old").await);
+
+        // Rebuild with empty list — should clear the index
+        idx.rebuild_from_tracks(&[]).await;
+        assert!(!idx.local_might_match("old").await);
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_replaces_previous() {
+        let idx = SearchIndex::new();
+        idx.insert_track("First", "First Artist", None).await;
+        assert!(idx.local_might_match("first").await);
+
+        // Rebuild with different tracks
+        let tracks = vec![(
+            "Second".to_string(),
+            "Second Artist".to_string(),
+            None,
+        )];
+        idx.rebuild_from_tracks(&tracks).await;
+        // Old track should no longer match (bloom was reset)
+        // Note: due to bloom filter false positives, "first" MIGHT still match
+        // but "second" should definitely match
+        assert!(idx.local_might_match("second").await);
+    }
+
+    // ── BloomFilterData serde roundtrip ──────────────────────────────
+
+    #[test]
+    fn test_bloom_filter_data_serde() {
+        let data = BloomFilterData {
+            bitmap: vec![1, 2, 3, 4, 5],
+            num_hashes: 10,
+            bitmap_bits: 8192,
+            sip_keys: [(111, 222), (333, 444)],
+            item_count: 99,
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        let decoded: BloomFilterData = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.bitmap, vec![1, 2, 3, 4, 5]);
+        assert_eq!(decoded.num_hashes, 10);
+        assert_eq!(decoded.bitmap_bits, 8192);
+        assert_eq!(decoded.sip_keys, [(111, 222), (333, 444)]);
+        assert_eq!(decoded.item_count, 99);
+    }
+
+    #[test]
+    fn test_bloom_filter_data_clone() {
+        let data = BloomFilterData {
+            bitmap: vec![0xFF; 64],
+            num_hashes: 7,
+            bitmap_bits: 512,
+            sip_keys: [(1, 2), (3, 4)],
+            item_count: 50,
+        };
+        let cloned = data.clone();
+        assert_eq!(data.bitmap, cloned.bitmap);
+        assert_eq!(data.num_hashes, cloned.num_hashes);
+    }
+
+    // ── Default impl ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_search_index_default() {
+        let idx = SearchIndex::default();
+        assert_eq!(idx.indexed_peer_count().await, 0);
+        assert!(!idx.local_might_match("anything").await);
+    }
+
+    // ── Insert multiple tracks and verify ────────────────────────────
+
+    #[tokio::test]
+    async fn test_insert_multiple_tracks() {
+        let idx = SearchIndex::new();
+        idx.insert_track("Bohemian Rhapsody", "Queen", Some("A Night at the Opera"))
+            .await;
+        idx.insert_track("Stairway to Heaven", "Led Zeppelin", Some("Led Zeppelin IV"))
+            .await;
+        idx.insert_track("Hotel California", "Eagles", Some("Hotel California"))
+            .await;
+
+        assert!(idx.local_might_match("bohemian").await);
+        assert!(idx.local_might_match("stairway").await);
+        assert!(idx.local_might_match("hotel").await);
+        assert!(idx.local_might_match("queen").await);
+        assert!(idx.local_might_match("zeppelin").await);
+        assert!(idx.local_might_match("eagles").await);
+    }
+
+    // ── Import replaces existing peer bloom ──────────────────────────
+
+    #[tokio::test]
+    async fn test_import_peer_bloom_replaces() {
+        let idx = SearchIndex::new();
+
+        // First import with jazz
+        let jazz = SearchIndex::new();
+        jazz.insert_track("Take Five", "Dave Brubeck", None).await;
+        idx.import_peer_bloom("peer1", jazz.export_local_bloom().await)
+            .await;
+        assert!(idx.peer_might_match("peer1", "brubeck").await);
+
+        // Replace with rock
+        let rock = SearchIndex::new();
+        rock.insert_track("Thunderstruck", "AC DC", None).await;
+        idx.import_peer_bloom("peer1", rock.export_local_bloom().await)
+            .await;
+
+        // Should now match rock, not jazz
+        assert!(idx.peer_might_match("peer1", "thunderstruck").await);
+        // Peer count should still be 1 (replaced, not added)
+        assert_eq!(idx.indexed_peer_count().await, 1);
+    }
+
+    // ── PeerSearchIndex debug ────────────────────────────────────────
+
+    #[test]
+    fn test_peer_search_index_debug() {
+        let psi = PeerSearchIndex {
+            node_id: "test_node".to_string(),
+            bloom: BloomFilterData {
+                bitmap: vec![],
+                num_hashes: 0,
+                bitmap_bits: 0,
+                sip_keys: [(0, 0), (0, 0)],
+                item_count: 0,
+            },
+            last_updated: chrono::Utc::now(),
+        };
+        let debug = format!("{:?}", psi);
+        assert!(debug.contains("PeerSearchIndex"));
+        assert!(debug.contains("test_node"));
+    }
 }
