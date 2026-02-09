@@ -91,6 +91,7 @@ async fn send_announce_request(
 }
 
 /// Clean a raw domain string: strip protocol prefix and trailing slash.
+#[cfg(test)]
 fn clean_domain(raw: &str) -> String {
     raw.trim_end_matches('/')
         .replace("https://", "")
