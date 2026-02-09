@@ -30,16 +30,12 @@ pub fn spawn(state: Arc<AppState>) {
             .build()
             .expect("failed to build HTTP client");
 
-        let listing_url = std::env::var("LISTING_URL")
-            .unwrap_or_else(|_| DEFAULT_LISTING_URL.to_string())
-            .trim_end_matches('/')
-            .to_string();
-
         loop {
             // Check if listing is enabled
             let is_enabled = is_listing_enabled(&state).await;
 
             if is_enabled {
+                let listing_url = get_listing_url(&state).await;
                 if let Err(e) = send_heartbeat(&state, &client, &listing_url).await {
                     tracing::warn!("listing heartbeat failed: {e}");
                 }
@@ -48,6 +44,24 @@ pub fn spawn(state: Arc<AppState>) {
             tokio::time::sleep(std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
         }
     });
+}
+
+/// Read the listing URL from instance settings, falling back to env var then default.
+async fn get_listing_url(state: &AppState) -> String {
+    let from_db = instance_setting::Entity::find()
+        .filter(instance_setting::Column::Key.eq("listing_url"))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .map(|s| s.value)
+        .filter(|v| !v.is_empty());
+
+    from_db
+        .or_else(|| std::env::var("LISTING_URL").ok())
+        .unwrap_or_else(|| DEFAULT_LISTING_URL.to_string())
+        .trim_end_matches('/')
+        .to_string()
 }
 
 /// Check if the `listing_public` setting is enabled.

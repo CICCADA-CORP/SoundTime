@@ -304,6 +304,8 @@ export default {
   "admin.settings.publicListing": "Публичный каталог",
   "admin.settings.publicListingDesc": "Опубликовать этот экземпляр в публичном каталоге SoundTime. Другие пользователи смогут найти ваш экземпляр.",
   "admin.settings.publicListingActive": "Этот экземпляр указан в публичном каталоге SoundTime и виден всем.",
+  "admin.settings.listingUrl": "URL сервера каталога",
+  "admin.settings.listingUrlDesc": "URL сервера каталога для регистрации. Любой может разместить свой собственный сервер каталога. По умолчанию: https://listing.soundtime.app",
   "admin.blocked.domainPlaceholder": "ID пира или домен",
   "admin.blocked.reasonPlaceholder": "Причина (необязательно)",
   "admin.blocked.block": "Заблокировать",

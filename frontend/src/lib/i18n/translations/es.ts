@@ -304,6 +304,8 @@ export default {
   "admin.settings.publicListing": "Directorio público",
   "admin.settings.publicListingDesc": "Publicar esta instancia en el directorio público de SoundTime. Otros usuarios podrán descubrir tu instancia.",
   "admin.settings.publicListingActive": "Esta instancia está listada en el directorio público de SoundTime y es visible para todos.",
+  "admin.settings.listingUrl": "URL del servidor de directorio",
+  "admin.settings.listingUrlDesc": "URL del servidor de directorio en el que registrarse. Cualquiera puede alojar su propio servidor de directorio. Por defecto: https://listing.soundtime.app",
   "admin.blocked.domainPlaceholder": "ID del par o dominio",
   "admin.blocked.reasonPlaceholder": "Razón (opcional)",
   "admin.blocked.block": "Bloquear",

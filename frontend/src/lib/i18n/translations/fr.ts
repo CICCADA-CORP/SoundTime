@@ -314,6 +314,8 @@ export default {
   "admin.settings.publicListing": "Annuaire public",
   "admin.settings.publicListingDesc": "Publier cette instance dans l'annuaire public SoundTime. D'autres utilisateurs pourront découvrir votre instance.",
   "admin.settings.publicListingActive": "Cette instance est référencée dans l'annuaire public SoundTime et visible par tous.",
+  "admin.settings.listingUrl": "URL du serveur d'annuaire",
+  "admin.settings.listingUrlDesc": "URL du serveur d'annuaire sur lequel s'inscrire. N'importe qui peut héberger son propre serveur d'annuaire. Par défaut : https://listing.soundtime.app",
 
   // Admin — pairs bloqués
   "admin.blocked.domainPlaceholder": "ID du pair ou domaine",

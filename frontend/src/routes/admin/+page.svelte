@@ -916,6 +916,20 @@
               <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
               {t('admin.settings.publicListingActive')}
             </div>
+            <!-- Listing URL -->
+            <div class="mt-3">
+              <label class="block text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1.5">{t('admin.settings.listingUrl')}</label>
+              <div class="flex gap-2">
+                <input
+                  type="url"
+                  placeholder="https://listing.soundtime.app"
+                  value={settings.find(s => s.key === 'listing_url')?.value || ''}
+                  class="flex-1 bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-md px-3 py-2 text-sm border border-[hsl(var(--border))] outline-none focus:border-[hsl(var(--primary))] transition-colors"
+                  onchange={(e) => updateSetting('listing_url', (e.target as HTMLInputElement).value.replace(/\/$/, ''))}
+                />
+              </div>
+              <p class="text-xs text-[hsl(var(--muted-foreground))] mt-1.5">{t('admin.settings.listingUrlDesc')}</p>
+            </div>
           {/if}
         </div>
 
