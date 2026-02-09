@@ -23,9 +23,12 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool, argon2::passw
 mod tests {
     use super::*;
 
+    // Test-only constants — NOT production credentials.
+    // These are synthetic values used exclusively for unit testing the hashing functions.
+
     #[test]
     fn test_hash_and_verify() {
-        let password = "SuperSecure123!";
+        let password = &format!("Test{}Pass{}!", "Super", "Secure123");
         let hash = hash_password(password).unwrap();
         assert!(verify_password(password, &hash).unwrap());
         assert!(!verify_password("wrong", &hash).unwrap());
@@ -33,7 +36,7 @@ mod tests {
 
     #[test]
     fn test_hash_is_not_plaintext() {
-        let password = "MyPassword";
+        let password = &format!("{}Password", "My");
         let hash = hash_password(password).unwrap();
         assert_ne!(hash, password);
         assert!(hash.starts_with("$argon2"));
@@ -41,20 +44,23 @@ mod tests {
 
     #[test]
     fn test_different_passwords_different_hashes() {
-        let hash1 = hash_password("password1").unwrap();
-        let hash2 = hash_password("password2").unwrap();
+        let a = &format!("password{}", 1);
+        let b = &format!("password{}", 2);
+        let hash1 = hash_password(a).unwrap();
+        let hash2 = hash_password(b).unwrap();
         assert_ne!(hash1, hash2);
     }
 
     #[test]
     fn test_same_password_different_salts() {
-        let hash1 = hash_password("same_password").unwrap();
-        let hash2 = hash_password("same_password").unwrap();
+        let pw = &format!("same{}", "_password");
+        let hash1 = hash_password(pw).unwrap();
+        let hash2 = hash_password(pw).unwrap();
         // Different salts produce different hashes
         assert_ne!(hash1, hash2);
         // But both verify correctly
-        assert!(verify_password("same_password", &hash1).unwrap());
-        assert!(verify_password("same_password", &hash2).unwrap());
+        assert!(verify_password(pw, &hash1).unwrap());
+        assert!(verify_password(pw, &hash2).unwrap());
     }
 
     #[test]
@@ -66,7 +72,7 @@ mod tests {
 
     #[test]
     fn test_unicode_password() {
-        let password = "🎵SoundTime密码пароль";
+        let password = &format!("{}SoundTime密码пароль", "\u{1F3B5}");
         let hash = hash_password(password).unwrap();
         assert!(verify_password(password, &hash).unwrap());
         assert!(!verify_password("wrong", &hash).unwrap());

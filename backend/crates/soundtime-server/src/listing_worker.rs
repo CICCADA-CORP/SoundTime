@@ -187,7 +187,7 @@ async fn send_heartbeat(
                 save_listing_token(state, new_token).await;
             }
         }
-        tracing::debug!("listing heartbeat successful: {}", body);
+        tracing::debug!("listing heartbeat successful");
         Ok(())
     } else {
         let error = body

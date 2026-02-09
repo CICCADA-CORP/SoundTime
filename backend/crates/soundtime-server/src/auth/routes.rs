@@ -553,7 +553,7 @@ pub async fn change_email(
         )
     })?;
 
-    tracing::info!("User {} changed email", user_id);
+    tracing::info!(user_id = %user_id, "user changed email");
 
     Ok(Json(UserResponse {
         id: updated.id,
@@ -657,7 +657,7 @@ pub async fn change_password(
         )
     })?;
 
-    tracing::info!("User {} changed password", user_id);
+    tracing::info!(user_id = %user_id, "user changed password");
 
     Ok(StatusCode::NO_CONTENT)
 }

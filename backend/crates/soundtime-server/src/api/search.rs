@@ -75,11 +75,9 @@ pub async fn search(
         }));
     }
 
-    let limit = params.per_page.unwrap_or(10).min(50) as i64;
-    let offset = params
-        .page
-        .map(|p| ((p.max(1) - 1) as i64) * limit)
-        .unwrap_or(0);
+    let limit = params.per_page.unwrap_or(10).clamp(1, 50) as i64;
+    let page = params.page.unwrap_or(1).clamp(1, 1000);
+    let offset = ((page - 1) as i64) * limit;
 
     let tsquery = build_tsquery(q_trimmed);
 
