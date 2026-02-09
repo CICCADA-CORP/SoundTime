@@ -24,10 +24,12 @@ Each SoundTime instance runs an **iroh node** that communicates over **QUIC** (U
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| Transport | iroh 0.32 (QUIC over UDP) | Encrypted peer-to-peer connections |
-| Content storage | iroh-blobs (BLAKE3) | Content-addressed audio file storage |
-| Discovery | n0 DNS + optional mDNS | Finding peers on the network |
+| Transport | iroh 0.96 (QUIC over UDP) | Encrypted peer-to-peer connections |
+| Content storage | iroh-blobs 0.96 (BLAKE3, FsStore) | Content-addressed audio file storage |
+| Discovery | PkarrPublisher + DnsDiscovery + optional mDNS | Finding peers on the network |
 | Relay | n0.computer production relays | NAT traversal when direct connections fail |
+| Search | Bloom filters (~1.2 MB per peer) | Distributed query routing |
+| Health | TrackHealthManager | Auto-retry, 3-strike dereference, re-referencing |
 
 ## Identity
 
@@ -58,9 +60,13 @@ SoundTime uses a custom application protocol identified by the ALPN `soundtime/p
 | `Pong` | ← | Response with sender's NodeId and track count |
 | `AnnounceTrack` | → | Push a single track's metadata to a peer |
 | `CatalogSync` | → | Batch push of all locally-uploaded tracks |
+| `CatalogDelta` | → | Incremental sync — only new tracks since last sync |
 | `FetchTrack` | → | Request a track blob by BLAKE3 hash |
 | `TrackData` | ← | Response with track blob data |
 | `PeerExchange` | ↔ | Share list of known peer NodeIds |
+| `BloomFilterExchange` | ↔ | Exchange search Bloom filters for query routing |
+| `SearchQuery` | → | Distributed search request (text query) |
+| `SearchResults` | ← | Matching tracks from a peer's catalog |
 
 ### Track Announcement
 
@@ -163,6 +169,10 @@ When a peer receives a track announcement:
 
 When a new peer connects (via `Ping`/`Pong` handshake), the responding node automatically sends a `CatalogSync` message containing **all locally-uploaded tracks**. This ensures new peers quickly receive the full library.
 
+### Incremental Sync
+
+After the initial full sync, subsequent syncs use `CatalogDelta` messages that contain **only new tracks** since the last sync. This avoids redundant data transfer and scales well as libraries grow.
+
 ### Cover Art Sync
 
 Cover art is synchronized alongside tracks:
@@ -197,6 +207,68 @@ SoundTime handles NAT traversal automatically:
 The relay connection is established on startup (with a 15-second timeout). If no relay is available, the node falls back to direct connections only.
 
 > **Note**: For best performance, open UDP port **11204** in your firewall to allow direct connections.
+
+## Track Health Monitoring
+
+SoundTime automatically monitors the health of remote P2P tracks and repairs them when possible.
+
+### Health States
+
+| Status | Description |
+|--------|-------------|
+| **Healthy** | Track blob is available locally, no issues |
+| **Recovered** | Track was unavailable but successfully re-fetched |
+| **Degraded** | 1–2 failed attempts, still attempting recovery |
+| **Dereferenced** | 3+ consecutive failures, track marked unavailable |
+
+### Auto-Repair Flow
+
+When a track fails to play:
+
+1. **Origin retry** — Re-fetch from the original peer that announced the track
+2. **Alternative peers** — If origin fails, try other peers that have the same content hash
+3. **Strike counter** — Increment failure count; after 3 strikes → dereference
+4. **Automatic re-referencing** — If a dereferenced track's blob becomes locally available (e.g., peer comes back online), the track is automatically restored to Healthy status
+
+### Background Health Sweep
+
+A background task runs periodically (default: every 10 minutes) to proactively check remote tracks:
+
+- Processes tracks in batches (default: 500 per sweep)
+- Checks local blob availability via iroh-blobs
+- Attempts recovery for degraded tracks
+- Re-references dereferenced tracks when their blob reappears
+- Persists health state changes to the database
+
+### Duplicate Resolution
+
+When the same track exists on multiple peers, `select_best_copy` ranks copies by:
+
+1. **Peer online status** — Online peers preferred over offline
+2. **Audio format** — FLAC > WAV > OPUS > OGG > AAC > MP3
+3. **Bitrate** — Higher bitrate scores better (capped at 1411 kbps)
+4. **Sample rate** — Higher sample rates get a bonus
+
+## Distributed Search
+
+SoundTime uses Bloom filter-based routing for efficient distributed search.
+
+### How It Works
+
+1. Each node builds a **Bloom filter** (~1.2 MB) from its local track metadata (titles, artists, albums)
+2. Bloom filters are exchanged between peers via `BloomFilterExchange` messages
+3. When a user searches, the query terms are checked against each peer's Bloom filter
+4. Only peers whose filter matches receive the `SearchQuery` message
+5. Matching peers respond with `SearchResults` containing matching tracks
+
+This avoids flooding the network with search requests — only relevant peers are queried.
+
+### Parameters
+
+- **Filter size**: 100,000 entries capacity
+- **False positive rate**: ~1%
+- **Serialized size**: ~1.2 MB per peer
+- **Term normalization**: Lowercase, word splitting, short words (< 2 chars) filtered out
 
 ## Peer Blocking
 

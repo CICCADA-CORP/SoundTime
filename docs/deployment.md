@@ -91,6 +91,17 @@ P2P_SEED_PEERS=                         # comma-separated NodeIds of peers to au
 
 > **Important**: Open UDP port **11204** in your firewall for P2P connectivity. If behind NAT, SoundTime will use n0.computer relay servers as fallback.
 
+### Public Instance Listing
+
+```env
+# Controlled via admin settings panel:
+# listing_public = true/false          # opt-in to the SoundTime public directory
+# listing_url = <custom URL>           # override the default listing server
+# listing_domain = <your domain>       # domain announced to the directory
+```
+
+The listing worker sends a heartbeat every 5 minutes to the SoundTime public directory. Instances that don't heartbeat for 48 hours are removed. Disable from the admin panel by setting `listing_public` to `false`.
+
 ### CORS & Security
 
 ```env

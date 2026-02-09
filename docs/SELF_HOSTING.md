@@ -5,7 +5,7 @@ Run your own SoundTime node with Docker Compose.
 ## Prerequisites
 
 - **Docker** and **Docker Compose** installed.
-- access to ports 80/443 (for web) and P2P ports (default 3000/udp).
+- access to ports 80/443 (for web) and 11204/udp (for P2P).
 - A domain name (optional, but recommended for SSL).
 
 ## Quick Start

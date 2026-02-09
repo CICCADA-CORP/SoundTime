@@ -6,7 +6,7 @@ Set up SoundTime for local development.
 
 | Tool | Version | Installation |
 |------|---------|-------------|
-| **Rust** | 1.78+ | [rustup.rs](https://rustup.rs) |
+| **Rust** | 1.93+ | [rustup.rs](https://rustup.rs) |
 | **Node.js** | 20+ | [nvm](https://github.com/nvm-sh/nvm) or [nodejs.org](https://nodejs.org) |
 | **PostgreSQL** | 16 | Via Docker (recommended) or native install |
 | **Docker** | Latest | [docker.com](https://docs.docker.com/get-docker/) |
@@ -104,7 +104,13 @@ soundtime/
 │       └── soundtime-p2p/         # P2P networking
 │           └── src/
 │               ├── node.rs        # iroh node, message handling
-│               └── lib.rs         # Config, types
+│               ├── discovery.rs   # Peer registry
+│               ├── track_health.rs# Health monitoring, auto-repair
+│               ├── search_index.rs# Bloom filter distributed search
+│               ├── blocked.rs     # Peer blocking
+│               ├── musicbrainz.rs # MusicBrainz metadata client
+│               ├── error.rs       # P2P error types
+│               └── lib.rs         # Config, types, re-exports
 ├── frontend/
 │   └── src/
 │       ├── lib/

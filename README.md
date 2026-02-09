@@ -12,7 +12,7 @@
   <a href="https://github.com/CICCADA-CORP/SoundTime/actions/workflows/ci.yml"><img src="https://github.com/CICCADA-CORP/SoundTime/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License" /></a>
   <img src="https://img.shields.io/badge/version-1.0.0-green.svg" alt="Version" />
-  <img src="https://img.shields.io/badge/rust-1.78%2B-orange.svg" alt="Rust" />
+  <img src="https://img.shields.io/badge/rust-1.93%2B-orange.svg" alt="Rust" />
   <img src="https://img.shields.io/badge/node-20%2B-339933.svg" alt="Node" />
 </p>
 
@@ -55,11 +55,16 @@ Unlike centralized platforms, SoundTime gives you full control over your music. 
 - **Batch upload** — Upload entire albums or folders at once
 
 ### 🌐 Peer-to-Peer Network
-- **iroh-powered P2P** — Encrypted QUIC connections via [iroh](https://iroh.computer/) for peer discovery and track sharing
+- **iroh-powered P2P** — Encrypted QUIC connections via [iroh](https://iroh.computer/) 0.96 for peer discovery and track sharing
 - **Relay support** — NAT traversal through [n0.computer](https://n0.computer/) production relay servers
 - **Content-addressed storage** — Tracks identified by BLAKE3 hashes via iroh-blobs
+- **Distributed search** — Bloom filter-based routing sends queries only to relevant peers
+- **Track health monitoring** — Auto-retry on failure, 3-strike dereference with automatic re-referencing when peers return online
+- **Duplicate resolution** — Best-copy selection based on format quality, bitrate, sample rate, and peer availability
+- **Incremental catalog sync** — Delta-based sync avoids re-sending already-known tracks
 - **Network visualization** — Interactive D3.js force-directed graph of your P2P network topology
 - **Peer management** — Add, ping, and manage connected peers from the admin panel
+- **Public instance listing** — Optional registration on the SoundTime directory for discoverability
 
 ### 🛡️ Security & Privacy
 - **Argon2id** password hashing (OWASP-recommended)
@@ -114,7 +119,7 @@ Unlike centralized platforms, SoundTime gives you full control over your music. 
 | **Frontend** | [SvelteKit](https://kit.svelte.dev/) 2, Svelte 5, Tailwind CSS, shadcn-svelte |
 | **Auth** | Argon2id, JWT (jsonwebtoken), tower-governor |
 | **Audio** | [Lofty](https://github.com/Serial-ATA/lofty-rs) (metadata), [Symphonia](https://github.com/pdeljanov/Symphonia) (decode/waveform) |
-| **P2P** | [iroh](https://iroh.computer/) 0.32 (QUIC), iroh-blobs (content-addressed storage) |
+| **P2P** | [iroh](https://iroh.computer/) 0.96 (QUIC), iroh-blobs 0.96 (content-addressed storage) |
 | **Visualization** | [D3.js](https://d3js.org/) 7 (network graph) |
 | **Storage** | Local filesystem or AWS S3-compatible |
 | **Deployment** | Docker Compose, Nginx reverse proxy |
@@ -174,7 +179,7 @@ The first user to register automatically becomes the **admin**. Open the fronten
 
 See the [Development Guide](docs/development.md) for a complete setup walkthrough.
 
-**Prerequisites**: Rust 1.78+, Node.js 20+, PostgreSQL 16
+**Prerequisites**: Rust 1.93+, Node.js 20+, PostgreSQL 16
 
 ```bash
 # Start PostgreSQL
@@ -209,7 +214,7 @@ soundtime/
 │       ├── soundtime-db         # Sea-ORM entities & database connection pool
 │       ├── soundtime-migration  # 22 database migrations (PostgreSQL)
 │       ├── soundtime-audio      # Audio metadata, storage, waveform generation
-│       └── soundtime-p2p        # P2P networking via iroh (discovery, blobs)
+│       └── soundtime-p2p        # P2P networking via iroh (discovery, health, search)
 ├── frontend/
 │   └── src/
 │       ├── lib/

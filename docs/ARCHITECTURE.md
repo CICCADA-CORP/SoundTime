@@ -32,8 +32,8 @@ graph TD
 
 The core server is written in **Rust** for safety and speed.
 
-- **Framework**: `axum` (0.7+)
-- **Database ORM**: `sea-orm` (async, dynamic)
+- **Framework**: `axum` (0.8)
+- **Database ORM**: `sea-orm` 1.1 (async, dynamic)
 - **Audio Processing**: 
   - `symphonia` for decoding/transcoding
   - `lofty` for metadata parsing
@@ -50,11 +50,21 @@ The user interface is a Single Page Application (SPA) powered by SvelteKit.
 
 ## Peer-to-Peer (`crates/soundtime-p2p`)
 
-We use **Iroh** for secure, direct device-to-device communication. This replaces our legacy ActivityPub implementation to offer better performance for large media files.
+We use **Iroh 0.96** for secure, direct device-to-device communication.
 
-- **Discovery**: Local network (mDNS) + DHT
-- **Transfer**: BLAKE3 verified streaming
-- **Identity**: Ed25519 keypairs per node
+- **Discovery**: DNS (PkarrPublisher) + optional mDNS + Peer Exchange (PEX)
+- **Transfer**: BLAKE3 verified streaming via iroh-blobs `FsStore`
+- **Identity**: Ed25519 keypairs per node (`EndpointId`)
+- **Search**: Bloom filter-based distributed search across peers
+- **Health**: Auto-retry, 3-strike dereference with automatic re-referencing
+- **Modules**:
+  - `node` — P2P node, protocol messages, catalog sync
+  - `discovery` — Peer registry (in-memory)
+  - `track_health` — Health monitoring, auto-repair, duplicate resolution
+  - `search_index` — Bloom filter index for distributed search
+  - `blocked` — Peer blocking by NodeId
+  - `musicbrainz` — Metadata enrichment client
+  - `error` — P2P error types
 
 ## Database Schema
 
