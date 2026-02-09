@@ -176,9 +176,9 @@
 
 <svelte:window onclick={handleWindowClick} />
 
-<div class="w-full">
-  <!-- Header -->
-  <div class="grid grid-cols-[auto_1fr_1fr_auto_auto_auto_auto_auto] gap-4 px-4 py-2 text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider border-b border-[hsl(var(--border))]">
+<div class="w-full overflow-x-hidden">
+  <!-- Header (desktop only) -->
+  <div class="hidden md:grid grid-cols-[auto_1fr_1fr_auto_auto_auto_auto_auto] gap-4 px-4 py-2 text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider border-b border-[hsl(var(--border))]">
     <span class="w-8 text-center">#</span>
     <span>{t('track.title')}</span>
     {#if showAlbum}
@@ -199,7 +199,7 @@
   {#each tracks as track, i}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="grid grid-cols-[auto_1fr_1fr_auto_auto_auto_auto_auto] gap-4 px-4 py-2 w-full text-left hover:bg-[hsl(var(--secondary))] rounded transition group cursor-pointer"
+      class="flex md:grid md:grid-cols-[auto_1fr_1fr_auto_auto_auto_auto_auto] gap-2 md:gap-4 px-3 md:px-4 py-2.5 md:py-2 w-full text-left hover:bg-[hsl(var(--secondary))] rounded transition group cursor-pointer items-center"
       class:bg-[hsl(var(--secondary))]={player.currentTrack?.id === track.id}
       onclick={() => playTrack(i)}
       oncontextmenu={(e) => openContextMenu(e, track.id)}
@@ -207,10 +207,11 @@
       role="button"
       tabindex="0"
     >
-      <span class="w-8 text-center text-sm text-[hsl(var(--muted-foreground))] group-hover:hidden">
+      <!-- Track number (desktop) -->
+      <span class="hidden md:block w-8 text-center text-sm text-[hsl(var(--muted-foreground))] group-hover:hidden">
         {track.track_number ?? i + 1}
       </span>
-      <span class="w-8 text-center text-sm hidden group-hover:block text-white">
+      <span class="hidden md:!hidden md:group-hover:!block w-8 text-center text-sm text-white">
         {#if player.currentTrack?.id === track.id && player.isPlaying}
           <svg class="w-4 h-4 mx-auto" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
         {:else}
@@ -218,7 +219,17 @@
         {/if}
       </span>
 
-      <div class="min-w-0">
+      <!-- Mobile: track number -->
+      <span class="md:hidden w-6 text-center text-xs text-[hsl(var(--muted-foreground))] flex-shrink-0">
+        {#if player.currentTrack?.id === track.id && player.isPlaying}
+          <svg class="w-3.5 h-3.5 mx-auto text-[hsl(var(--primary))]" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+        {:else}
+          {track.track_number ?? i + 1}
+        {/if}
+      </span>
+
+      <!-- Title + artist -->
+      <div class="min-w-0 flex-1">
         <p class="text-sm truncate" class:text-[hsl(var(--primary))]={player.currentTrack?.id === track.id}>
           <a href="/tracks/{track.id}" class="hover:underline" onclick={(e) => e.stopPropagation()}>{track.title}</a>
         </p>
@@ -227,7 +238,8 @@
         {/if}
       </div>
 
-      <span class="text-sm text-[hsl(var(--muted-foreground))] truncate">
+      <!-- Album/Artist column (desktop) -->
+      <span class="hidden md:block text-sm text-[hsl(var(--muted-foreground))] truncate">
         {#if showAlbum}
           {track.album_title ?? ""}
         {:else if showArtist}
@@ -235,11 +247,13 @@
         {/if}
       </span>
 
-      <span class="w-16 text-right text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
+      <!-- Plays (desktop) -->
+      <span class="hidden md:block w-16 text-right text-xs text-[hsl(var(--muted-foreground))] tabular-nums">
         {track.play_count ?? 0}
       </span>
 
-      <span class="w-20 text-right text-xs text-[hsl(var(--muted-foreground))] flex items-center justify-end gap-1">
+      <!-- Quality (desktop) -->
+      <span class="hidden md:flex w-20 text-right text-xs text-[hsl(var(--muted-foreground))] items-center justify-end gap-1">
         {#if track.best_bitrate || track.bitrate}
           <span class="font-mono">{track.best_bitrate ?? track.bitrate ?? 0}k</span>
           <span class="uppercase opacity-70">{track.format}</span>
@@ -251,21 +265,22 @@
         {/if}
       </span>
 
-      <span class="w-16 text-right text-sm text-[hsl(var(--muted-foreground))]">
+      <!-- Duration -->
+      <span class="text-xs md:text-sm text-[hsl(var(--muted-foreground))] md:w-16 md:text-right flex-shrink-0">
         {formatDuration(track.duration_secs)}
       </span>
 
-      <!-- Like button -->
-      <span class="w-8 flex items-center justify-center gap-1">
+      <!-- Like button (desktop) -->
+      <span class="hidden md:flex w-8 items-center justify-center gap-1">
         {#if auth.user}
           <FavoriteButton trackId={track.id} liked={likedMap[track.id] ?? false} size={14} />
         {/if}
       </span>
 
       <!-- More options button -->
-      <span class="w-8 flex items-center justify-center">
+      <span class="flex-shrink-0 flex items-center justify-center w-6 md:w-8">
         <button
-          class="opacity-0 group-hover:opacity-60 hover:!opacity-100 text-[hsl(var(--muted-foreground))] hover:text-white transition p-1"
+          class="md:opacity-0 md:group-hover:opacity-60 hover:!opacity-100 text-[hsl(var(--muted-foreground))] hover:text-white transition p-1"
           title={t('track.options')}
           onclick={(e) => { e.stopPropagation(); openContextMenu(e, track.id); }}
         >

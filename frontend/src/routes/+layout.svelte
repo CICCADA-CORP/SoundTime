@@ -22,6 +22,9 @@
     Disc3,
     LogIn,
     Shield,
+    Menu,
+    X,
+    Search,
   } from "lucide-svelte";
   import type { Snippet } from "svelte";
 
@@ -32,6 +35,8 @@
 
   let setupChecked = $state(false);
   let instancePrivate = $state(false);
+  let sidebarOpen = $state(false);
+  let mobileSearchOpen = $state(false);
 
   onMount(async () => {
     try {
@@ -46,6 +51,13 @@
     }
     setupChecked = true;
     auth.init();
+  });
+
+  // Close sidebar on navigation
+  $effect(() => {
+    void $page.url.pathname;
+    sidebarOpen = false;
+    mobileSearchOpen = false;
   });
 
   // Reactive guard: redirect to login if instance is private and user not authenticated
@@ -72,6 +84,14 @@
     { href: "/history", key: "nav.history" as const, icon: Clock },
     { href: "/upload", key: "nav.upload" as const, icon: Upload },
   ];
+
+  // Bottom nav items for mobile
+  const mobileNavItems = [
+    { href: "/", key: "nav.home" as const, icon: Home },
+    { href: "/explore", key: "nav.explore" as const, icon: Compass },
+    { href: "/library", key: "nav.library" as const, icon: Library },
+    { href: "/favorites", key: "nav.favorites" as const, icon: Heart },
+  ];
 </script>
 
 {#if $page.url.pathname.startsWith("/setup")}
@@ -83,14 +103,31 @@
   </div>
 {:else}
 <div class="flex h-screen overflow-hidden">
+  <!-- Mobile sidebar overlay -->
+  {#if sidebarOpen}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="fixed inset-0 bg-black/60 z-[60] md:hidden"
+      onclick={() => sidebarOpen = false}
+      onkeydown={(e) => e.key === 'Escape' && (sidebarOpen = false)}
+    ></div>
+  {/if}
+
   <!-- Sidebar -->
-  <aside class="w-60 bg-[hsl(0,0%,5%)] flex flex-col border-r border-[hsl(var(--border))] flex-shrink-0" class:pb-20={player.currentTrack}>
-    <!-- Logo -->
-    <div class="p-5">
+  <aside
+    class="fixed md:static inset-y-0 left-0 z-[70] w-60 bg-[hsl(0,0%,5%)] flex flex-col border-r border-[hsl(var(--border))] flex-shrink-0 transform transition-transform duration-200 ease-in-out
+      {sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0"
+    class:pb-20={player.currentTrack}
+  >
+    <!-- Logo + close button -->
+    <div class="p-5 flex items-center justify-between">
       <a href="/" class="flex items-center gap-2.5 text-lg font-semibold tracking-tight">
         <Disc3 class="w-6 h-6 text-[hsl(var(--primary))]" />
         <span>SoundTime</span>
       </a>
+      <button class="md:hidden text-[hsl(var(--muted-foreground))] hover:text-white transition-colors p-1" onclick={() => sidebarOpen = false} aria-label="Close menu">
+        <X class="w-5 h-5" strokeWidth={1.75} />
+      </button>
     </div>
 
     <!-- Nav -->
@@ -152,25 +189,90 @@
   </aside>
 
   <!-- Main Content -->
-  <main class="flex-1 overflow-y-auto" class:pb-20={player.currentTrack}>
+  <main class="flex-1 overflow-y-auto w-full min-w-0 {player.currentTrack ? 'pb-36 md:pb-24' : 'pb-16 md:pb-0'}">
     <!-- Top Bar -->
     <header class="sticky top-0 z-40 bg-[hsl(var(--background))]/80 backdrop-blur-lg border-b border-[hsl(var(--border))]">
-      <div class="flex items-center justify-between px-6 py-3">
-        <SearchBar />
-        {#if auth.isAuthenticated && auth.isAdmin}
-          <a href="/admin" class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-[hsl(var(--primary))]/20 text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary))]/30 transition-colors font-medium">
-            <Shield class="w-3.5 h-3.5" strokeWidth={1.75} />
-            Admin
-          </a>
-        {/if}
+      <div class="flex items-center justify-between px-3 md:px-6 py-3 gap-2">
+        <!-- Mobile hamburger -->
+        <button class="md:hidden text-[hsl(var(--muted-foreground))] hover:text-white transition-colors p-1.5 -ml-1" onclick={() => sidebarOpen = true} aria-label="Open menu">
+          <Menu class="w-5 h-5" strokeWidth={1.75} />
+        </button>
+
+        <!-- Logo on mobile (centered feel) -->
+        <a href="/" class="md:hidden flex items-center gap-1.5 text-base font-semibold tracking-tight">
+          <Disc3 class="w-5 h-5 text-[hsl(var(--primary))]" />
+          <span>SoundTime</span>
+        </a>
+
+        <!-- Search (desktop) -->
+        <div class="hidden md:block flex-1">
+          <SearchBar />
+        </div>
+
+        <!-- Mobile search toggle + admin -->
+        <div class="flex items-center gap-1.5">
+          <button class="md:hidden text-[hsl(var(--muted-foreground))] hover:text-white transition-colors p-1.5" onclick={() => mobileSearchOpen = !mobileSearchOpen} aria-label="Search">
+            <Search class="w-5 h-5" strokeWidth={1.75} />
+          </button>
+          {#if auth.isAuthenticated && auth.isAdmin}
+            <a href="/admin" class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-[hsl(var(--primary))]/20 text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary))]/30 transition-colors font-medium">
+              <Shield class="w-3.5 h-3.5" strokeWidth={1.75} />
+              <span class="hidden sm:inline">Admin</span>
+            </a>
+          {/if}
+        </div>
       </div>
+
+      <!-- Mobile search bar (expandable) -->
+      {#if mobileSearchOpen}
+        <div class="md:hidden px-3 pb-3">
+          <SearchBar />
+        </div>
+      {/if}
     </header>
 
-    <div class="p-6">
+    <div class="p-3 md:p-6">
       {@render children()}
     </div>
   </main>
 </div>
+
+<!-- Mobile bottom navigation -->
+<nav class="fixed bottom-0 left-0 right-0 z-[55] md:hidden bg-[hsl(0,0%,5%)] border-t border-[hsl(var(--border))] safe-area-bottom"
+  class:hidden={!setupChecked || $page.url.pathname.startsWith("/setup")}
+  style:padding-bottom={player.currentTrack ? '80px' : '0px'}
+>
+  <div class="flex items-center justify-around h-14">
+    {#each mobileNavItems as item}
+      {@const isActive = $page.url.pathname === item.href}
+      <a
+        href={item.href}
+        class="flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg transition-colors min-w-[60px]
+          {isActive ? 'text-[hsl(var(--primary))]' : 'text-[hsl(var(--muted-foreground))]'}"
+      >
+        <item.icon class="w-5 h-5" strokeWidth={isActive ? 2.25 : 1.75} />
+        <span class="text-[10px] font-medium">{t(item.key)}</span>
+      </a>
+    {/each}
+    {#if auth.isAuthenticated}
+      <button
+        class="flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg transition-colors min-w-[60px] text-[hsl(var(--muted-foreground))]"
+        onclick={() => sidebarOpen = true}
+      >
+        <Menu class="w-5 h-5" strokeWidth={1.75} />
+        <span class="text-[10px] font-medium">{t('nav.more')}</span>
+      </button>
+    {:else}
+      <a
+        href="/login"
+        class="flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg transition-colors min-w-[60px] text-[hsl(var(--muted-foreground))]"
+      >
+        <LogIn class="w-5 h-5" strokeWidth={1.75} />
+        <span class="text-[10px] font-medium">{t('nav.signIn')}</span>
+      </a>
+    {/if}
+  </div>
+</nav>
 
 {/if}
 

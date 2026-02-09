@@ -29,6 +29,7 @@ export default {
   "nav.admin": "管理",
   "nav.settings": "设置",
   "nav.logout": "退出登录",
+  "nav.more": "更多",
 
   // Track
   "track.title": "标题",

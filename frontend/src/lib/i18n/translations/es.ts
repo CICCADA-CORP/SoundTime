@@ -29,6 +29,7 @@ export default {
   "nav.admin": "Admin",
   "nav.settings": "Ajustes",
   "nav.logout": "Cerrar sesión",
+  "nav.more": "Más",
 
   // Track
   "track.title": "Título",
