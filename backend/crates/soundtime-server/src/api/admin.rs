@@ -365,10 +365,7 @@ pub struct NodeInfo {
 
 /// GET /api/nodeinfo — public instance info consumed by the listing server
 pub async fn nodeinfo(State(state): State<Arc<AppState>>) -> Result<Json<NodeInfo>, StatusCode> {
-    let total_tracks = track::Entity::find()
-        .count(&state.db)
-        .await
-        .unwrap_or(0);
+    let total_tracks = track::Entity::find().count(&state.db).await.unwrap_or(0);
 
     let total_users = user::Entity::find().count(&state.db).await.unwrap_or(0);
 
