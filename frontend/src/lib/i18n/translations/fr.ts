@@ -314,6 +314,9 @@ export default {
   "admin.settings.publicListing": "Annuaire public",
   "admin.settings.publicListingDesc": "Publier cette instance dans l'annuaire public SoundTime. D'autres utilisateurs pourront découvrir votre instance.",
   "admin.settings.publicListingActive": "Cette instance est référencée dans l'annuaire public SoundTime et visible par tous.",
+  "admin.settings.listingDomain": "Domaine de l'instance",
+  "admin.settings.listingDomainDesc": "Le domaine public ou IP:port que le serveur d'annuaire utilisera pour joindre votre instance. Si vide, utilise la variable d'environnement SOUNDTIME_DOMAIN.",
+  "admin.settings.listingDomainPlaceholder": "music.example.com ou 1.2.3.4:8880",
   "admin.settings.listingUrl": "URL du serveur d'annuaire",
   "admin.settings.listingUrlDesc": "URL du serveur d'annuaire sur lequel s'inscrire. N'importe qui peut héberger son propre serveur d'annuaire. Par défaut : https://soundtime-listing-production.up.railway.app",
 

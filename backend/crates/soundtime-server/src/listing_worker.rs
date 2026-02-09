@@ -88,6 +88,25 @@ pub fn spawn(state: Arc<AppState>) {
     });
 }
 
+/// Read the domain to announce to the listing server.
+/// Priority: DB setting `listing_domain` → env var `SOUNDTIME_DOMAIN` → "localhost:8080".
+async fn get_listing_domain(state: &AppState) -> String {
+    let from_db = instance_setting::Entity::find()
+        .filter(instance_setting::Column::Key.eq("listing_domain"))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .map(|s| s.value)
+        .filter(|v| !v.is_empty());
+
+    from_db
+        .unwrap_or_else(|| state.domain.clone())
+        .trim_end_matches('/')
+        .replace("https://", "")
+        .replace("http://", "")
+}
+
 /// Read the listing URL from instance settings, falling back to env var then default.
 async fn get_listing_url(state: &AppState) -> String {
     let from_db = instance_setting::Entity::find()
@@ -189,7 +208,7 @@ async fn send_heartbeat(
     client: &reqwest::Client,
     listing_url: &str,
 ) -> Result<(), String> {
-    let domain = &state.domain;
+    let domain = get_listing_domain(state).await;
 
     // Warn if domain looks like a localhost address — listing server won't be able to reach us
     if domain.starts_with("localhost")
@@ -199,8 +218,8 @@ async fn send_heartbeat(
         tracing::warn!(
             domain = %domain,
             "listing heartbeat: domain is a local address — the listing server will not be able \
-             to reach this instance for health checks. Set SOUNDTIME_DOMAIN to your public \
-             domain (e.g. music.example.com) for listing to work properly."
+             to reach this instance for health checks. Set the listing domain in admin settings \
+             or SOUNDTIME_DOMAIN env var to your public domain (e.g. music.example.com)."
         );
     }
 
@@ -222,7 +241,7 @@ async fn send_heartbeat(
         .unwrap_or(true);
 
     let mut payload = serde_json::json!({
-        "domain": domain,
+        "domain": &domain,
         "name": name,
         "description": description,
         "version": "0.1.0",

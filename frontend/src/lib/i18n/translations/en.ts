@@ -314,6 +314,9 @@ export default {
   "admin.settings.publicListing": "Public Directory",
   "admin.settings.publicListingDesc": "Publish this instance to the public SoundTime node directory. Other users can discover your instance.",
   "admin.settings.publicListingActive": "This instance is listed on the public SoundTime directory and visible to everyone.",
+  "admin.settings.listingDomain": "Instance Domain",
+  "admin.settings.listingDomainDesc": "The public domain or IP:port that the listing server will use to reach your instance. If empty, falls back to the SOUNDTIME_DOMAIN environment variable.",
+  "admin.settings.listingDomainPlaceholder": "music.example.com or 1.2.3.4:8880",
   "admin.settings.listingUrl": "Listing Server URL",
   "admin.settings.listingUrlDesc": "URL of the listing server to register on. Anyone can host their own listing server. Default: https://soundtime-listing-production.up.railway.app",
 
