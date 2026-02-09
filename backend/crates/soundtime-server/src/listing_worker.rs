@@ -99,9 +99,7 @@ fn clean_domain(raw: &str) -> String {
 
 /// Returns `true` if the domain looks like a local/unreachable address.
 fn is_local_domain(domain: &str) -> bool {
-    domain.starts_with("localhost")
-        || domain.starts_with("127.")
-        || domain.starts_with("0.0.0.0")
+    domain.starts_with("localhost") || domain.starts_with("127.") || domain.starts_with("0.0.0.0")
 }
 
 /// POST /api/admin/listing/trigger — force an immediate heartbeat.
@@ -343,7 +341,7 @@ async fn send_heartbeat(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{method, path, body_json};
+    use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // ─── Helper ─────────────────────────────────────────────────────
@@ -443,12 +441,18 @@ mod tests {
 
     #[test]
     fn clean_domain_strips_https() {
-        assert_eq!(clean_domain("https://music.example.com"), "music.example.com");
+        assert_eq!(
+            clean_domain("https://music.example.com"),
+            "music.example.com"
+        );
     }
 
     #[test]
     fn clean_domain_strips_http() {
-        assert_eq!(clean_domain("http://music.example.com"), "music.example.com");
+        assert_eq!(
+            clean_domain("http://music.example.com"),
+            "music.example.com"
+        );
     }
 
     #[test]
@@ -458,12 +462,18 @@ mod tests {
 
     #[test]
     fn clean_domain_strips_protocol_and_slash() {
-        assert_eq!(clean_domain("https://music.example.com/"), "music.example.com");
+        assert_eq!(
+            clean_domain("https://music.example.com/"),
+            "music.example.com"
+        );
     }
 
     #[test]
     fn clean_domain_preserves_port() {
-        assert_eq!(clean_domain("music.example.com:8880"), "music.example.com:8880");
+        assert_eq!(
+            clean_domain("music.example.com:8880"),
+            "music.example.com:8880"
+        );
     }
 
     #[test]
@@ -589,8 +599,14 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("422"), "error should contain status code: {err}");
-        assert!(err.contains("Domain is not reachable"), "error should contain message: {err}");
+        assert!(
+            err.contains("422"),
+            "error should contain status code: {err}"
+        );
+        assert!(
+            err.contains("Domain is not reachable"),
+            "error should contain message: {err}"
+        );
     }
 
     #[tokio::test]
@@ -641,8 +657,7 @@ mod tests {
         let client = http_client();
         let payload = build_announce_payload(&sample_params());
         // Use a port that's almost certainly not listening
-        let result =
-            send_announce_request(&client, "http://127.0.0.1:19999", &payload).await;
+        let result = send_announce_request(&client, "http://127.0.0.1:19999", &payload).await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("HTTP request failed"));
@@ -687,7 +702,10 @@ mod tests {
         let result = send_announce_request(&client, &mock_server.uri(), &payload).await;
 
         // If the body didn't match, the mock wouldn't respond → error
-        assert!(result.is_ok(), "payload should match expected JSON: {result:?}");
+        assert!(
+            result.is_ok(),
+            "payload should match expected JSON: {result:?}"
+        );
     }
 
     #[tokio::test]

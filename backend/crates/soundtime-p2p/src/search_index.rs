@@ -559,11 +559,7 @@ mod tests {
         assert!(idx.local_might_match("first").await);
 
         // Rebuild with different tracks
-        let tracks = vec![(
-            "Second".to_string(),
-            "Second Artist".to_string(),
-            None,
-        )];
+        let tracks = vec![("Second".to_string(), "Second Artist".to_string(), None)];
         idx.rebuild_from_tracks(&tracks).await;
         // Old track should no longer match (bloom was reset)
         // Note: due to bloom filter false positives, "first" MIGHT still match
@@ -621,8 +617,12 @@ mod tests {
         let idx = SearchIndex::new();
         idx.insert_track("Bohemian Rhapsody", "Queen", Some("A Night at the Opera"))
             .await;
-        idx.insert_track("Stairway to Heaven", "Led Zeppelin", Some("Led Zeppelin IV"))
-            .await;
+        idx.insert_track(
+            "Stairway to Heaven",
+            "Led Zeppelin",
+            Some("Led Zeppelin IV"),
+        )
+        .await;
         idx.insert_track("Hotel California", "Eagles", Some("Hotel California"))
             .await;
 

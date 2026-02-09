@@ -2356,10 +2356,7 @@ mod tests {
         let bytes = serde_json::to_vec(&msg).unwrap();
         let decoded: P2pMessage = serde_json::from_slice(&bytes).unwrap();
         match decoded {
-            P2pMessage::CatalogDelta {
-                since: s,
-                tracks,
-            } => {
+            P2pMessage::CatalogDelta { since: s, tracks } => {
                 assert_eq!(tracks.len(), 1);
                 assert_eq!(tracks[0].hash, "delta1");
                 assert_eq!(tracks[0].format, "OPUS");
@@ -2621,10 +2618,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_for_path_preserves_hyphens_underscores_spaces() {
-        assert_eq!(
-            sanitize_for_path("my track-name_01"),
-            "my track-name_01"
-        );
+        assert_eq!(sanitize_for_path("my track-name_01"), "my track-name_01");
     }
 
     #[test]
@@ -2754,7 +2748,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("secret_key");
         // Write invalid hex (odd length, not 64 chars)
-        tokio::fs::write(&key_path, "not_valid_hex_data").await.unwrap();
+        tokio::fs::write(&key_path, "not_valid_hex_data")
+            .await
+            .unwrap();
 
         let config = P2pConfig {
             secret_key_path: key_path,

@@ -239,9 +239,7 @@ mod tests {
         let registry = PeerRegistry::new();
 
         // Insert with name
-        registry
-            .upsert_peer("p1", Some("Original".into()), 5)
-            .await;
+        registry.upsert_peer("p1", Some("Original".into()), 5).await;
         assert_eq!(
             registry.get_peer("p1").await.unwrap().name,
             Some("Original".into())
@@ -255,9 +253,7 @@ mod tests {
         );
 
         // Update with new name → should replace
-        registry
-            .upsert_peer("p1", Some("Renamed".into()), 15)
-            .await;
+        registry.upsert_peer("p1", Some("Renamed".into()), 15).await;
         assert_eq!(
             registry.get_peer("p1").await.unwrap().name,
             Some("Renamed".into())
@@ -481,9 +477,7 @@ mod tests {
     async fn test_concurrent_read_write() {
         let registry = Arc::new(PeerRegistry::new());
         for i in 0..5 {
-            registry
-                .upsert_peer(&format!("p{i}"), None, i as u64)
-                .await;
+            registry.upsert_peer(&format!("p{i}"), None, i as u64).await;
         }
 
         let reg1 = Arc::clone(&registry);

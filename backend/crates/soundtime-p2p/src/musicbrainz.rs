@@ -249,7 +249,12 @@ mod tests {
 
     // ── lookup_recording with mock server ────────────────────────────
 
-    fn mb_response_json(score: u8, date: Option<&str>, has_artist: bool, has_release: bool) -> String {
+    fn mb_response_json(
+        score: u8,
+        date: Option<&str>,
+        has_artist: bool,
+        has_release: bool,
+    ) -> String {
         let artist_credit = if has_artist {
             r#"[{"artist": {"name": "Queen"}}]"#
         } else {
@@ -285,10 +290,12 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path_regex(r"/recording.*"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_string(mb_response_json(95, Some("1975-10-31"), true, true)),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(mb_response_json(
+                95,
+                Some("1975-10-31"),
+                true,
+                true,
+            )))
             .mount(&server)
             .await;
 
@@ -310,10 +317,12 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path_regex(r"/recording.*"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_string(mb_response_json(50, Some("2000"), true, true)),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(mb_response_json(
+                50,
+                Some("2000"),
+                true,
+                true,
+            )))
             .mount(&server)
             .await;
 
@@ -328,10 +337,12 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path_regex(r"/recording.*"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_string(mb_response_json(90, Some("2020"), false, true)),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(mb_response_json(
+                90,
+                Some("2020"),
+                false,
+                true,
+            )))
             .mount(&server)
             .await;
 
@@ -348,8 +359,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path_regex(r"/recording.*"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_string(mb_response_json(85, None, true, false)),
+                ResponseTemplate::new(200).set_body_string(mb_response_json(85, None, true, false)),
             )
             .mount(&server)
             .await;
@@ -367,10 +377,12 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path_regex(r"/recording.*"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_string(mb_response_json(90, Some("1999"), true, true)),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(mb_response_json(
+                90,
+                Some("1999"),
+                true,
+                true,
+            )))
             .mount(&server)
             .await;
 
@@ -401,9 +413,7 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path_regex(r"/recording.*"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string("not valid json"),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string("not valid json"))
             .mount(&server)
             .await;
 
@@ -418,10 +428,7 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path_regex(r"/recording.*"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_string(r#"{"recordings": []}"#),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"recordings": []}"#))
             .mount(&server)
             .await;
 
@@ -436,10 +443,12 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path_regex(r"/recording.*"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_string(mb_response_json(90, Some("2020"), true, true)),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(mb_response_json(
+                90,
+                Some("2020"),
+                true,
+                true,
+            )))
             .expect(1)
             .mount(&server)
             .await;

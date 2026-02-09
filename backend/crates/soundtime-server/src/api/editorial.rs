@@ -264,14 +264,16 @@ Respond ONLY with valid JSON in this exact format:
     if !ai_response.status().is_success() {
         let status = ai_response.status();
         let body = ai_response.text().await.unwrap_or_default();
-        let truncated = if body.len() > 200 { &body[..200] } else { &body };
+        let truncated = if body.len() > 200 {
+            &body[..200]
+        } else {
+            &body
+        };
         tracing::error!(%status, "AI API returned error");
         tracing::debug!(body = truncated, "AI API error response (truncated)");
         return Err((
             StatusCode::BAD_GATEWAY,
-            Json(
-                serde_json::json!({ "error": format!("AI API returned status {status}") }),
-            ),
+            Json(serde_json::json!({ "error": format!("AI API returned status {status}") })),
         ));
     }
 
