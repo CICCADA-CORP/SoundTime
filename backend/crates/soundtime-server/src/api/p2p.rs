@@ -58,9 +58,9 @@ pub async fn p2p_status(State(state): State<Arc<AppState>>) -> Json<P2pStatus> {
         });
     };
 
-    let relay_url = node.relay_url().await;
+    let relay_url = node.relay_url();
     let relay_connected = relay_url.is_some();
-    let direct_addresses = node.direct_addresses_count().await;
+    let direct_addresses = node.direct_addresses_count();
 
     Json(P2pStatus {
         enabled: true,
@@ -246,7 +246,7 @@ pub async fn network_graph(State(state): State<Arc<AppState>>) -> Json<NetworkGr
     });
 
     // Relay node
-    if let Some(relay_url) = node.relay_url().await {
+    if let Some(relay_url) = node.relay_url() {
         let relay_id = format!("relay:{relay_url}");
         let relay_host = relay_url
             .trim_start_matches("https://")

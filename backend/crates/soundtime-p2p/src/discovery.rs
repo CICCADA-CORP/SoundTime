@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use iroh::{NodeAddr, NodeId};
+use iroh::{EndpointAddr, EndpointId};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -17,7 +17,7 @@ use crate::node::{P2pMessage, P2pNode};
 /// Information about a known peer.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PeerInfo {
-    /// Peer's iroh NodeId (public key)
+    /// Peer's iroh EndpointId (public key)
     pub node_id: String,
     /// Human-readable name (optional, set by peer admin)
     pub name: Option<String>,
@@ -31,7 +31,7 @@ pub struct PeerInfo {
 
 /// Manages the set of known peers and handles discovery.
 pub struct PeerRegistry {
-    /// Known peers, keyed by NodeId string
+    /// Known peers, keyed by EndpointId string
     peers: RwLock<HashMap<String, PeerInfo>>,
 }
 
@@ -109,14 +109,14 @@ impl Default for PeerRegistry {
     }
 }
 
-/// Manually add a peer by its NodeAddr and ping it.
+/// Manually add a peer by its EndpointAddr and ping it.
 /// Returns the PeerInfo if the peer responds.
 pub async fn add_and_ping_peer(
     node: &Arc<P2pNode>,
     registry: &PeerRegistry,
-    peer_addr: NodeAddr,
+    peer_addr: EndpointAddr,
 ) -> Result<PeerInfo, P2pError> {
-    let peer_id = peer_addr.node_id.to_string();
+    let peer_id = peer_addr.id.to_string();
     info!(%peer_id, "adding peer and pinging");
 
     match node.ping_peer(peer_addr).await {
@@ -147,7 +147,7 @@ pub async fn refresh_all_peers(node: &Arc<P2pNode>, registry: &PeerRegistry) {
     info!(count = peers.len(), "refreshing peer statuses");
 
     for peer in peers {
-        let node_id: NodeId = match peer.node_id.parse() {
+        let node_id: EndpointId = match peer.node_id.parse() {
             Ok(id) => id,
             Err(_) => {
                 warn!(peer_id = %peer.node_id, "invalid node_id in registry, removing");
@@ -156,7 +156,7 @@ pub async fn refresh_all_peers(node: &Arc<P2pNode>, registry: &PeerRegistry) {
             }
         };
 
-        let peer_addr = NodeAddr::new(node_id);
+        let peer_addr = EndpointAddr::new(node_id);
         match node.ping_peer(peer_addr).await {
             Ok(P2pMessage::Pong {
                 node_id: _,

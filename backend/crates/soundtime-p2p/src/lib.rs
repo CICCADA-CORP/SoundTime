@@ -20,5 +20,8 @@ pub use node::{P2pConfig, P2pMessage, P2pNode, SearchResultItem, TrackAnnounceme
 pub use search_index::{BloomFilterData, SearchIndex};
 
 // Re-export iroh types needed by consumers
-pub use iroh::{NodeAddr, NodeId, RelayUrl};
+pub use iroh::{EndpointAddr, EndpointId};
+/// Backward-compatible type aliases
+pub type NodeAddr = EndpointAddr;
+pub type NodeId = EndpointId;
 pub use iroh_blobs::Hash as BlobHash;
