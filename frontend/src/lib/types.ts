@@ -420,6 +420,8 @@ export interface StorageStatus {
   total_tracks: number;
   total_size_bytes: number;
   storage_path_or_bucket: string;
+  remote_track_count: number;
+  remote_available_count: number;
 }
 
 export interface MissingTrack {

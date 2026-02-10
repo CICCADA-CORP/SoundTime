@@ -656,6 +656,10 @@
             <p class="text-3xl font-bold mt-1">{stats.total_tracks}</p>
           </div>
           <div class="bg-[hsl(var(--card))] rounded-lg p-5">
+            <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.overview.remoteTracks')}</p>
+            <p class="text-3xl font-bold mt-1 text-blue-400">{stats.total_remote_tracks}</p>
+          </div>
+          <div class="bg-[hsl(var(--card))] rounded-lg p-5">
             <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.overview.blockedDomains')}</p>
             <p class="text-3xl font-bold mt-1">{stats.total_blocked_domains}</p>
           </div>
@@ -1514,7 +1518,7 @@
                   <tr class="border-b border-[hsl(var(--border))]">
                     <th class="text-left p-3 text-[hsl(var(--muted-foreground))]">{t('admin.p2p.nodeId')}</th>
                     <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">Version</th>
-                    <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">Tracks</th>
+                    <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">{t('admin.p2p.peerTracks')}</th>
                     <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">Status</th>
                     <th class="text-right p-3 text-[hsl(var(--muted-foreground))]">Actions</th>
                   </tr>
@@ -2217,7 +2221,7 @@
         <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6">
           <h2 class="text-lg font-semibold mb-4">{t('admin.storage.title')}</h2>
           {#if storageStatus}
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
               <div class="bg-[hsl(var(--secondary))] rounded-lg p-4">
                 <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.storage.backend')}</p>
                 <p class="text-xl font-bold mt-1 capitalize">{storageStatus.backend}</p>
@@ -2233,6 +2237,14 @@
               <div class="bg-[hsl(var(--secondary))] rounded-lg p-4">
                 <p class="text-xs text-[hsl(var(--muted-foreground))]">{storageStatus.backend === "s3" ? t('admin.storage.bucket') : t('admin.storage.path')}</p>
                 <p class="text-sm font-mono mt-1 truncate" title={storageStatus.storage_path_or_bucket}>{storageStatus.storage_path_or_bucket}</p>
+              </div>
+              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4">
+                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.storage.remoteTracks')}</p>
+                <p class="text-xl font-bold mt-1 text-blue-400">{storageStatus.remote_track_count}</p>
+              </div>
+              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4">
+                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.storage.remoteAvailable')}</p>
+                <p class="text-xl font-bold mt-1 text-green-400">{storageStatus.remote_available_count}</p>
               </div>
             </div>
             <div class="mt-4 p-4 bg-[hsl(var(--secondary))] rounded-lg">

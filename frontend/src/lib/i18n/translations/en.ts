@@ -260,7 +260,8 @@ export default {
 
   // Admin — overview
   "admin.overview.users": "Users",
-  "admin.overview.tracks": "Tracks",
+  "admin.overview.tracks": "Local tracks",
+  "admin.overview.remoteTracks": "P2P tracks",
   "admin.overview.p2pEnabled": "P2P enabled",
   "admin.overview.p2pNodeId": "Node ID",
   "admin.overview.blockedDomains": "Blocked peers",
@@ -341,7 +342,7 @@ export default {
 
   // Admin — instances
   "admin.instances.domain": "Domain",
-  "admin.instances.tracks": "Tracks",
+  "admin.instances.tracks": "P2P Tracks",
   "admin.instances.status": "Status",
   "admin.instances.blocked": "Blocked",
   "admin.instances.active": "Active",
@@ -362,6 +363,7 @@ export default {
   "admin.p2p.addPeerPlaceholder": "Enter peer Node ID",
   "admin.p2p.ping": "Ping",
   "admin.p2p.remove": "Remove",
+  "admin.p2p.peerTracks": "Their tracks",
   "admin.p2p.noPeers": "No peers connected.",
 
   // Admin — Library Sync
@@ -527,8 +529,10 @@ export default {
   // Admin — storage
   "admin.storage.title": "Storage",
   "admin.storage.backend": "Backend",
-  "admin.storage.tracksStored": "Tracks stored",
-  "admin.storage.totalSize": "Total size",
+  "admin.storage.tracksStored": "Local tracks",
+  "admin.storage.totalSize": "Disk usage",
+  "admin.storage.remoteTracks": "P2P tracks",
+  "admin.storage.remoteAvailable": "Available",
   "admin.storage.bucket": "Bucket",
   "admin.storage.path": "Path",
   "admin.storage.configuration": "Configuration",

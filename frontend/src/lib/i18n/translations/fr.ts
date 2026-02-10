@@ -260,7 +260,8 @@ export default {
 
   // Admin — overview
   "admin.overview.users": "Utilisateurs",
-  "admin.overview.tracks": "Pistes",
+  "admin.overview.tracks": "Pistes locales",
+  "admin.overview.remoteTracks": "Pistes P2P",
   "admin.overview.p2pEnabled": "P2P activé",
   "admin.overview.p2pNodeId": "ID du nœud",
   "admin.overview.blockedDomains": "Pairs bloqués",
@@ -341,7 +342,7 @@ export default {
 
   // Admin — instances
   "admin.instances.domain": "Domaine",
-  "admin.instances.tracks": "Pistes",
+  "admin.instances.tracks": "Pistes P2P",
   "admin.instances.status": "Statut",
   "admin.instances.blocked": "Bloqué",
   "admin.instances.active": "Actif",
@@ -362,6 +363,7 @@ export default {
   "admin.p2p.addPeerPlaceholder": "Entrer l'ID du pair",
   "admin.p2p.ping": "Ping",
   "admin.p2p.remove": "Supprimer",
+  "admin.p2p.peerTracks": "Leurs pistes",
   "admin.p2p.noPeers": "Aucun pair connecté.",
 
   // Admin — Synchronisation de librairie
@@ -527,8 +529,10 @@ export default {
   // Admin — storage
   "admin.storage.title": "Stockage",
   "admin.storage.backend": "Backend",
-  "admin.storage.tracksStored": "Pistes stockées",
-  "admin.storage.totalSize": "Taille totale",
+  "admin.storage.tracksStored": "Pistes locales",
+  "admin.storage.totalSize": "Espace disque",
+  "admin.storage.remoteTracks": "Pistes P2P",
+  "admin.storage.remoteAvailable": "Disponibles",
   "admin.storage.bucket": "Bucket",
   "admin.storage.path": "Chemin",
   "admin.storage.configuration": "Configuration",

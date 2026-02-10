@@ -817,6 +817,8 @@ pub struct StorageStatusResponse {
     pub total_tracks: u64,
     pub total_size_bytes: i64,
     pub storage_path_or_bucket: String,
+    pub remote_track_count: u64,
+    pub remote_available_count: u64,
 }
 
 /// GET /api/admin/storage/status
@@ -829,6 +831,17 @@ pub async fn storage_status(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let total_size: i64 = tracks.iter().map(|t| t.file_size).sum();
+
+    let remote_track_count = remote_track::Entity::find()
+        .count(&state.db)
+        .await
+        .unwrap_or(0);
+    let remote_available_count = remote_track::Entity::find()
+        .filter(remote_track::Column::IsAvailable.eq(true))
+        .count(&state.db)
+        .await
+        .unwrap_or(0);
+
     let backend_type = std::env::var("STORAGE_BACKEND").unwrap_or_else(|_| "local".to_string());
     let storage_info = if backend_type == "s3" {
         std::env::var("S3_BUCKET").unwrap_or_else(|_| "N/A".to_string())
@@ -841,6 +854,8 @@ pub async fn storage_status(
         total_tracks: tracks.len() as u64,
         total_size_bytes: total_size,
         storage_path_or_bucket: storage_info,
+        remote_track_count,
+        remote_available_count,
     }))
 }
 

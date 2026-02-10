@@ -11,6 +11,9 @@ let repeat = $state<"none" | "one" | "all">("none");
 let audio: HTMLAudioElement | null = null;
 let lastPositionUpdate = 0;
 
+/** The original favicon href so we can restore it when playback stops. */
+let originalFaviconHref: string | null = null;
+
 /** Resolve a relative media URL to an absolute one. */
 function resolveMediaUrl(url: string): string {
   if (url.startsWith("http")) return url;
@@ -41,6 +44,35 @@ function updateMediaSession(track: Track) {
     album: track.album_title ?? "",
     artwork,
   });
+}
+
+/** Swap the page favicon to the track's cover art, or restore the default. */
+function updateFavicon(coverUrl: string | null | undefined) {
+  if (typeof document === "undefined") return;
+
+  let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+
+  // Save the original favicon once
+  if (originalFaviconHref === null) {
+    originalFaviconHref = link?.href ?? "/favicon.png";
+  }
+
+  if (!coverUrl) {
+    // Restore original favicon
+    if (link) link.href = originalFaviconHref;
+    return;
+  }
+
+  const url = resolveMediaUrl(coverUrl);
+
+  if (!link) {
+    link = document.createElement("link");
+    link.rel = "icon";
+    document.head.appendChild(link);
+  }
+
+  link.type = "image/jpeg";
+  link.href = url;
 }
 
 /** Update the Media Session playback position state. */
@@ -141,6 +173,7 @@ function initAudio() {
         updatePositionState();
       } else {
         isPlaying = false;
+        updateFavicon(null);
         if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
           navigator.mediaSession.playbackState = "paused";
         }
@@ -186,6 +219,7 @@ function play(track: Track) {
 
   // Update lock screen / notification with track info
   updateMediaSession(track);
+  updateFavicon(track.cover_url);
   if ("mediaSession" in navigator) {
     navigator.mediaSession.playbackState = "playing";
   }
