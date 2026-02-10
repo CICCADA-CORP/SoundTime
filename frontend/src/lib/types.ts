@@ -205,6 +205,7 @@ export interface P2pStatus {
 export interface P2pPeer {
   node_id: string;
   name: string | null;
+  version: string | null;
   track_count: number;
   last_seen: string;
   is_online: boolean;
@@ -226,6 +227,21 @@ export interface NetworkGraphLink {
 export interface NetworkGraph {
   nodes: NetworkGraphNode[];
   links: NetworkGraphLink[];
+}
+
+// ─── P2P Logs ────────────────────────────────────────────────────
+
+export interface P2pLogEntry {
+  timestamp: string;
+  level: string;
+  target: string;
+  message: string;
+  fields?: string[];
+}
+
+export interface P2pLogResponse {
+  entries: P2pLogEntry[];
+  total_in_buffer: number;
 }
 
 export interface MetadataStatus {
@@ -451,4 +467,15 @@ export interface BatchUploadResponse {
   total: number;
   success: number;
   failed: number;
+}
+
+export interface ListingStatus {
+  enabled: boolean;
+  domain: string;
+  domain_is_local: boolean;
+  listing_url: string;
+  has_token: boolean;
+  status: string;
+  error: string | null;
+  last_heartbeat: string | null;
 }

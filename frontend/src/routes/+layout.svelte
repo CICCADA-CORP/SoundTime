@@ -189,7 +189,7 @@
   </aside>
 
   <!-- Main Content -->
-  <main class="flex-1 overflow-y-auto w-full min-w-0 {player.currentTrack ? 'pb-36 md:pb-24' : 'pb-16 md:pb-0'}">
+  <main class="flex-1 overflow-y-auto w-full min-w-0 {player.currentTrack ? 'pb-40 md:pb-24' : 'pb-20 md:pb-0'}">
     <!-- Top Bar -->
     <header class="sticky top-0 z-40 bg-[hsl(var(--background))]/80 backdrop-blur-lg border-b border-[hsl(var(--border))]">
       <div class="flex items-center justify-between px-3 md:px-6 py-3 gap-2">
@@ -240,7 +240,6 @@
 <!-- Mobile bottom navigation -->
 <nav class="fixed bottom-0 left-0 right-0 z-[55] md:hidden bg-[hsl(0,0%,5%)] border-t border-[hsl(var(--border))] safe-area-bottom"
   class:hidden={!setupChecked || $page.url.pathname.startsWith("/setup")}
-  style:padding-bottom={player.currentTrack ? '80px' : '0px'}
 >
   <div class="flex items-center justify-around h-14">
     {#each mobileNavItems as item}

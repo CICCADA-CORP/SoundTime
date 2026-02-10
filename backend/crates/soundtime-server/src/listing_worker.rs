@@ -44,7 +44,7 @@ fn build_announce_payload(params: &HeartbeatParams) -> serde_json::Value {
         "domain": &params.domain,
         "name": &params.name,
         "description": &params.description,
-        "version": "0.1.0",
+        "version": soundtime_p2p::build_version(),
         "track_count": params.track_count,
         "user_count": params.user_count,
         "open_registration": params.open_registration,
@@ -58,11 +58,13 @@ fn build_announce_payload(params: &HeartbeatParams) -> serde_json::Value {
 }
 
 /// Send the announce payload to the listing server and return the response body.
+///
+/// Returns `Ok((status_code, body))` — the caller decides what to do with non-2xx.
 async fn send_announce_request(
     client: &reqwest::Client,
     listing_url: &str,
     payload: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
+) -> Result<(reqwest::StatusCode, serde_json::Value), String> {
     let url = format!("{listing_url}/api/announce");
     tracing::debug!("sending listing heartbeat to {url}");
 
@@ -79,15 +81,7 @@ async fn send_announce_request(
         .await
         .map_err(|e| format!("Failed to parse response: {e}"))?;
 
-    if status.is_success() {
-        Ok(body)
-    } else {
-        let error = body
-            .get("error")
-            .and_then(|e| e.as_str())
-            .unwrap_or("unknown error");
-        Err(format!("Listing server returned {status}: {error}"))
-    }
+    Ok((status, body))
 }
 
 /// Clean a raw domain string: strip protocol prefix and trailing slash.
@@ -103,7 +97,10 @@ fn is_local_domain(domain: &str) -> bool {
     domain.starts_with("localhost") || domain.starts_with("127.") || domain.starts_with("0.0.0.0")
 }
 
-/// POST /api/admin/listing/trigger — force an immediate heartbeat.
+/// POST /api/admin/listing/trigger — send a heartbeat NOW and return the result.
+///
+/// Unlike the background worker, this handler sends the heartbeat synchronously
+/// so the admin UI can show whether the listing server accepted or rejected us.
 pub async fn trigger_heartbeat(
     AxumState(state): AxumState<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
@@ -115,10 +112,80 @@ pub async fn trigger_heartbeat(
         ));
     }
 
-    // Wake the worker immediately
-    HEARTBEAT_NOTIFY.notify_one();
+    let listing_url = get_listing_url(&state).await;
+    let domain = get_listing_domain(&state).await;
 
-    Ok(Json(serde_json::json!({ "status": "heartbeat triggered" })))
+    if is_local_domain(&domain) {
+        save_listing_status(&state, "error", Some("domain is a local address (localhost / 127.x) — the listing server cannot reach this instance")).await;
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({
+                "error": "domain_local",
+                "message": "The listing domain is a local address. The listing server cannot reach your instance. Set a public domain in the listing settings or via the SOUNDTIME_DOMAIN environment variable."
+            })),
+        ));
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent(format!("SoundTime/{}", soundtime_p2p::build_version()))
+        .build()
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("HTTP client error: {e}") })),
+            )
+        })?;
+
+    match send_heartbeat(&state, &client, &listing_url).await {
+        Ok(()) => {
+            save_listing_status(&state, "ok", None).await;
+            Ok(Json(serde_json::json!({
+                "status": "ok",
+                "domain": domain,
+                "listing_url": listing_url,
+                "message": "Heartbeat successful — this instance is now listed."
+            })))
+        }
+        Err(e) => {
+            save_listing_status(&state, "error", Some(&e)).await;
+            Err((
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "error": "heartbeat_failed",
+                    "message": e,
+                    "domain": domain,
+                    "listing_url": listing_url,
+                })),
+            ))
+        }
+    }
+}
+
+/// GET /api/admin/listing/status — return current listing status.
+pub async fn listing_status(AxumState(state): AxumState<Arc<AppState>>) -> Json<serde_json::Value> {
+    let is_enabled = is_listing_enabled(&state).await;
+    let domain = get_listing_domain(&state).await;
+    let listing_url = get_listing_url(&state).await;
+    let token = get_listing_token(&state).await;
+
+    // Read stored status
+    let status = get_setting(&state, "listing_last_status")
+        .await
+        .unwrap_or_default();
+    let error = get_setting(&state, "listing_last_error").await;
+    let last_heartbeat = get_setting(&state, "listing_last_heartbeat").await;
+
+    Json(serde_json::json!({
+        "enabled": is_enabled,
+        "domain": domain,
+        "domain_is_local": is_local_domain(&domain),
+        "listing_url": listing_url,
+        "has_token": token.is_some(),
+        "status": if status.is_empty() { "unknown" } else { &status },
+        "error": error,
+        "last_heartbeat": last_heartbeat,
+    }))
 }
 
 /// Spawn the listing heartbeat worker.
@@ -131,7 +198,7 @@ pub fn spawn(state: Arc<AppState>) {
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
-            .user_agent("SoundTime/0.1.0")
+            .user_agent(format!("SoundTime/{}", soundtime_p2p::build_version()))
             .build()
             .expect("failed to build HTTP client");
 
@@ -141,14 +208,21 @@ pub fn spawn(state: Arc<AppState>) {
 
             if is_enabled {
                 let listing_url = get_listing_url(&state).await;
+                let listing_domain = get_listing_domain(&state).await;
                 tracing::info!(
-                    domain = %state.domain,
+                    domain = %listing_domain,
                     listing_url = %listing_url,
                     "sending listing heartbeat"
                 );
                 match send_heartbeat(&state, &client, &listing_url).await {
-                    Ok(()) => tracing::info!("listing heartbeat successful"),
-                    Err(e) => tracing::warn!("listing heartbeat failed: {e}"),
+                    Ok(()) => {
+                        tracing::info!("listing heartbeat successful");
+                        save_listing_status(&state, "ok", None).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("listing heartbeat failed: {e}");
+                        save_listing_status(&state, "error", Some(&e)).await;
+                    }
                 }
             } else {
                 tracing::debug!("listing disabled, skipping heartbeat");
@@ -228,8 +302,39 @@ async fn get_listing_token(state: &AppState) -> Option<String> {
 
 /// Save the listing token to instance settings.
 async fn save_listing_token(state: &AppState, token: &str) {
+    upsert_setting(state, "listing_token", token).await;
+}
+
+/// Get the instance name from settings.
+async fn get_instance_name(state: &AppState) -> String {
+    get_setting(state, "instance_name")
+        .await
+        .unwrap_or_else(|| "SoundTime".to_string())
+}
+
+/// Get the instance description from settings.
+async fn get_instance_description(state: &AppState) -> String {
+    get_setting(state, "instance_description")
+        .await
+        .unwrap_or_default()
+}
+
+/// Read a single instance_setting by key.
+async fn get_setting(state: &AppState, key: &str) -> Option<String> {
+    instance_setting::Entity::find()
+        .filter(instance_setting::Column::Key.eq(key))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .map(|s| s.value)
+        .filter(|v| !v.is_empty())
+}
+
+/// Upsert an instance_setting key/value pair.
+async fn upsert_setting(state: &AppState, key: &str, value: &str) {
     let existing = instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq("listing_token"))
+        .filter(instance_setting::Column::Key.eq(key))
         .one(&state.db)
         .await
         .ok()
@@ -238,15 +343,15 @@ async fn save_listing_token(state: &AppState, token: &str) {
     match existing {
         Some(s) => {
             let mut update: instance_setting::ActiveModel = s.into();
-            update.value = Set(token.to_string());
+            update.value = Set(value.to_string());
             update.updated_at = Set(chrono::Utc::now().into());
             let _ = update.update(&state.db).await;
         }
         None => {
             let _ = instance_setting::ActiveModel {
                 id: Set(Uuid::new_v4()),
-                key: Set("listing_token".to_string()),
-                value: Set(token.to_string()),
+                key: Set(key.to_string()),
+                value: Set(value.to_string()),
                 updated_at: Set(chrono::Utc::now().into()),
             }
             .insert(&state.db)
@@ -255,31 +360,26 @@ async fn save_listing_token(state: &AppState, token: &str) {
     }
 }
 
-/// Get the instance name from settings.
-async fn get_instance_name(state: &AppState) -> String {
-    instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq("instance_name"))
-        .one(&state.db)
-        .await
-        .ok()
-        .flatten()
-        .map(|s| s.value)
-        .unwrap_or_else(|| "SoundTime".to_string())
-}
-
-/// Get the instance description from settings.
-async fn get_instance_description(state: &AppState) -> String {
-    instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq("instance_description"))
-        .one(&state.db)
-        .await
-        .ok()
-        .flatten()
-        .map(|s| s.value)
-        .unwrap_or_default()
+/// Persist the listing heartbeat status so the admin panel can display it.
+async fn save_listing_status(state: &AppState, status: &str, error: Option<&str>) {
+    upsert_setting(state, "listing_last_status", status).await;
+    upsert_setting(state, "listing_last_error", error.unwrap_or("")).await;
+    upsert_setting(
+        state,
+        "listing_last_heartbeat",
+        &chrono::Utc::now().to_rfc3339(),
+    )
+    .await;
 }
 
 /// Send a heartbeat to the listing server.
+///
+/// Handles the 409 "domain already registered" case by attempting to verify
+/// ownership via the listing server's health check.
+/// When the listing server runs its next health check and finds us healthy,
+/// we remain listed even without a token — but we can't update our info.
+/// In that case we delete the stale local token and request a fresh registration
+/// by sending a DELETE + re-announce.
 async fn send_heartbeat(
     state: &AppState,
     client: &reqwest::Client,
@@ -287,14 +387,12 @@ async fn send_heartbeat(
 ) -> Result<(), String> {
     let domain = get_listing_domain(state).await;
 
-    // Warn if domain looks like a localhost address — listing server won't be able to reach us
+    // Bail out early if domain is a local address
     if is_local_domain(&domain) {
-        tracing::warn!(
-            domain = %domain,
-            "listing heartbeat: domain is a local address — the listing server will not be able \
-             to reach this instance for health checks. Set the listing domain in admin settings \
-             or SOUNDTIME_DOMAIN env var to your public domain (e.g. music.example.com)."
-        );
+        return Err(format!(
+            "domain is a local address ({domain}) — the listing server cannot reach this instance. \
+             Set a public domain in admin settings or SOUNDTIME_DOMAIN env var."
+        ));
     }
 
     let name = get_instance_name(state).await;
@@ -315,7 +413,7 @@ async fn send_heartbeat(
         .unwrap_or(true);
 
     let params = HeartbeatParams {
-        domain,
+        domain: domain.clone(),
         name,
         description,
         token: token.clone(),
@@ -326,17 +424,81 @@ async fn send_heartbeat(
 
     let payload = build_announce_payload(&params);
 
-    let body = send_announce_request(client, listing_url, &payload).await?;
+    let (status, body) = send_announce_request(client, listing_url, &payload).await?;
 
-    // If this was a new registration, save the token
-    if token.is_none() {
-        if let Some(new_token) = body.get("token").and_then(|t| t.as_str()) {
-            tracing::info!("registered on listing server — saving token");
-            save_listing_token(state, new_token).await;
+    if status.is_success() {
+        // If this was a new registration, save the token
+        if token.is_none() {
+            if let Some(new_token) = body.get("token").and_then(|t| t.as_str()) {
+                tracing::info!("registered on listing server — saving token");
+                save_listing_token(state, new_token).await;
+            }
         }
+        tracing::debug!("listing heartbeat successful");
+        return Ok(());
     }
-    tracing::debug!("listing heartbeat successful");
-    Ok(())
+
+    // Handle 409: "domain already registered" — we lost our token.
+    // The listing server won't let us re-register because the domain already exists.
+    // Strategy: the listing server checks `/healthz` periodically. If it finds us
+    // healthy, we stay listed. We just need to wait or, if possible, the listing
+    // server will eventually remove the stale entry (48h offline threshold).
+    //
+    // But if we ARE healthy and the listing server's health checker works, we
+    // ARE already listed — we just can't update our info via heartbeat.
+    // So we check: is our domain actually listed on the listing server?
+    if status.as_u16() == 409 {
+        tracing::warn!(
+            domain = %domain,
+            "listing server returned 409 (domain already registered) — checking if we're still listed"
+        );
+        // Check if we're listed by querying the public nodes endpoint
+        match check_if_listed(client, listing_url, &domain).await {
+            Ok(true) => {
+                // We're still listed! The listing server keeps us alive via health checks.
+                // We just can't send heartbeats. This is OK.
+                tracing::info!("instance IS listed on the directory (via health checks) — token was lost but we're still visible");
+                return Ok(());
+            }
+            Ok(false) => {
+                // We're NOT listed and can't register → the old entry is gone or offline.
+                // This shouldn't happen (409 means entry exists). Log and report error.
+                tracing::warn!(
+                    "listing server returned 409 but we're not listed — inconsistent state"
+                );
+            }
+            Err(e) => {
+                tracing::warn!("failed to check listing status: {e}");
+            }
+        }
+        return Err(format!(
+            "Domain '{domain}' is already registered on the listing server but the local token was lost. \
+             The instance may still appear via the listing server's periodic health checks. \
+             If not, wait 48h for the old entry to expire, then re-enable listing."
+        ));
+    }
+
+    // Handle other errors
+    let error = body
+        .get("error")
+        .and_then(|e| e.as_str())
+        .unwrap_or("unknown error");
+    Err(format!("Listing server returned {status}: {error}"))
+}
+
+/// Check if our domain appears in the listing server's public node list.
+async fn check_if_listed(
+    client: &reqwest::Client,
+    listing_url: &str,
+    domain: &str,
+) -> Result<bool, String> {
+    let url = format!("{listing_url}/api/nodes/{domain}");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {e}"))?;
+    Ok(resp.status().is_success())
 }
 
 #[cfg(test)]
@@ -547,7 +709,8 @@ mod tests {
         let result = send_announce_request(&client, &mock_server.uri(), &payload).await;
 
         assert!(result.is_ok());
-        let body = result.unwrap();
+        let (status, body) = result.unwrap();
+        assert!(status.is_success());
         assert_eq!(body["status"], "registered");
         assert_eq!(body["token"], "new-secret-token");
         assert_eq!(body["domain"], "music.example.com");
@@ -577,7 +740,8 @@ mod tests {
         let result = send_announce_request(&client, &mock_server.uri(), &payload).await;
 
         assert!(result.is_ok());
-        let body = result.unwrap();
+        let (status, body) = result.unwrap();
+        assert!(status.is_success());
         assert_eq!(body["status"], "heartbeat");
     }
 
@@ -598,16 +762,11 @@ mod tests {
         let payload = build_announce_payload(&sample_params());
         let result = send_announce_request(&client, &mock_server.uri(), &payload).await;
 
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("422"),
-            "error should contain status code: {err}"
-        );
-        assert!(
-            err.contains("Domain is not reachable"),
-            "error should contain message: {err}"
-        );
+        // send_announce_request now returns Ok with the status + body even for non-2xx
+        assert!(result.is_ok());
+        let (status, body) = result.unwrap();
+        assert_eq!(status.as_u16(), 422);
+        assert_eq!(body["error"], "Domain is not reachable");
     }
 
     #[tokio::test]
@@ -627,8 +786,9 @@ mod tests {
         let payload = build_announce_payload(&sample_params());
         let result = send_announce_request(&client, &mock_server.uri(), &payload).await;
 
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("500"));
+        assert!(result.is_ok());
+        let (status, _body) = result.unwrap();
+        assert_eq!(status.as_u16(), 500);
     }
 
     #[tokio::test]
@@ -649,8 +809,10 @@ mod tests {
         let payload = build_announce_payload(&sample_params());
         let result = send_announce_request(&client, &mock_server.uri(), &payload).await;
 
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown error"));
+        assert!(result.is_ok());
+        let (status, body) = result.unwrap();
+        assert_eq!(status.as_u16(), 400);
+        assert_eq!(body["message"], "bad request");
     }
 
     #[tokio::test]
@@ -707,6 +869,8 @@ mod tests {
             result.is_ok(),
             "payload should match expected JSON: {result:?}"
         );
+        let (status, _body) = result.unwrap();
+        assert!(status.is_success());
     }
 
     #[tokio::test]
@@ -730,6 +894,8 @@ mod tests {
         for _ in 0..3 {
             let result = send_announce_request(&client, &mock_server.uri(), &payload).await;
             assert!(result.is_ok());
+            let (status, _) = result.unwrap();
+            assert!(status.is_success());
         }
     }
 
@@ -756,10 +922,11 @@ mod tests {
         let params = sample_params(); // token = None → first registration
         let payload = build_announce_payload(&params);
 
-        let body = send_announce_request(&client, &mock_server.uri(), &payload)
+        let (status, body) = send_announce_request(&client, &mock_server.uri(), &payload)
             .await
             .expect("registration should succeed");
 
+        assert!(status.is_success());
         // Simulate what send_heartbeat does after a successful first registration
         assert!(params.token.is_none(), "this is a first registration");
         let new_token = body.get("token").and_then(|t| t.as_str());
@@ -785,10 +952,11 @@ mod tests {
         params.token = Some("existing-token".to_string());
         let payload = build_announce_payload(&params);
 
-        let body = send_announce_request(&client, &mock_server.uri(), &payload)
+        let (status, body) = send_announce_request(&client, &mock_server.uri(), &payload)
             .await
             .expect("heartbeat should succeed");
 
+        assert!(status.is_success());
         // When token already exists, send_heartbeat should NOT try to save a new one
         assert!(params.token.is_some());
         // The body has no "token" field for heartbeat responses

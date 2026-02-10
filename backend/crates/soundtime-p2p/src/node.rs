@@ -95,7 +95,13 @@ pub enum P2pMessage {
     /// Peer discovery ping
     Ping,
     /// Peer discovery pong
-    Pong { node_id: String, track_count: u64 },
+    Pong {
+        node_id: String,
+        track_count: u64,
+        /// Software version of the peer (e.g. "0.1.42")
+        #[serde(default)]
+        version: Option<String>,
+    },
     /// Peer exchange — share list of known peer EndpointIds for network discovery
     PeerExchange { peers: Vec<String> },
     /// Full catalog sync — send all locally-uploaded tracks to a peer at once
@@ -333,6 +339,14 @@ impl P2pNode {
         let (shutdown_tx, _) = watch::channel(false);
 
         let registry = Arc::new(PeerRegistry::new());
+
+        // Load persisted peers from database (previous runs)
+        match registry.load_from_db(&db).await {
+            Ok(count) if count > 0 => info!(%count, "restored peers from database"),
+            Ok(_) => debug!("no persisted peers found in database"),
+            Err(e) => warn!("failed to load peers from database: {e}"),
+        }
+
         let search_index = Arc::new(SearchIndex::new());
         let mb_client = Arc::new(MusicBrainzClient::new());
 
@@ -375,6 +389,20 @@ impl P2pNode {
             });
         }
 
+        // Re-ping persisted peers in background (after relay setup)
+        {
+            let node_clone = Arc::clone(&node);
+            tokio::spawn(async move {
+                // Wait for relay to be ready
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                crate::discovery::refresh_all_peers(&node_clone, &node_clone.registry).await;
+                // Save updated statuses to database
+                if let Err(e) = node_clone.registry.save_to_db(&node_clone.db).await {
+                    warn!("failed to save peers after refresh: {e}");
+                }
+            });
+        }
+
         // Spawn periodic peer exchange, bloom sync & refresh (every 5 minutes)
         {
             let node_clone = Arc::clone(&node);
@@ -393,6 +421,10 @@ impl P2pNode {
                                 }
                                 // Exchange Bloom filters with all online peers
                                 node_clone.broadcast_bloom_filter().await;
+                            }
+                            // Persist peer registry to database
+                            if let Err(e) = node_clone.registry.save_to_db(&node_clone.db).await {
+                                warn!("failed to save peers: {e}");
                             }
                         }
                         _ = shutdown_rx.changed() => {
@@ -568,7 +600,16 @@ impl P2pNode {
             .endpoint
             .connect(peer_addr, SOUNDTIME_ALPN)
             .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
+            .map_err(|e| {
+                let err_str = format!("{e}");
+                if err_str.contains("ALPN") || err_str.contains("protocol") || err_str.contains("timed out") {
+                    P2pError::Connection(format!(
+                        "{e} (possible protocol version mismatch — this node uses iroh 0.96 / ALPN 'soundtime/p2p/1')"
+                    ))
+                } else {
+                    P2pError::Connection(e.to_string())
+                }
+            })?;
 
         let (mut send, mut recv) = conn
             .open_bi()
@@ -627,8 +668,11 @@ impl P2pNode {
                 Ok(P2pMessage::Pong {
                     node_id: nid,
                     track_count,
+                    version,
                 }) => {
-                    self.registry.upsert_peer(&nid, None, track_count).await;
+                    self.registry
+                        .upsert_peer_versioned(&nid, None, track_count, version)
+                        .await;
                     info!(peer = %nid, %track_count, "seed peer connected and registered");
                     // Exchange peer lists to discover the wider network
                     self.discover_via_peer(node_id).await;
@@ -640,7 +684,22 @@ impl P2pNode {
                     warn!(peer = %peer_id_str, "seed peer responded with unexpected message");
                 }
                 Err(e) => {
-                    warn!(peer = %peer_id_str, "failed to reach seed peer: {e}");
+                    // Check if it's a protocol version mismatch
+                    let err_str = format!("{e}");
+                    if err_str.contains("ALPN")
+                        || err_str.contains("protocol")
+                        || err_str.contains("version")
+                        || err_str.contains("timed out")
+                    {
+                        warn!(
+                            peer = %peer_id_str,
+                            "failed to reach seed peer (possible protocol version mismatch — \
+                             this node uses iroh 0.96 / ALPN 'soundtime/p2p/1', the remote peer \
+                             may be running an incompatible version): {e}"
+                        );
+                    } else {
+                        warn!(peer = %peer_id_str, "failed to reach seed peer: {e}");
+                    }
                 }
             }
         }
@@ -867,8 +926,11 @@ impl P2pNode {
                         Ok(P2pMessage::Pong {
                             node_id,
                             track_count,
+                            version,
                         }) => {
-                            self.registry.upsert_peer(&node_id, None, track_count).await;
+                            self.registry
+                                .upsert_peer_versioned(&node_id, None, track_count, version)
+                                .await;
                             info!(peer = %node_id, %track_count, "discovered new peer via PEX");
                             new_count += 1;
                         }
@@ -1741,6 +1803,7 @@ impl P2pNode {
                 let pong = P2pMessage::Pong {
                     node_id: node_id.to_string(),
                     track_count: 0, // TODO: get actual track count from DB
+                    version: Some(crate::build_version().to_string()),
                 };
                 let pong_bytes = serde_json::to_vec(&pong)?;
                 send.write_all(&(pong_bytes.len() as u32).to_be_bytes())
@@ -2123,6 +2186,7 @@ mod tests {
         let msg = P2pMessage::Pong {
             node_id: "abc123".to_string(),
             track_count: 42,
+            version: Some("0.1.5".to_string()),
         };
         let bytes = serde_json::to_vec(&msg).unwrap();
         let decoded: P2pMessage = serde_json::from_slice(&bytes).unwrap();
@@ -2130,9 +2194,11 @@ mod tests {
             P2pMessage::Pong {
                 node_id,
                 track_count,
+                version,
             } => {
                 assert_eq!(node_id, "abc123");
                 assert_eq!(track_count, 42);
+                assert_eq!(version, Some("0.1.5".to_string()));
             }
             _ => panic!("expected Pong"),
         }

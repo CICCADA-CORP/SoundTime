@@ -5,7 +5,7 @@
   import {
     LayoutDashboard, Settings, Users, Database, Sparkles,
     Radio, Globe, Network, Ban, Flag, FileText,
-    HardDrive, ShieldCheck, FolderSync, Music, Share2
+    HardDrive, ShieldCheck, FolderSync, Music, Share2, ScrollText
   } from "lucide-svelte";
   import NetworkGraph from "$lib/components/NetworkGraph.svelte";
   import type {
@@ -31,6 +31,9 @@
     StorageStatus,
     IntegrityReport,
     SyncReport,
+    P2pLogEntry,
+    P2pLogResponse,
+    ListingStatus,
   } from "$lib/types";
 
   const auth = getAuthStore();
@@ -52,6 +55,11 @@
   let p2pPeers = $state<P2pPeer[]>([]);
   let networkGraphData = $state<NetworkGraphData>({ nodes: [], links: [] });
   let addPeerInput = $state("");
+  let p2pLogs = $state<P2pLogEntry[]>([]);
+  let p2pLogsTotalInBuffer = $state(0);
+  let p2pLogsAutoRefresh = $state(false);
+  let p2pLogsLevelFilter = $state<string>("");
+  let p2pLogsInterval: ReturnType<typeof setInterval> | null = $state(null);
   let editorialStatus = $state<EditorialStatus | null>(null);
   let editorialGenerating = $state(false);
   let editorialApiKey = $state("");
@@ -93,6 +101,11 @@
   let storageChecking = $state(false);
   let storageSyncing = $state(false);
   let taskProgress = $state<{ processed: number; total: number | null } | null>(null);
+
+  // Listing status
+  let listingStatus = $state<ListingStatus | null>(null);
+  let listingTriggering = $state(false);
+  let listingTriggerError = $state<string | null>(null);
 
   /** Poll /admin/storage/task-status until the background task finishes. */
   async function pollTaskStatus(kind: "sync" | "integrity") {
@@ -163,6 +176,7 @@
       tabs: [
         { id: "p2p-status", label: t("admin.tab.p2pStatus"), icon: Network },
         { id: "network-graph", label: t("admin.tab.networkGraph"), icon: Share2 },
+        { id: "p2p-logs", label: t("admin.tab.p2pLogs"), icon: ScrollText },
         { id: "remote-tracks", label: t("admin.tab.remoteTracks"), icon: Radio },
         { id: "instances", label: t("admin.tab.instances"), icon: Globe },
         { id: "blocked", label: t("admin.tab.blocked"), icon: Ban },
@@ -199,6 +213,7 @@
           break;
         case "settings":
           settings = await api.get<InstanceSetting[]>("/admin/settings");
+          listingStatus = await api.get<ListingStatus>("/admin/listing/status").catch(() => null);
           break;
         case "blocked":
           blockedDomains = await api.get<BlockedDomain[]>("/admin/blocked-domains");
@@ -213,6 +228,13 @@
         case "network-graph":
           networkGraphData = await api.get<NetworkGraphData>("/p2p/network-graph");
           break;
+        case "p2p-logs": {
+          const levelParam = p2pLogsLevelFilter ? `?level=${p2pLogsLevelFilter}` : "";
+          const logResp = await api.get<P2pLogResponse>(`/admin/p2p/logs${levelParam}`);
+          p2pLogs = logResp.entries;
+          p2pLogsTotalInBuffer = logResp.total_in_buffer;
+          break;
+        }
         case "users":
           users = await api.get<User[]>("/admin/users");
           break;
@@ -907,7 +929,7 @@
             {:else}
               <button
                 class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors bg-[hsl(var(--secondary))]"
-                onclick={async () => { await updateSetting('listing_public', 'true'); try { await api.post('/admin/listing/trigger', {}); } catch {} }}
+                onclick={async () => { await updateSetting('listing_public', 'true'); }}
                 role="switch"
                 aria-checked={false}
                 aria-label={t('admin.settings.publicListing')}
@@ -917,10 +939,71 @@
             {/if}
           </div>
           {#if (settings.find(s => s.key === 'listing_public')?.value ?? 'true') === 'true'}
-            <div class="mt-3 flex items-center gap-2 text-xs text-green-400 bg-green-500/10 rounded-md px-3 py-2">
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
-              {t('admin.settings.publicListingActive')}
+            <!-- Real listing status from backend -->
+            {#if listingStatus}
+              {#if listingStatus.domain_is_local}
+                <div class="mt-3 flex items-center gap-2 text-xs text-red-400 bg-red-500/10 rounded-md px-3 py-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M3.586 15.424 12 21.414l8.414-5.99a2 2 0 0 0 .586-1.424V4a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 .586 1.424z"/></svg>
+                  {t('admin.settings.listingDomainLocalError')}
+                </div>
+              {:else if listingStatus.status === 'ok'}
+                <div class="mt-3 flex items-center gap-2 text-xs text-green-400 bg-green-500/10 rounded-md px-3 py-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+                  <div>
+                    <span>{t('admin.settings.listingStatusOk')}</span>
+                    {#if listingStatus.last_heartbeat}
+                      <span class="ml-2 text-[hsl(var(--muted-foreground))]">{t('admin.settings.listingLastHeartbeat')}: {new Date(listingStatus.last_heartbeat).toLocaleString()}</span>
+                    {/if}
+                  </div>
+                </div>
+              {:else if listingStatus.status === 'error'}
+                <div class="mt-3 flex flex-col gap-1 text-xs text-red-400 bg-red-500/10 rounded-md px-3 py-2">
+                  <div class="flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
+                    <span class="font-medium">{t('admin.settings.listingStatusError')}</span>
+                  </div>
+                  {#if listingStatus.error}
+                    <p class="text-red-300/80 ml-6 break-words">{listingStatus.error}</p>
+                  {/if}
+                  {#if listingStatus.last_heartbeat}
+                    <span class="ml-6 text-[hsl(var(--muted-foreground))]">{t('admin.settings.listingLastHeartbeat')}: {new Date(listingStatus.last_heartbeat).toLocaleString()}</span>
+                  {/if}
+                </div>
+              {:else}
+                <div class="mt-3 flex items-center gap-2 text-xs text-amber-400 bg-amber-500/10 rounded-md px-3 py-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+                  {t('admin.settings.listingStatusUnknown')}
+                </div>
+              {/if}
+            {/if}
+
+            <!-- Trigger heartbeat button -->
+            <div class="mt-3">
+              <button
+                class="px-3 py-1.5 rounded-md text-xs font-medium transition bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] hover:opacity-90 disabled:opacity-50"
+                disabled={listingTriggering}
+                onclick={async () => {
+                  listingTriggering = true;
+                  listingTriggerError = null;
+                  try {
+                    await api.post('/admin/listing/trigger', {});
+                    listingStatus = await api.get<ListingStatus>('/admin/listing/status').catch(() => listingStatus);
+                  } catch (e: any) {
+                    const body = e?.body;
+                    listingTriggerError = body?.message || e?.message || 'Unknown error';
+                    listingStatus = await api.get<ListingStatus>('/admin/listing/status').catch(() => listingStatus);
+                  } finally {
+                    listingTriggering = false;
+                  }
+                }}
+              >
+                {listingTriggering ? t('admin.settings.listingTriggerSending') : t('admin.settings.listingTrigger')}
+              </button>
+              {#if listingTriggerError}
+                <p class="text-xs text-red-400 mt-1.5">{listingTriggerError}</p>
+              {/if}
             </div>
+
             <!-- Listing Domain -->
             <div class="mt-3">
               <label for="listing-domain-input" class="block text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1.5">{t('admin.settings.listingDomain')}</label>
@@ -931,10 +1014,19 @@
                   placeholder={t('admin.settings.listingDomainPlaceholder')}
                   value={settings.find(s => s.key === 'listing_domain')?.value || ''}
                   class="flex-1 bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-md px-3 py-2 text-sm border border-[hsl(var(--border))] outline-none focus:border-[hsl(var(--primary))] transition-colors font-mono"
-                  onchange={(e) => { updateSetting('listing_domain', (e.target as HTMLInputElement).value.replace(/^https?:\/\//, '').replace(/\/$/, '')); try { api.post('/admin/listing/trigger', {}); } catch {} }}
+                  onchange={(e) => updateSetting('listing_domain', (e.target as HTMLInputElement).value.replace(/^https?:\/\//, '').replace(/\/$/, ''))}
                 />
               </div>
               <p class="text-xs text-[hsl(var(--muted-foreground))] mt-1.5">{t('admin.settings.listingDomainDesc')}</p>
+              {#if listingStatus?.domain_is_local}
+                <div class="mt-2 flex items-center gap-2 text-xs text-red-400 bg-red-500/10 rounded-md px-3 py-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M3.586 15.424 12 21.414l8.414-5.99a2 2 0 0 0 .586-1.424V4a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 .586 1.424z"/></svg>
+                  {t('admin.settings.listingDomainWarning')}
+                </div>
+              {/if}
+              {#if listingStatus}
+                <p class="text-xs text-[hsl(var(--muted-foreground))] mt-1 font-mono">{listingStatus.domain}</p>
+              {/if}
             </div>
             <!-- Listing URL -->
             <div class="mt-3">
@@ -1182,6 +1274,7 @@
                 <thead>
                   <tr class="border-b border-[hsl(var(--border))]">
                     <th class="text-left p-3 text-[hsl(var(--muted-foreground))]">{t('admin.p2p.nodeId')}</th>
+                    <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">Version</th>
                     <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">Tracks</th>
                     <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">Status</th>
                     <th class="text-right p-3 text-[hsl(var(--muted-foreground))]">Actions</th>
@@ -1192,6 +1285,9 @@
                     <tr class="border-b border-[hsl(var(--border))] last:border-b-0">
                       <td class="p-3 font-mono text-xs truncate max-w-[300px]">
                         {peer.name ? `${peer.name} (${peer.node_id.slice(0, 12)}…)` : peer.node_id}
+                      </td>
+                      <td class="p-3 text-center font-mono text-xs text-[hsl(var(--muted-foreground))]">
+                        {peer.version ?? '—'}
                       </td>
                       <td class="p-3 text-center">{peer.track_count}</td>
                       <td class="p-3 text-center">
@@ -1271,6 +1367,116 @@
               <div class="bg-[hsl(var(--card))] rounded-lg p-3 text-center">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase">{t('admin.graph.relayCount')}</p>
                 <p class="text-2xl font-bold mt-1 text-blue-400">{networkGraphData.nodes.filter(n => n.node_type === 'relay').length}</p>
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- P2P Logs -->
+      {#if activeTab === "p2p-logs"}
+        <div class="space-y-4">
+          <!-- Controls -->
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-3">
+              <h2 class="text-lg font-semibold">{t('admin.p2pLogs.title')}</h2>
+              <span class="text-xs text-[hsl(var(--muted-foreground))] bg-[hsl(var(--secondary))] px-2 py-0.5 rounded">
+                {p2pLogsTotalInBuffer} {t('admin.p2pLogs.entries')}
+              </span>
+            </div>
+            <div class="flex items-center gap-2">
+              <!-- Level filter -->
+              <select
+                class="bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded px-2 py-1.5 text-xs border border-[hsl(var(--border))]"
+                bind:value={p2pLogsLevelFilter}
+                onchange={() => loadData()}
+              >
+                <option value="">{t('admin.p2pLogs.allLevels')}</option>
+                <option value="ERROR">ERROR</option>
+                <option value="WARN">WARN</option>
+                <option value="INFO">INFO</option>
+                <option value="DEBUG">DEBUG</option>
+              </select>
+              <!-- Auto-refresh toggle -->
+              <button
+                class="text-xs px-3 py-1.5 rounded border transition {p2pLogsAutoRefresh
+                  ? 'bg-green-500/20 border-green-500/30 text-green-400'
+                  : 'bg-[hsl(var(--secondary))] border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]'}"
+                onclick={() => {
+                  p2pLogsAutoRefresh = !p2pLogsAutoRefresh;
+                  if (p2pLogsAutoRefresh) {
+                    p2pLogsInterval = setInterval(() => loadData(), 5000);
+                  } else if (p2pLogsInterval) {
+                    clearInterval(p2pLogsInterval);
+                    p2pLogsInterval = null;
+                  }
+                }}
+              >
+                {p2pLogsAutoRefresh ? t('admin.p2pLogs.autoRefreshOn') : t('admin.p2pLogs.autoRefresh')}
+              </button>
+              <!-- Manual refresh -->
+              <button
+                class="text-xs bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] px-3 py-1.5 rounded hover:opacity-90 transition"
+                onclick={() => loadData()}
+              >
+                {t('admin.p2pLogs.refresh')}
+              </button>
+              <!-- Clear logs -->
+              <button
+                class="text-xs bg-red-500/20 text-red-400 px-3 py-1.5 rounded hover:bg-red-500/30 transition"
+                onclick={async () => {
+                  try {
+                    await api.delete("/admin/p2p/logs");
+                    p2pLogs = [];
+                    p2pLogsTotalInBuffer = 0;
+                  } catch (e: any) { error = e.message; }
+                }}
+              >
+                {t('admin.p2pLogs.clear')}
+              </button>
+            </div>
+          </div>
+
+          <!-- Log entries -->
+          {#if p2pLogs.length === 0}
+            <div class="bg-[hsl(var(--card))] rounded-lg p-8 text-center">
+              <p class="text-[hsl(var(--muted-foreground))]">{t('admin.p2pLogs.empty')}</p>
+              <p class="text-xs text-[hsl(var(--muted-foreground))] mt-2">{t('admin.p2pLogs.emptyHint')}</p>
+            </div>
+          {:else}
+            <div class="bg-[hsl(0,0%,5%)] rounded-lg border border-[hsl(var(--border))] overflow-hidden">
+              <div class="max-h-[600px] overflow-y-auto font-mono text-xs">
+                {#each p2pLogs as entry, i}
+                  <div class="flex items-start gap-2 px-3 py-1.5 hover:bg-[hsl(0,0%,8%)] transition-colors border-b border-[hsl(var(--border))]/30 {i === p2pLogs.length - 1 ? 'border-b-0' : ''}">
+                    <!-- Timestamp -->
+                    <span class="text-[hsl(var(--muted-foreground))] whitespace-nowrap flex-shrink-0 select-all">
+                      {entry.timestamp.replace('T', ' ').replace('Z', '').slice(11, 23)}
+                    </span>
+                    <!-- Level badge -->
+                    <span class="flex-shrink-0 w-14 text-center rounded px-1 py-0.5 font-bold {
+                      entry.level === 'ERROR' ? 'bg-red-500/20 text-red-400' :
+                      entry.level === 'WARN' ? 'bg-yellow-500/20 text-yellow-400' :
+                      entry.level === 'INFO' ? 'bg-blue-500/20 text-blue-400' :
+                      entry.level === 'DEBUG' ? 'bg-gray-500/20 text-gray-400' :
+                      'bg-gray-500/10 text-gray-500'
+                    }">
+                      {entry.level}
+                    </span>
+                    <!-- Target (shortened) -->
+                    <span class="text-purple-400 flex-shrink-0 whitespace-nowrap max-w-[180px] truncate" title={entry.target}>
+                      {entry.target.replace('soundtime_p2p::', '').replace('iroh::', 'iroh/')}
+                    </span>
+                    <!-- Message + fields -->
+                    <span class="text-[hsl(var(--foreground))] break-all min-w-0">
+                      {entry.message}
+                      {#if entry.fields && entry.fields.length > 0}
+                        <span class="text-[hsl(var(--muted-foreground))] ml-1">
+                          {entry.fields.join(' ')}
+                        </span>
+                      {/if}
+                    </span>
+                  </div>
+                {/each}
               </div>
             </div>
           {/if}

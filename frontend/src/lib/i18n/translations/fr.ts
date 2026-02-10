@@ -317,9 +317,17 @@ export default {
   "admin.settings.publicListingActive": "Cette instance est référencée dans l'annuaire public SoundTime et visible par tous.",
   "admin.settings.listingDomain": "Domaine de l'instance",
   "admin.settings.listingDomainDesc": "Le domaine public ou IP:port que le serveur d'annuaire utilisera pour joindre votre instance. Si vide, utilise la variable d'environnement SOUNDTIME_DOMAIN.",
+  "admin.settings.listingDomainWarning": "Le domaine du listing n'est pas configuré ou est défini sur localhost. Le serveur d'annuaire ne peut pas joindre votre instance. Entrez votre domaine public (ex: music.example.com) ou définissez la variable d'environnement SOUNDTIME_DOMAIN.",
   "admin.settings.listingDomainPlaceholder": "music.example.com ou 1.2.3.4:8880",
   "admin.settings.listingUrl": "URL du serveur d'annuaire",
   "admin.settings.listingUrlDesc": "URL du serveur d'annuaire sur lequel s'inscrire. N'importe qui peut héberger son propre serveur d'annuaire. Par défaut : https://soundtime-listing-production.up.railway.app",
+  "admin.settings.listingStatusOk": "Cette instance est référencée et visible dans l'annuaire public.",
+  "admin.settings.listingStatusError": "Échec du référencement",
+  "admin.settings.listingStatusUnknown": "Aucun heartbeat envoyé. Cliquez sur le bouton ci-dessous pour vous inscrire.",
+  "admin.settings.listingLastHeartbeat": "Dernier heartbeat",
+  "admin.settings.listingTrigger": "Envoyer un heartbeat maintenant",
+  "admin.settings.listingTriggerSending": "Envoi…",
+  "admin.settings.listingDomainLocalError": "Le domaine est une adresse locale. Le serveur d'annuaire ne peut pas joindre votre instance.",
 
   // Admin — pairs bloqués
   "admin.blocked.domainPlaceholder": "ID du pair ou domaine",
@@ -355,6 +363,18 @@ export default {
   "admin.p2p.ping": "Ping",
   "admin.p2p.remove": "Supprimer",
   "admin.p2p.noPeers": "Aucun pair connecté.",
+
+  // Admin — logs P2P
+  "admin.tab.p2pLogs": "Logs P2P",
+  "admin.p2pLogs.title": "Logs du réseau P2P",
+  "admin.p2pLogs.entries": "entrées en mémoire",
+  "admin.p2pLogs.allLevels": "Tous les niveaux",
+  "admin.p2pLogs.autoRefresh": "Rafraîchir auto",
+  "admin.p2pLogs.autoRefreshOn": "Rafraîchir auto ON",
+  "admin.p2pLogs.refresh": "Actualiser",
+  "admin.p2pLogs.clear": "Vider",
+  "admin.p2pLogs.empty": "Aucune entrée de log P2P.",
+  "admin.p2pLogs.emptyHint": "Les événements du réseau P2P apparaîtront ici une fois le nœud actif.",
 
   // Admin — graphe réseau
   "admin.tab.networkGraph": "Graphe réseau",

@@ -29,7 +29,7 @@
       albums = al.data ?? [];
       artists = ar.data ?? [];
       editorialPlaylists = ed ?? [];
-    } catch { /* empty */ } finally { loading = false; }
+    } catch (e) { console.error('Failed to load explore data:', e); } finally { loading = false; }
   });
 
   function openEditorial(pl: EditorialPlaylist) {

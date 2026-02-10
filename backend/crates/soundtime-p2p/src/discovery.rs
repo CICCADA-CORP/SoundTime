@@ -21,6 +21,9 @@ pub struct PeerInfo {
     pub node_id: String,
     /// Human-readable name (optional, set by peer admin)
     pub name: Option<String>,
+    /// Software version reported by the peer (e.g. "0.1.42")
+    #[serde(default)]
+    pub version: Option<String>,
     /// Number of tracks the peer has announced
     pub track_count: u64,
     /// Last time we heard from this peer (UTC timestamp)
@@ -45,12 +48,25 @@ impl PeerRegistry {
 
     /// Register or update a peer.
     pub async fn upsert_peer(&self, node_id: &str, name: Option<String>, track_count: u64) {
+        self.upsert_peer_versioned(node_id, name, track_count, None)
+            .await;
+    }
+
+    /// Register or update a peer with version information.
+    pub async fn upsert_peer_versioned(
+        &self,
+        node_id: &str,
+        name: Option<String>,
+        track_count: u64,
+        version: Option<String>,
+    ) {
         let mut peers = self.peers.write().await;
         let info = peers
             .entry(node_id.to_string())
             .or_insert_with(|| PeerInfo {
                 node_id: node_id.to_string(),
                 name: None,
+                version: None,
                 track_count: 0,
                 last_seen: chrono::Utc::now(),
                 is_online: true,
@@ -60,6 +76,9 @@ impl PeerRegistry {
         info.track_count = track_count;
         if name.is_some() {
             info.name = name;
+        }
+        if version.is_some() {
+            info.version = version;
         }
         debug!(%node_id, "peer updated in registry");
     }
@@ -101,6 +120,85 @@ impl PeerRegistry {
         let peers = self.peers.read().await;
         peers.len()
     }
+
+    /// Persist the entire peer registry to the database.
+    ///
+    /// Uses upsert (INSERT … ON CONFLICT UPDATE) so it is safe to call
+    /// repeatedly.  Runs inside a single transaction for atomicity.
+    pub async fn save_to_db(&self, db: &sea_orm::DatabaseConnection) -> Result<(), P2pError> {
+        use sea_orm::{EntityTrait, Set, TransactionTrait};
+        use soundtime_db::entities::p2p_peer;
+
+        let peers = self.peers.read().await;
+        let txn = db
+            .begin()
+            .await
+            .map_err(|e| P2pError::Connection(format!("failed to begin transaction: {e}")))?;
+
+        for info in peers.values() {
+            let model = p2p_peer::ActiveModel {
+                node_id: Set(info.node_id.clone()),
+                name: Set(info.name.clone()),
+                version: Set(info.version.clone()),
+                track_count: Set(info.track_count as i64),
+                is_online: Set(info.is_online),
+                last_seen_at: Set(info.last_seen.into()),
+                created_at: Set(chrono::Utc::now().into()),
+            };
+            // Insert or update on conflict (node_id is the PK)
+            p2p_peer::Entity::insert(model)
+                .on_conflict(
+                    sea_orm::sea_query::OnConflict::column(p2p_peer::Column::NodeId)
+                        .update_columns([
+                            p2p_peer::Column::Name,
+                            p2p_peer::Column::Version,
+                            p2p_peer::Column::TrackCount,
+                            p2p_peer::Column::IsOnline,
+                            p2p_peer::Column::LastSeenAt,
+                        ])
+                        .to_owned(),
+                )
+                .exec(&txn)
+                .await
+                .map_err(|e| P2pError::Connection(format!("failed to upsert peer: {e}")))?;
+        }
+
+        txn.commit()
+            .await
+            .map_err(|e| P2pError::Connection(format!("failed to commit transaction: {e}")))?;
+
+        debug!(count = peers.len(), "saved peer registry to database");
+        Ok(())
+    }
+
+    /// Load peers from the database (used at startup to restore known peers).
+    /// All loaded peers are marked offline until pinged.
+    pub async fn load_from_db(&self, db: &sea_orm::DatabaseConnection) -> Result<usize, P2pError> {
+        use sea_orm::EntityTrait;
+        use soundtime_db::entities::p2p_peer;
+
+        let rows = p2p_peer::Entity::find()
+            .all(db)
+            .await
+            .map_err(|e| P2pError::Connection(format!("failed to load peers: {e}")))?;
+
+        let count = rows.len();
+        let mut peers = self.peers.write().await;
+        for row in rows {
+            let info = PeerInfo {
+                node_id: row.node_id,
+                name: row.name,
+                version: row.version,
+                track_count: row.track_count as u64,
+                last_seen: row.last_seen_at.into(),
+                is_online: false, // mark offline until we ping
+            };
+            peers.insert(info.node_id.clone(), info);
+        }
+
+        info!(count, "loaded peer registry from database");
+        Ok(count)
+    }
 }
 
 impl Default for PeerRegistry {
@@ -123,8 +221,11 @@ pub async fn add_and_ping_peer(
         Ok(P2pMessage::Pong {
             node_id,
             track_count,
+            version,
         }) => {
-            registry.upsert_peer(&node_id, None, track_count).await;
+            registry
+                .upsert_peer_versioned(&node_id, None, track_count, version)
+                .await;
             let info = registry.get_peer(&node_id).await.expect("just inserted");
             Ok(info)
         }
@@ -161,9 +262,10 @@ pub async fn refresh_all_peers(node: &Arc<P2pNode>, registry: &PeerRegistry) {
             Ok(P2pMessage::Pong {
                 node_id: _,
                 track_count,
+                version,
             }) => {
                 registry
-                    .upsert_peer(&peer.node_id, peer.name.clone(), track_count)
+                    .upsert_peer_versioned(&peer.node_id, peer.name.clone(), track_count, version)
                     .await;
             }
             _ => {
@@ -395,6 +497,7 @@ mod tests {
         let info = PeerInfo {
             node_id: "abc123".to_string(),
             name: Some("Test Peer".to_string()),
+            version: Some("0.1.0".to_string()),
             track_count: 42,
             last_seen: chrono::Utc::now(),
             is_online: true,
@@ -412,6 +515,7 @@ mod tests {
         let info = PeerInfo {
             node_id: "x".to_string(),
             name: None,
+            version: None,
             track_count: 0,
             last_seen: chrono::Utc::now(),
             is_online: false,
@@ -427,6 +531,7 @@ mod tests {
         let info = PeerInfo {
             node_id: "id".to_string(),
             name: Some("name".to_string()),
+            version: Some("0.1.0".to_string()),
             track_count: 10,
             last_seen: chrono::Utc::now(),
             is_online: true,
@@ -442,6 +547,7 @@ mod tests {
         let info = PeerInfo {
             node_id: "dbg".to_string(),
             name: None,
+            version: None,
             track_count: 0,
             last_seen: chrono::Utc::now(),
             is_online: false,

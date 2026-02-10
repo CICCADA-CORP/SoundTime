@@ -317,9 +317,17 @@ export default {
   "admin.settings.publicListingActive": "This instance is listed on the public SoundTime directory and visible to everyone.",
   "admin.settings.listingDomain": "Instance Domain",
   "admin.settings.listingDomainDesc": "The public domain or IP:port that the listing server will use to reach your instance. If empty, falls back to the SOUNDTIME_DOMAIN environment variable.",
+  "admin.settings.listingDomainWarning": "The listing domain is not configured or is set to localhost. The listing server cannot reach your instance. Enter your public domain (e.g. music.example.com) or set the SOUNDTIME_DOMAIN environment variable.",
   "admin.settings.listingDomainPlaceholder": "music.example.com or 1.2.3.4:8880",
   "admin.settings.listingUrl": "Listing Server URL",
   "admin.settings.listingUrlDesc": "URL of the listing server to register on. Anyone can host their own listing server. Default: https://soundtime-listing-production.up.railway.app",
+  "admin.settings.listingStatusOk": "This instance is listed and visible on the public directory.",
+  "admin.settings.listingStatusError": "Listing failed",
+  "admin.settings.listingStatusUnknown": "No heartbeat sent yet. Click the button below to register.",
+  "admin.settings.listingLastHeartbeat": "Last heartbeat",
+  "admin.settings.listingTrigger": "Send heartbeat now",
+  "admin.settings.listingTriggerSending": "Sending…",
+  "admin.settings.listingDomainLocalError": "The domain is a local address. The listing server cannot reach your instance.",
 
   // Admin — blocked peers
   "admin.blocked.domainPlaceholder": "peer-node-id or domain",
@@ -355,6 +363,18 @@ export default {
   "admin.p2p.ping": "Ping",
   "admin.p2p.remove": "Remove",
   "admin.p2p.noPeers": "No peers connected.",
+
+  // Admin — P2P logs
+  "admin.tab.p2pLogs": "P2P Logs",
+  "admin.p2pLogs.title": "P2P Network Logs",
+  "admin.p2pLogs.entries": "entries in buffer",
+  "admin.p2pLogs.allLevels": "All levels",
+  "admin.p2pLogs.autoRefresh": "Auto-refresh",
+  "admin.p2pLogs.autoRefreshOn": "Auto-refresh ON",
+  "admin.p2pLogs.refresh": "Refresh",
+  "admin.p2pLogs.clear": "Clear",
+  "admin.p2pLogs.empty": "No P2P log entries.",
+  "admin.p2pLogs.emptyHint": "P2P network events will appear here once the node is active.",
 
   // Admin — network graph
   "admin.tab.networkGraph": "Network Graph",

@@ -1057,6 +1057,8 @@ pub async fn check_instance_health(domain: &str) -> bool {
 }
 
 /// Check availability of all known instances and update remote_tracks accordingly.
+/// P2P tracks (instance_domain starting with "p2p://") are skipped —
+/// their availability is managed by the P2P track health monitor.
 pub async fn refresh_instance_availability(db: &DatabaseConnection) {
     use soundtime_db::entities::remote_track;
 
@@ -1068,6 +1070,10 @@ pub async fn refresh_instance_availability(db: &DatabaseConnection) {
 
     let mut domains: std::collections::HashSet<String> = std::collections::HashSet::new();
     for rt in &remote_tracks {
+        // Skip P2P tracks — they use iroh, not HTTP NodeInfo
+        if rt.instance_domain.starts_with("p2p://") {
+            continue;
+        }
         domains.insert(rt.instance_domain.clone());
     }
 
@@ -1081,8 +1087,11 @@ pub async fn refresh_instance_availability(db: &DatabaseConnection) {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    // Update remote_tracks availability
+    // Update remote_tracks availability (skip P2P tracks)
     for rt in remote_tracks {
+        if rt.instance_domain.starts_with("p2p://") {
+            continue;
+        }
         let is_available = availability
             .get(&rt.instance_domain)
             .copied()

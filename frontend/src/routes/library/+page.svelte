@@ -25,7 +25,7 @@
       uploads = u.data ?? [];
       playlists = p.data ?? [];
       albums = a.data ?? [];
-    } catch { /* empty */ } finally { loading = false; }
+    } catch (e) { console.error('Failed to load library:', e); } finally { loading = false; }
   });
 </script>
 

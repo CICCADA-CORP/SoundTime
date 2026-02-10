@@ -81,6 +81,13 @@ if (typeof window !== "undefined") {
   window.addEventListener("soundtime:trackended", () => {
     next();
   });
+  // Listen for Media Session previous/next track actions
+  window.addEventListener("soundtime:previoustrack", () => {
+    previous();
+  });
+  window.addEventListener("soundtime:nexttrack", () => {
+    next();
+  });
 }
 
 export function getQueueStore() {

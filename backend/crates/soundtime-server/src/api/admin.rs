@@ -785,6 +785,10 @@ pub async fn check_instances_health(
 
     let mut domains: std::collections::HashSet<String> = std::collections::HashSet::new();
     for rt in &remote_tracks {
+        // Skip P2P tracks — they use iroh, not HTTP NodeInfo
+        if rt.instance_domain.starts_with("p2p://") {
+            continue;
+        }
         domains.insert(rt.instance_domain.clone());
     }
 

@@ -1,5 +1,7 @@
 FROM rust:1.93-slim AS builder
 
+ARG SOUNDTIME_BUILD_NUMBER=""
+
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -26,7 +28,8 @@ RUN rm -rf crates/*/src
 # 4. Copy real source code
 COPY . ./
 
-# 5. Touch files so cargo knows they changed, then build
+# 5. Touch files so cargo knows they changed, then build with version
+ENV SOUNDTIME_BUILD_NUMBER=${SOUNDTIME_BUILD_NUMBER}
 RUN find crates -name "*.rs" -exec touch {} + \
     && cargo build --release -p soundtime-server
 

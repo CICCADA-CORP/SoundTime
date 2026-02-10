@@ -18,7 +18,7 @@
       const res = await api.get<{ data: Album[]; total_pages: number }>(`/albums?page=${page}&per_page=50`);
       albums = res.data ?? [];
       totalPages = res.total_pages ?? 1;
-    } catch { /* empty */ } finally { loading = false; }
+    } catch (e) { console.error('Failed to load albums:', e); } finally { loading = false; }
   }
 
   function prevPage() { if (page > 1) { page--; loadAlbums(); } }

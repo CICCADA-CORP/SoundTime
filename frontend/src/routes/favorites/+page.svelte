@@ -15,7 +15,7 @@
     try {
       const res = await api.get<{ data: Track[]; total: number }>("/favorites?per_page=200");
       tracks = res.data ?? [];
-    } catch { /* empty */ } finally { loading = false; }
+    } catch (e) { console.error('Failed to load favorites:', e); } finally { loading = false; }
   });
 </script>
 

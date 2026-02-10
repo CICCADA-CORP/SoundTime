@@ -129,6 +129,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta-backend.outputs.tags }}
           labels: ${{ steps.meta-backend.outputs.labels }}
+          build-args: |
+            SOUNDTIME_BUILD_NUMBER=${{ github.run_number }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

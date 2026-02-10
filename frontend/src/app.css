@@ -46,3 +46,10 @@
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
+
+/* Player safe area — only on mobile when no bottom nav below */
+@media (min-width: 768px) {
+  .safe-area-bottom-player {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}

@@ -53,7 +53,12 @@
 </script>
 
 {#if player.currentTrack}
-  <div class="fixed bottom-0 left-0 right-0 h-auto md:h-20 bg-[hsl(0,0%,10%)] border-t border-[hsl(var(--border))] z-50">
+  <div class="fixed bottom-14 md:bottom-0 left-0 right-0 h-auto md:h-20 bg-[hsl(0,0%,10%)] border-t border-[hsl(var(--border))] z-[56] safe-area-bottom-player">
+    <!-- Mobile progress bar (thin, at top of player) -->
+    <div class="md:hidden h-0.5 bg-[hsl(var(--secondary))] relative">
+      <div class="h-full bg-[hsl(var(--primary))] transition-[width] duration-200"
+           style="width: {player.duration > 0 ? (player.progress / player.duration) * 100 : 0}%"></div>
+    </div>
     <!-- Mobile: compact player -->
     <div class="flex md:hidden items-center gap-3 px-3 py-2">
       <button class="w-10 h-10 rounded bg-[hsl(var(--secondary))] flex items-center justify-center text-sm flex-shrink-0 cursor-pointer" onclick={() => expanded = true}>
@@ -80,11 +85,6 @@
           <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
         </button>
       </div>
-    </div>
-    <!-- Mobile progress bar (thin, at top of player) -->
-    <div class="md:hidden h-0.5 bg-[hsl(var(--secondary))] -mt-0.5 relative" style="order: -1;">
-      <div class="h-full bg-[hsl(var(--primary))] transition-[width] duration-200"
-           style="width: {player.duration > 0 ? (player.progress / player.duration) * 100 : 0}%"></div>
     </div>
 
     <!-- Desktop: full player -->

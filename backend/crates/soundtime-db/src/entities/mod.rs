@@ -6,6 +6,7 @@ pub mod instance_setting;
 pub mod library;
 pub mod library_track;
 pub mod listen_history;
+pub mod p2p_peer;
 pub mod playlist;
 pub mod playlist_track;
 pub mod remote_track;

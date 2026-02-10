@@ -9,13 +9,13 @@
 
   const queue = getQueueStore();
   const auth = getAuthStore();
-  let playlist: Playlist | null = null;
-  let loading = true;
-  let editing = false;
-  let deleting = false;
-  let editForm = { name: "", description: "", is_public: true, cover_url: "" };
-  let error: string | null = null;
-  let success: string | null = null;
+  let playlist: Playlist | null = $state(null);
+  let loading = $state(true);
+  let editing = $state(false);
+  let deleting = $state(false);
+  let editForm = $state({ name: "", description: "", is_public: true, cover_url: "" });
+  let error: string | null = $state(null);
+  let success: string | null = $state(null);
 
   let isOwner = $derived(playlist && auth.user && (playlist as any).user_id === auth.user.id);
 
@@ -43,7 +43,7 @@
           cover_url: playlist.cover_url ?? "",
         };
       }
-    } catch { /* empty */ } finally { loading = false; }
+    } catch (e) { console.error('Failed to load playlist:', e); } finally { loading = false; }
   });
 
   function playAll() {

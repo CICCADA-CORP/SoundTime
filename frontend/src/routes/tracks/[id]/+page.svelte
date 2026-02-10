@@ -9,17 +9,17 @@
 
   const auth = getAuthStore();
   const player = getPlayerStore();
-  let credits: TrackCredits | null = null;
-  let loading = true;
-  let editing = false;
-  let deleting = false;
-  let editForm = { title: "", genre: "", year: "" as string, track_number: "" as string, disc_number: "" as string };
-  let error: string | null = null;
-  let success: string | null = null;
-  let showReportForm = false;
-  let reportReason = "";
-  let reportError = "";
-  let reportSuccess = "";
+  let credits: TrackCredits | null = $state(null);
+  let loading = $state(true);
+  let editing = $state(false);
+  let deleting = $state(false);
+  let editForm = $state({ title: "", genre: "", year: "" as string, track_number: "" as string, disc_number: "" as string });
+  let error: string | null = $state(null);
+  let success: string | null = $state(null);
+  let showReportForm = $state(false);
+  let reportReason = $state("");
+  let reportError = $state("");
+  let reportSuccess = $state("");
 
   let isOwner = $derived(credits?.uploaded_by && auth.user?.id === credits.uploaded_by);
 
@@ -36,7 +36,7 @@
           disc_number: credits.disc_number?.toString() ?? "",
         };
       }
-    } catch { /* empty */ } finally { loading = false; }
+    } catch (e) { console.error('Failed to load track credits:', e); } finally { loading = false; }
   });
 
   async function saveEdit() {

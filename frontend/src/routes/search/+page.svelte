@@ -7,8 +7,8 @@
   import AlbumCard from "$lib/components/AlbumCard.svelte";
   import ArtistCard from "$lib/components/ArtistCard.svelte";
 
-  let results: SearchResults = { tracks: [], albums: [], artists: [], total: 0 };
-  let loading = true;
+  let results: SearchResults = $state({ tracks: [], albums: [], artists: [], total: 0 });
+  let loading = $state(true);
 
   let query = $derived($page.url.searchParams.get("q") ?? "");
 
@@ -25,7 +25,7 @@
     loading = true;
     try {
       results = await api.get<SearchResults>(`/search?q=${encodeURIComponent(query)}`);
-    } catch { /* empty */ } finally { loading = false; }
+    } catch (e) { console.error('Search failed:', e); } finally { loading = false; }
   }
 </script>
 

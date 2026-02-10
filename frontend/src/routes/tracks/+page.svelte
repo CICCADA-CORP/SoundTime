@@ -18,7 +18,7 @@
       const res = await api.get<{ data: Track[]; total_pages: number }>(`/tracks?page=${page}&per_page=50`);
       tracks = res.data ?? [];
       totalPages = res.total_pages ?? 1;
-    } catch { /* empty */ } finally { loading = false; }
+    } catch (e) { console.error('Failed to load tracks:', e); } finally { loading = false; }
   }
 
   function prevPage() { if (page > 1) { page--; loadTracks(); } }

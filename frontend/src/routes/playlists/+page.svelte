@@ -25,7 +25,7 @@
     try {
       const res = await api.get<{ data: Playlist[] }>("/playlists");
       playlists = res.data ?? [];
-    } catch { /* empty */ } finally { loading = false; }
+    } catch (e) { console.error('Failed to load playlists:', e); } finally { loading = false; }
   }
 
   async function createPlaylist() {
@@ -42,7 +42,7 @@
       newIsPublic = true;
       showCreateModal = false;
       await loadPlaylists();
-    } catch { /* empty */ } finally { creating = false; }
+    } catch (e) { console.error('Failed to create playlist:', e); } finally { creating = false; }
   }
 
   async function deletePlaylist(id: string) {
@@ -51,7 +51,7 @@
     try {
       await api.delete(`/playlists/${id}`);
       await loadPlaylists();
-    } catch { /* empty */ } finally { deletingId = null; }
+    } catch (e) { console.error('Failed to delete playlist:', e); } finally { deletingId = null; }
   }
 </script>
 

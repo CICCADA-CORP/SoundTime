@@ -111,9 +111,10 @@ pub async fn add_peer(
         Ok(P2pMessage::Pong {
             node_id: peer_nid,
             track_count,
+            version,
         }) => {
             node.registry()
-                .upsert_peer(&peer_nid, None, track_count)
+                .upsert_peer_versioned(&peer_nid, None, track_count, version)
                 .await;
             // Trigger peer exchange in background to discover wider network
             let p2p_clone = Arc::clone(&node);

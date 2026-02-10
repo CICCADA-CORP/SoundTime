@@ -16,11 +16,14 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 mod api;
 mod auth;
 mod listing_worker;
 pub mod metadata_lookup;
+mod p2p_logs;
 mod storage_worker;
 
 #[derive(Serialize)]
@@ -33,8 +36,10 @@ struct ApiStatus {
 async fn main() {
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(p2p_logs::P2pLogLayer::new())
         .init();
 
     // Database connection
@@ -307,6 +312,7 @@ async fn main() {
                     post(api::admin::check_instances_health),
                 )
                 .route("/listing/trigger", post(listing_worker::trigger_heartbeat))
+                .route("/listing/status", get(listing_worker::listing_status))
                 .route("/metadata/status", get(api::admin::metadata_status))
                 .route(
                     "/metadata/enrich/{track_id}",
@@ -364,6 +370,11 @@ async fn main() {
                     axum::routing::delete(api::p2p::remove_peer),
                 )
                 .route("/p2p/peers/{node_id}/ping", post(api::p2p::ping_peer))
+                // P2P log routes
+                .route(
+                    "/p2p/logs",
+                    get(p2p_logs::get_p2p_logs).delete(p2p_logs::clear_p2p_logs),
+                )
                 .layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     auth::middleware::require_admin,
@@ -414,6 +425,11 @@ async fn main() {
 
     let app = Router::new()
         .route("/healthz", get(healthz))
+        // Well-known nodeinfo alias — used by other instances for health checks
+        .route(
+            "/.well-known/nodeinfo",
+            get(api::admin::nodeinfo),
+        )
         .nest("/api", api_routes)
         .layer(TraceLayer::new_for_http())
         .layer(cors)
@@ -461,6 +477,6 @@ async fn main() {
 async fn healthz() -> Json<ApiStatus> {
     Json(ApiStatus {
         status: "ok",
-        version: "0.1.0",
+        version: soundtime_p2p::build_version(),
     })
 }

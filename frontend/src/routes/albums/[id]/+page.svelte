@@ -9,13 +9,13 @@
   import { t } from "$lib/i18n/index.svelte";
 
   const queue = getQueueStore();
-  let album: Album | null = null;
-  let loading = true;
+  let album: Album | null = $state(null);
+  let loading = $state(true);
 
   onMount(async () => {
     try {
       album = await api.get<Album>(`/albums/${$page.params.id}`);
-    } catch { /* empty */ } finally { loading = false; }
+    } catch (e) { console.error('Failed to load album:', e); } finally { loading = false; }
   });
 
   function playAll() {

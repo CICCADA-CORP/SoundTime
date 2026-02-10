@@ -12,7 +12,7 @@
   onMount(async () => {
     try {
       artist = await api.get<Artist>(`/artists/${$page.params.id}`);
-    } catch { /* empty */ } finally { loading = false; }
+    } catch (e) { console.error('Failed to load artist:', e); } finally { loading = false; }
   });
 </script>
 

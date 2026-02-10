@@ -28,7 +28,7 @@
     try {
       const res = await api.get<{ data: HistoryEntry[] }>("/history");
       history = res.data ?? [];
-    } catch { /* empty */ } finally { loading = false; }
+    } catch (e) { console.error('Failed to load history:', e); } finally { loading = false; }
   });
 </script>
 

@@ -22,6 +22,7 @@ mod m20240101_000019_add_ban_fields_to_users;
 mod m20240101_000020_add_editorial_to_playlists;
 mod m20240101_000021_create_track_reports;
 mod m20240101_000022_remove_ap_add_p2p;
+mod m20240101_000023_create_p2p_peers;
 
 pub struct Migrator;
 
@@ -51,6 +52,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000020_add_editorial_to_playlists::Migration),
             Box::new(m20240101_000021_create_track_reports::Migration),
             Box::new(m20240101_000022_remove_ap_add_p2p::Migration),
+            Box::new(m20240101_000023_create_p2p_peers::Migration),
         ]
     }
 }
