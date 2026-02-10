@@ -1,13 +1,17 @@
-//! P2P API routes — status, peer management, track sharing, distributed search.
+//! P2P API routes — status, peer management, track sharing, distributed search, library sync.
 
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
+    Extension, Json,
 };
 use serde::{Deserialize, Serialize};
 use soundtime_db::AppState;
 use soundtime_p2p::{P2pMessage, P2pNode, PeerInfo};
+use soundtime_p2p::{
+    get_library_sync_overview, spawn_library_resync, LibrarySyncOverview, LibrarySyncTaskStatus,
+    SyncTaskHandle,
+};
 use std::sync::Arc;
 
 /// Helper: extract `Arc<P2pNode>` from type-erased AppState field.
@@ -339,4 +343,89 @@ pub async fn network_search(
     let total = results.len();
 
     Ok(Json(NetworkSearchResponse { results, total }))
+}
+
+// ── Library Sync ────────────────────────────────────────────────
+
+/// GET /api/admin/p2p/library-sync — library sync overview for all peers (admin only)
+pub async fn library_sync_overview(
+    State(state): State<Arc<AppState>>,
+) -> Json<LibrarySyncOverview> {
+    let Some(node) = get_p2p_node(&state) else {
+        return Json(LibrarySyncOverview {
+            local_track_count: 0,
+            total_peers: 0,
+            synced_peers: 0,
+            partial_peers: 0,
+            not_synced_peers: 0,
+            peers: vec![],
+        });
+    };
+
+    let overview = get_library_sync_overview(&node, &state.db).await;
+    Json(overview)
+}
+
+/// POST /api/admin/p2p/library-sync/:node_id — force a full re-sync with a peer (admin only)
+pub async fn trigger_library_resync(
+    State(state): State<Arc<AppState>>,
+    Extension(tracker): Extension<SyncTaskHandle>,
+    Path(peer_node_id): Path<String>,
+) -> Result<Json<MessageResponse>, (StatusCode, Json<MessageResponse>)> {
+    let Some(node) = get_p2p_node(&state) else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(MessageResponse {
+                message: "P2P node is not enabled".to_string(),
+            }),
+        ));
+    };
+
+    // Check if a sync is already running
+    {
+        let status = tracker.lock().await;
+        if let LibrarySyncTaskStatus::Running { .. } = &*status {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(MessageResponse {
+                    message: "A library sync is already in progress".to_string(),
+                }),
+            ));
+        }
+    }
+
+    // Validate peer exists
+    if node.registry().get_peer(&peer_node_id).await.is_none() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(MessageResponse {
+                message: format!("Peer {peer_node_id} not found"),
+            }),
+        ));
+    }
+
+    spawn_library_resync(node, peer_node_id.clone(), tracker);
+
+    Ok(Json(MessageResponse {
+        message: format!("Library re-sync started with peer {peer_node_id}"),
+    }))
+}
+
+/// GET /api/admin/p2p/library-sync/task-status — poll the background sync task status
+pub async fn library_sync_task_status(
+    Extension(tracker): Extension<SyncTaskHandle>,
+) -> Json<LibrarySyncTaskStatus> {
+    let status = tracker.lock().await;
+    Json(status.clone())
+}
+
+/// POST /api/admin/p2p/library-sync/task-dismiss — reset task status to idle
+pub async fn library_sync_task_dismiss(
+    Extension(tracker): Extension<SyncTaskHandle>,
+) -> Json<MessageResponse> {
+    let mut status = tracker.lock().await;
+    *status = LibrarySyncTaskStatus::Idle;
+    Json(MessageResponse {
+        message: "Task status reset".to_string(),
+    })
 }

@@ -9,6 +9,7 @@
 pub mod blocked;
 pub mod discovery;
 pub mod error;
+pub mod library_sync;
 pub mod musicbrainz;
 pub mod node;
 pub mod search_index;
@@ -23,6 +24,10 @@ pub use track_health::{
     auto_repair_on_failure, persist_track_status, run_health_sweep, spawn_health_monitor,
     BatchCheckResult, HealthMonitorConfig, HealthStatus, PeerTrackInfo, RecoveryResult,
     TrackCheckItem, TrackFetcher, TrackHealthManager,
+};
+pub use library_sync::{
+    get_library_sync_overview, new_sync_tracker, spawn_library_resync, LibrarySyncOverview,
+    LibrarySyncTaskStatus, PeerSyncStatus, SyncProgress, SyncResult, SyncState, SyncTaskHandle,
 };
 
 // Re-export iroh types needed by consumers

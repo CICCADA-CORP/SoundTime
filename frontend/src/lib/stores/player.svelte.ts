@@ -9,6 +9,7 @@ let duration = $state(0);
 let shuffle = $state(false);
 let repeat = $state<"none" | "one" | "all">("none");
 let audio: HTMLAudioElement | null = null;
+let lastPositionUpdate = 0;
 
 /** Resolve a relative media URL to an absolute one. */
 function resolveMediaUrl(url: string): string {
@@ -112,6 +113,12 @@ function initAudio() {
 
     audio.addEventListener("timeupdate", () => {
       progress = audio!.currentTime;
+      // Update Media Session position every ~5s so iOS lock screen stays in sync
+      const now = Date.now();
+      if (now - lastPositionUpdate > 5000) {
+        lastPositionUpdate = now;
+        updatePositionState();
+      }
     });
 
     audio.addEventListener("loadedmetadata", () => {
@@ -130,9 +137,13 @@ function initAudio() {
 
       if (repeat === "one") {
         audio!.currentTime = 0;
-        audio!.play();
+        audio!.play().catch(console.error);
+        updatePositionState();
       } else {
         isPlaying = false;
+        if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+          navigator.mediaSession.playbackState = "paused";
+        }
         // Queue handles next track
         const event = new CustomEvent("soundtime:trackended");
         window.dispatchEvent(event);
@@ -141,10 +152,17 @@ function initAudio() {
 
     audio.addEventListener("pause", () => {
       isPlaying = false;
+      if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+        navigator.mediaSession.playbackState = "paused";
+      }
     });
 
     audio.addEventListener("play", () => {
       isPlaying = true;
+      if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+        navigator.mediaSession.playbackState = "playing";
+      }
+      updatePositionState();
     });
   }
 }
@@ -201,6 +219,7 @@ function seek(time: number) {
   if (audio) {
     audio.currentTime = time;
     progress = time;
+    updatePositionState();
   }
 }
 

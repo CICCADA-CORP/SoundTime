@@ -53,7 +53,7 @@
 </script>
 
 {#if player.currentTrack}
-  <div class="fixed bottom-14 md:bottom-0 left-0 right-0 h-auto md:h-20 bg-[hsl(0,0%,10%)] border-t border-[hsl(var(--border))] z-[56] safe-area-bottom-player">
+  <div class="fixed bottom-14 md:bottom-0 left-0 md:left-60 right-0 h-auto md:h-20 bg-[hsl(0,0%,10%)] border-t border-[hsl(var(--border))] z-[56] safe-area-bottom-player">
     <!-- Mobile progress bar (thin, at top of player) -->
     <div class="md:hidden h-0.5 bg-[hsl(var(--secondary))] relative">
       <div class="h-full bg-[hsl(var(--primary))] transition-[width] duration-200"

@@ -479,3 +479,50 @@ export interface ListingStatus {
   error: string | null;
   last_heartbeat: string | null;
 }
+
+// ─── P2P Library Sync ───────────────────────────────────────────────
+
+export type SyncState = "synced" | "partial" | "not_synced" | "offline" | "empty";
+
+export interface PeerSyncStatus {
+  node_id: string;
+  name: string | null;
+  version: string | null;
+  is_online: boolean;
+  peer_announced_tracks: number;
+  local_remote_tracks: number;
+  available_tracks: number;
+  our_track_count: number;
+  sync_ratio: number;
+  sync_state: SyncState;
+  last_seen: string;
+}
+
+export interface LibrarySyncOverview {
+  local_track_count: number;
+  total_peers: number;
+  synced_peers: number;
+  partial_peers: number;
+  not_synced_peers: number;
+  peers: PeerSyncStatus[];
+}
+
+export interface SyncProgress {
+  processed: number;
+  total: number | null;
+  phase: string;
+}
+
+export interface SyncResult {
+  peer_id: string;
+  tracks_synced: number;
+  tracks_already_known: number;
+  errors: number;
+  duration_secs: number;
+}
+
+export type LibrarySyncTaskStatus =
+  | { status: "idle" }
+  | { status: "running"; peer_id: string; progress: SyncProgress }
+  | { status: "completed"; result: SyncResult }
+  | { status: "error"; message: string };

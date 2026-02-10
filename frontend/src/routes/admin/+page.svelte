@@ -5,7 +5,7 @@
   import {
     LayoutDashboard, Settings, Users, Database, Sparkles,
     Radio, Globe, Network, Ban, Flag, FileText,
-    HardDrive, ShieldCheck, FolderSync, Music, Share2, ScrollText
+    HardDrive, ShieldCheck, FolderSync, Music, Share2, ScrollText, RefreshCw
   } from "lucide-svelte";
   import NetworkGraph from "$lib/components/NetworkGraph.svelte";
   import type {
@@ -34,6 +34,8 @@
     P2pLogEntry,
     P2pLogResponse,
     ListingStatus,
+    LibrarySyncOverview,
+    LibrarySyncTaskStatus,
   } from "$lib/types";
 
   const auth = getAuthStore();
@@ -107,6 +109,12 @@
   let listingTriggering = $state(false);
   let listingTriggerError = $state<string | null>(null);
 
+  // Library sync state
+  let librarySyncOverview = $state<LibrarySyncOverview | null>(null);
+  let librarySyncTask = $state<LibrarySyncTaskStatus | null>(null);
+  let librarySyncPolling = $state(false);
+  let librarySyncResyncingPeer = $state<string | null>(null);
+
   /** Poll /admin/storage/task-status until the background task finishes. */
   async function pollTaskStatus(kind: "sync" | "integrity") {
     const POLL_INTERVAL = 1500; // ms
@@ -146,6 +154,31 @@
   let blockDomainInput = $state("");
   let blockReasonInput = $state("");
 
+  /** Poll /admin/p2p/library-sync/task-status until the background sync finishes. */
+  async function pollLibrarySyncTask() {
+    if (librarySyncPolling) return;
+    librarySyncPolling = true;
+    const POLL_INTERVAL = 2000;
+    while (true) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+      try {
+        const status = await api.get<LibrarySyncTaskStatus>("/admin/p2p/library-sync/task-status");
+        librarySyncTask = status;
+        if (status.status === "running") {
+          continue;
+        }
+        // completed, error, or idle — stop polling & refresh overview
+        if (activeTab === "library-sync") {
+          librarySyncOverview = await api.get<LibrarySyncOverview>("/admin/p2p/library-sync");
+        }
+        break;
+      } catch {
+        break;
+      }
+    }
+    librarySyncPolling = false;
+  }
+
   const tabGroups = $derived([
     {
       label: t("admin.group.general"),
@@ -177,6 +210,7 @@
         { id: "p2p-status", label: t("admin.tab.p2pStatus"), icon: Network },
         { id: "network-graph", label: t("admin.tab.networkGraph"), icon: Share2 },
         { id: "p2p-logs", label: t("admin.tab.p2pLogs"), icon: ScrollText },
+        { id: "library-sync", label: t("admin.tab.librarySync"), icon: RefreshCw },
         { id: "remote-tracks", label: t("admin.tab.remoteTracks"), icon: Radio },
         { id: "instances", label: t("admin.tab.instances"), icon: Globe },
         { id: "blocked", label: t("admin.tab.blocked"), icon: Ban },
@@ -235,6 +269,10 @@
           p2pLogsTotalInBuffer = logResp.total_in_buffer;
           break;
         }
+        case "library-sync":
+          librarySyncOverview = await api.get<LibrarySyncOverview>("/admin/p2p/library-sync");
+          librarySyncTask = await api.get<LibrarySyncTaskStatus>("/admin/p2p/library-sync/task-status");
+          break;
         case "users":
           users = await api.get<User[]>("/admin/users");
           break;
@@ -798,6 +836,207 @@
                 </tbody>
               </table>
             </div>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- Library Sync -->
+      {#if activeTab === "library-sync"}
+        <div class="space-y-6">
+          <!-- Background task status banner -->
+          {#if librarySyncTask && librarySyncTask.status !== "idle"}
+            <div class="rounded-lg p-4 {librarySyncTask.status === 'running' ? 'bg-blue-500/10 border border-blue-500/30' : librarySyncTask.status === 'completed' ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}">
+              {#if librarySyncTask.status === "running"}
+                <div class="flex items-center justify-between mb-2">
+                  <h4 class="text-sm font-semibold text-blue-400 flex items-center gap-2">
+                    <div class="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                    {t('admin.libSync.taskRunning')}
+                  </h4>
+                  <span class="text-xs text-[hsl(var(--muted-foreground))] font-mono">{librarySyncTask.peer_id.slice(0, 12)}…</span>
+                </div>
+                <p class="text-sm text-[hsl(var(--muted-foreground))] mb-2">{librarySyncTask.progress.phase}</p>
+                {#if librarySyncTask.progress.total}
+                  <div class="w-full h-2 bg-[hsl(var(--secondary))] rounded-full overflow-hidden">
+                    <div class="h-full bg-blue-500 rounded-full transition-all duration-300"
+                         style="width: {Math.min((librarySyncTask.progress.processed / librarySyncTask.progress.total) * 100, 100)}%"></div>
+                  </div>
+                  <p class="text-xs text-[hsl(var(--muted-foreground))] mt-1">{librarySyncTask.progress.processed} / {librarySyncTask.progress.total}</p>
+                {/if}
+              {:else if librarySyncTask.status === "completed"}
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h4 class="text-sm font-semibold text-green-400">{t('admin.libSync.taskCompleted')}</h4>
+                    <p class="text-sm text-[hsl(var(--muted-foreground))]">
+                      {librarySyncTask.result.tracks_synced} {t('admin.libSync.tracksSynced')} — {t('admin.libSync.duration')}: {librarySyncTask.result.duration_secs}s
+                    </p>
+                  </div>
+                  <button
+                    class="text-xs bg-[hsl(var(--secondary))] px-3 py-1.5 rounded hover:opacity-80 transition"
+                    onclick={async () => {
+                      await api.post("/admin/p2p/library-sync/task-dismiss");
+                      librarySyncTask = { status: "idle" };
+                      await loadData();
+                    }}
+                  >
+                    {t('admin.libSync.taskDismiss')}
+                  </button>
+                </div>
+              {:else if librarySyncTask.status === "error"}
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h4 class="text-sm font-semibold text-red-400">{t('admin.libSync.taskError')}</h4>
+                    <p class="text-sm text-red-300">{librarySyncTask.message}</p>
+                  </div>
+                  <button
+                    class="text-xs bg-[hsl(var(--secondary))] px-3 py-1.5 rounded hover:opacity-80 transition"
+                    onclick={async () => {
+                      await api.post("/admin/p2p/library-sync/task-dismiss");
+                      librarySyncTask = { status: "idle" };
+                    }}
+                  >
+                    {t('admin.libSync.taskDismiss')}
+                  </button>
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- Header + refresh -->
+          <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold">{t('admin.libSync.title')}</h2>
+            <button
+              class="text-xs bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] px-3 py-1.5 rounded hover:opacity-90 transition"
+              onclick={async () => {
+                await loadData();
+                // If a task is running, start polling
+                if (librarySyncTask?.status === "running" && !librarySyncPolling) {
+                  pollLibrarySyncTask();
+                }
+              }}
+            >
+              {t('admin.libSync.refresh')}
+            </button>
+          </div>
+
+          {#if librarySyncOverview}
+            <!-- Overview cards -->
+            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
+                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.localTracks')}</p>
+                <p class="text-3xl font-bold mt-1">{librarySyncOverview.local_track_count}</p>
+              </div>
+              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
+                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.totalPeers')}</p>
+                <p class="text-3xl font-bold mt-1">{librarySyncOverview.total_peers}</p>
+              </div>
+              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
+                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.syncedPeers')}</p>
+                <p class="text-3xl font-bold mt-1 text-green-400">{librarySyncOverview.synced_peers}</p>
+              </div>
+              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
+                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.partialPeers')}</p>
+                <p class="text-3xl font-bold mt-1 text-yellow-400">{librarySyncOverview.partial_peers}</p>
+              </div>
+              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
+                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.notSyncedPeers')}</p>
+                <p class="text-3xl font-bold mt-1 text-red-400">{librarySyncOverview.not_synced_peers}</p>
+              </div>
+            </div>
+
+            <!-- Per-peer sync table -->
+            {#if librarySyncOverview.peers.length > 0}
+              <div class="bg-[hsl(var(--card))] rounded-lg overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead>
+                    <tr class="border-b border-[hsl(var(--border))]">
+                      <th class="text-left p-3 text-[hsl(var(--muted-foreground))]">{t('admin.libSync.peer')}</th>
+                      <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">{t('admin.libSync.announced')}</th>
+                      <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">{t('admin.libSync.cataloged')}</th>
+                      <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">{t('admin.libSync.available')}</th>
+                      <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">{t('admin.libSync.ratio')}</th>
+                      <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">{t('admin.libSync.state')}</th>
+                      <th class="text-right p-3 text-[hsl(var(--muted-foreground))]">{t('admin.libSync.actions')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each librarySyncOverview.peers as peer}
+                      <tr class="border-b border-[hsl(var(--border))] last:border-b-0">
+                        <td class="p-3">
+                          <div class="flex items-center gap-2">
+                            <div class="w-2 h-2 rounded-full flex-shrink-0 {peer.is_online ? 'bg-green-400' : 'bg-gray-500'}"></div>
+                            <div class="min-w-0">
+                              <p class="font-mono text-xs truncate max-w-[220px]">
+                                {peer.name ? `${peer.name}` : `${peer.node_id.slice(0, 16)}…`}
+                              </p>
+                              {#if peer.version}
+                                <p class="text-[10px] text-[hsl(var(--muted-foreground))]">v{peer.version}</p>
+                              {/if}
+                            </div>
+                          </div>
+                        </td>
+                        <td class="p-3 text-center font-mono">{peer.peer_announced_tracks}</td>
+                        <td class="p-3 text-center font-mono">{peer.local_remote_tracks}</td>
+                        <td class="p-3 text-center font-mono">{peer.available_tracks}</td>
+                        <td class="p-3 text-center">
+                          <div class="flex items-center justify-center gap-2">
+                            <div class="w-16 h-1.5 bg-[hsl(var(--secondary))] rounded-full overflow-hidden">
+                              <div class="h-full rounded-full transition-all {peer.sync_ratio >= 1 ? 'bg-green-400' : peer.sync_ratio > 0 ? 'bg-yellow-400' : 'bg-red-400'}"
+                                   style="width: {Math.min(peer.sync_ratio * 100, 100)}%"></div>
+                            </div>
+                            <span class="text-xs font-mono">{Math.round(peer.sync_ratio * 100)}%</span>
+                          </div>
+                        </td>
+                        <td class="p-3 text-center">
+                          {#if peer.sync_state === "synced"}
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">{t('admin.libSync.stateSynced')}</span>
+                          {:else if peer.sync_state === "partial"}
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400">{t('admin.libSync.statePartial')}</span>
+                          {:else if peer.sync_state === "not_synced"}
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-400">{t('admin.libSync.stateNotSynced')}</span>
+                          {:else if peer.sync_state === "offline"}
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-gray-500/20 text-gray-400">{t('admin.libSync.stateOffline')}</span>
+                          {:else}
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-gray-500/20 text-gray-400">{t('admin.libSync.stateEmpty')}</span>
+                          {/if}
+                        </td>
+                        <td class="p-3 text-right">
+                          <button
+                            class="text-xs px-3 py-1.5 rounded transition font-medium disabled:opacity-50 {librarySyncResyncingPeer === peer.node_id
+                              ? 'bg-blue-500/20 text-blue-400 cursor-wait'
+                              : 'bg-[hsl(var(--primary))]/20 text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary))]/30'}"
+                            disabled={!peer.is_online || librarySyncResyncingPeer !== null || librarySyncTask?.status === "running"}
+                            onclick={async () => {
+                              librarySyncResyncingPeer = peer.node_id;
+                              try {
+                                await api.post(`/admin/p2p/library-sync/${peer.node_id}`);
+                                // Start polling for task status
+                                pollLibrarySyncTask();
+                              } catch (e: any) {
+                                error = e.message;
+                              } finally {
+                                librarySyncResyncingPeer = null;
+                              }
+                            }}
+                          >
+                            {#if librarySyncResyncingPeer === peer.node_id}
+                              {t('admin.libSync.syncing')}
+                            {:else}
+                              {t('admin.libSync.resync')}
+                            {/if}
+                          </button>
+                        </td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            {:else}
+              <div class="bg-[hsl(var(--card))] rounded-lg p-8 text-center">
+                <RefreshCw class="w-10 h-10 text-[hsl(var(--muted-foreground))]/30 mx-auto mb-3" />
+                <p class="text-[hsl(var(--muted-foreground))]">{t('admin.libSync.noPeers')}</p>
+                <p class="text-xs text-[hsl(var(--muted-foreground))] mt-2">{t('admin.libSync.noPeersHint')}</p>
+              </div>
+            {/if}
           {/if}
         </div>
       {/if}

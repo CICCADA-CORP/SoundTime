@@ -298,11 +298,17 @@ async fn get_listing_token(state: &AppState) -> Option<String> {
         .ok()
         .flatten()
         .map(|s| s.value)
+        .filter(|v| !v.is_empty())
 }
 
 /// Save the listing token to instance settings.
 async fn save_listing_token(state: &AppState, token: &str) {
     upsert_setting(state, "listing_token", token).await;
+}
+
+/// Delete the listing token from instance settings (used when the server rejects it).
+async fn delete_listing_token(state: &AppState) {
+    upsert_setting(state, "listing_token", "").await;
 }
 
 /// Get the instance name from settings.
@@ -436,6 +442,43 @@ async fn send_heartbeat(
         }
         tracing::debug!("listing heartbeat successful");
         return Ok(());
+    }
+
+    // Handle 401: token is invalid or expired.
+    // Delete the stale local token and retry as a fresh registration.
+    if status.as_u16() == 401 && token.is_some() {
+        tracing::warn!(
+            domain = %domain,
+            "listing server returned 401 (invalid token) — deleting stale token and re-registering"
+        );
+        delete_listing_token(state).await;
+
+        // Rebuild payload without token
+        let fresh_params = HeartbeatParams {
+            token: None,
+            ..params
+        };
+        let fresh_payload = build_announce_payload(&fresh_params);
+        let (retry_status, retry_body) =
+            send_announce_request(client, listing_url, &fresh_payload).await?;
+
+        if retry_status.is_success() {
+            if let Some(new_token) = retry_body.get("token").and_then(|t| t.as_str()) {
+                tracing::info!("re-registered on listing server with fresh token");
+                save_listing_token(state, new_token).await;
+            }
+            return Ok(());
+        }
+
+        // If the tokenless retry also fails (e.g. 409 domain exists), fall through
+        // to the normal error handling below with the retry's status/body.
+        let error = retry_body
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("unknown error");
+        return Err(format!(
+            "Re-registration after token invalidation failed — listing server returned {retry_status}: {error}"
+        ));
     }
 
     // Handle 409: "domain already registered" — we lost our token.

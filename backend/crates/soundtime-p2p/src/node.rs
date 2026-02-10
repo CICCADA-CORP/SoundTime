@@ -446,6 +446,47 @@ impl P2pNode {
             spawn_health_monitor(health_manager, fetcher, db_clone, shutdown_rx);
         }
 
+        // Spawn periodic relay health check (every 60s)
+        // Logs relay status and detects reconnections
+        {
+            let endpoint_clone = node.endpoint.clone();
+            let mut shutdown_rx = node.shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                interval.tick().await; // skip first immediate tick
+                let mut was_connected = true; // assume connected after init
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            let addr = endpoint_clone.addr();
+                            let relay = addr.relay_urls().next().map(|u| u.to_string());
+                            match relay {
+                                Some(url) => {
+                                    if !was_connected {
+                                        info!(relay = %url, "relay connection re-established");
+                                        was_connected = true;
+                                    } else {
+                                        debug!(relay = %url, "relay connection OK");
+                                    }
+                                }
+                                None => {
+                                    if was_connected {
+                                        warn!("relay disconnected — P2P will use direct connections only");
+                                        was_connected = false;
+                                    } else {
+                                        debug!("still no relay connection");
+                                    }
+                                }
+                            }
+                        }
+                        _ = shutdown_rx.changed() => {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
         info!("P2P node started successfully");
         Ok(node)
     }
@@ -463,6 +504,11 @@ impl P2pNode {
     /// Get the search index.
     pub fn search_index(&self) -> &Arc<SearchIndex> {
         &self.search_index
+    }
+
+    /// Get the database connection.
+    pub fn db(&self) -> &DatabaseConnection {
+        &self.db
     }
 
     /// Get the node address (includes relay URL and direct addresses).

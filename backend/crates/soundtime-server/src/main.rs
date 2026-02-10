@@ -38,7 +38,14 @@ async fn main() {
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
-        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                // Default: show info for our crates, reduce iroh relay/net noise
+                tracing_subscriber::EnvFilter::new(
+                    "info,iroh_relay=warn,iroh_net_report=warn,iroh=warn,netwatch=warn,portmapper=warn",
+                )
+            }),
+        )
         .with(p2p_logs::P2pLogLayer::new())
         .init();
 
@@ -156,6 +163,7 @@ async fn main() {
 
     // Task tracker for async storage operations (sync, integrity check)
     let storage_task_tracker = storage_worker::new_tracker();
+    let sync_task_tracker = soundtime_p2p::new_sync_tracker();
 
     // Rate limiter for auth endpoints: 10 requests per 60 seconds per IP
     let auth_governor_conf = Arc::new(
@@ -370,6 +378,24 @@ async fn main() {
                     axum::routing::delete(api::p2p::remove_peer),
                 )
                 .route("/p2p/peers/{node_id}/ping", post(api::p2p::ping_peer))
+                // P2P library sync routes
+                .route(
+                    "/p2p/library-sync",
+                    get(api::p2p::library_sync_overview),
+                )
+                .route(
+                    "/p2p/library-sync/task-status",
+                    get(api::p2p::library_sync_task_status),
+                )
+                .route(
+                    "/p2p/library-sync/task-dismiss",
+                    post(api::p2p::library_sync_task_dismiss),
+                )
+                .route(
+                    "/p2p/library-sync/{node_id}",
+                    post(api::p2p::trigger_library_resync),
+                )
+                .layer(Extension(sync_task_tracker))
                 // P2P log routes
                 .route(
                     "/p2p/logs",
