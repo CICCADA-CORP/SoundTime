@@ -27,6 +27,7 @@
   <a href="#screenshots">Screenshots</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#architecture">Architecture</a> •
+  <a href="#faq">FAQ</a> •
   <a href="docs/api-reference.md">API Reference</a> •
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
@@ -277,6 +278,70 @@ We welcome contributions of all kinds! Whether you're fixing a typo, adding a fe
 - 📋 [GitHub Issues](https://github.com/CICCADA-CORP/SoundTime/issues) — Bug reports & feature requests
 - 💬 [GitHub Discussions](https://github.com/CICCADA-CORP/SoundTime/discussions) — Questions & ideas
 
+## FAQ
+
+<details>
+<summary><strong>What is SoundTime?</strong></summary>
+<br>
+SoundTime is a self-hosted music streaming server. You install it on your own hardware, upload your personal music library, and stream it from anywhere — on desktop, mobile, or any device with a web browser.
+</details>
+
+<details>
+<summary><strong>How does the P2P network work?</strong></summary>
+<br>
+SoundTime uses <a href="https://iroh.computer/">iroh</a> to establish encrypted QUIC connections between instances. When enabled, your node can discover other SoundTime instances, exchange catalog metadata, and stream tracks directly peer-to-peer — without any central server. All connections go through NAT-traversal relay servers provided by <a href="https://n0.computer/">n0.computer</a>.
+</details>
+
+<details>
+<summary><strong>Is my data encrypted?</strong></summary>
+<br>
+Yes. All P2P connections use end-to-end encryption via iroh's QUIC transport. Passwords are hashed with Argon2id (OWASP-recommended). API authentication uses short-lived JWT tokens.
+</details>
+
+<details>
+<summary><strong>Can I use SoundTime without the P2P features?</strong></summary>
+<br>
+Absolutely. P2P is entirely optional. If you don't set the <code>P2P_ENABLED=true</code> environment variable, SoundTime works as a standalone self-hosted music server with no external connections.
+</details>
+
+<details>
+<summary><strong>What audio formats are supported?</strong></summary>
+<br>
+SoundTime supports MP3, FLAC, WAV, OGG, AAC, AIFF and most common formats via <a href="https://github.com/pdeljanov/Symphonia">Symphonia</a> and <a href="https://github.com/Serial-ATA/lofty-rs">Lofty</a>. Uploaded tracks can be transcoded to OPUS at 320/128/64 kbps for adaptive streaming.
+</details>
+
+<details>
+<summary><strong>How many users / tracks can it handle?</strong></summary>
+<br>
+SoundTime is designed for personal use, small or big communities. It has been tested with libraries of several thousand tracks and a handful of concurrent users. Performance depends primarily on your server's storage I/O and available memory.
+</details>
+
+<details>
+<summary><strong>Can I run SoundTime on a Raspberry Pi?</strong></summary>
+<br>
+Yes. The Docker images are multi-arch (x86_64 and ARM64). A Raspberry Pi 4 with 4 GB of RAM is sufficient for personal use. OPUS transcoding will be slower on ARM but works fine for a single user.
+</details>
+
+<details>
+<summary><strong>How do I update SoundTime?</strong></summary>
+<br>
+
+```bash
+cd ~/soundtime  # or your install directory
+git pull
+docker compose pull
+docker compose up -d
+```
+
+Database migrations run automatically on startup.
+</details>
+
+<details>
+<summary><strong>Is there a mobile app?</strong></summary>
+<br>
+There is no dedicated mobile app — SoundTime is a progressive web application. The frontend is fully responsive and supports the <strong>Media Session API</strong>, so your phone's lock screen displays cover art, title, artist, and playback controls natively.
+</details>
+
 ## Security
 
 If you discover a security vulnerability, please report it responsibly. See [SECURITY.md](SECURITY.md) for details.
@@ -286,6 +351,23 @@ If you discover a security vulnerability, please report it responsibly. See [SEC
 SoundTime is licensed under the [GNU Affero General Public License v3.0](LICENSE).
 
 This means you can use, modify, and distribute SoundTime freely, but if you run a modified version as a network service, you must make the source code available to its users.
+
+---
+
+## ⚠️ Disclaimer
+
+SoundTime is a **self-hosted music streaming tool** designed for managing and streaming your **own personal music library**. The peer-to-peer features are intended for sharing legally owned or royalty-free content between instances you operate or trust.
+
+**The developers of SoundTime do not endorse, encourage, or condone the use of this software for sharing, distributing, or hosting copyrighted material without proper authorization from the rights holders.**
+
+Each SoundTime instance is independently operated. The responsibility for the content hosted, shared, or made available through a given node lies **entirely with the operator of that node** — not with the authors, contributors, or maintainers of the SoundTime software.
+
+By using SoundTime, you acknowledge that:
+- You are solely responsible for ensuring that all content on your instance complies with applicable copyright laws and regulations in your jurisdiction.
+- The SoundTime project and its contributors bear **no liability** for any unlawful use of the software.
+- P2P connections are made at the discretion of instance operators. Connecting to another node does not imply endorsement of its content.
+
+If you are a rights holder and believe your content is being shared through a SoundTime instance, please contact the **operator of that specific instance** directly.
 
 ---
 
