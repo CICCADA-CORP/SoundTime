@@ -379,10 +379,7 @@ async fn main() {
                 )
                 .route("/p2p/peers/{node_id}/ping", post(api::p2p::ping_peer))
                 // P2P library sync routes
-                .route(
-                    "/p2p/library-sync",
-                    get(api::p2p::library_sync_overview),
-                )
+                .route("/p2p/library-sync", get(api::p2p::library_sync_overview))
                 .route(
                     "/p2p/library-sync/task-status",
                     get(api::p2p::library_sync_task_status),

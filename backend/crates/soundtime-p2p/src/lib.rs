@@ -17,6 +17,10 @@ pub mod track_health;
 
 pub use discovery::{PeerInfo, PeerRegistry};
 pub use error::P2pError;
+pub use library_sync::{
+    get_library_sync_overview, new_sync_tracker, spawn_library_resync, LibrarySyncOverview,
+    LibrarySyncTaskStatus, PeerSyncStatus, SyncProgress, SyncResult, SyncState, SyncTaskHandle,
+};
 pub use musicbrainz::MusicBrainzClient;
 pub use node::{P2pConfig, P2pMessage, P2pNode, SearchResultItem, TrackAnnouncement};
 pub use search_index::{BloomFilterData, SearchIndex};
@@ -24,10 +28,6 @@ pub use track_health::{
     auto_repair_on_failure, persist_track_status, run_health_sweep, spawn_health_monitor,
     BatchCheckResult, HealthMonitorConfig, HealthStatus, PeerTrackInfo, RecoveryResult,
     TrackCheckItem, TrackFetcher, TrackHealthManager,
-};
-pub use library_sync::{
-    get_library_sync_overview, new_sync_tracker, spawn_library_resync, LibrarySyncOverview,
-    LibrarySyncTaskStatus, PeerSyncStatus, SyncProgress, SyncResult, SyncState, SyncTaskHandle,
 };
 
 // Re-export iroh types needed by consumers

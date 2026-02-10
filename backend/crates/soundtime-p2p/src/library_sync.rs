@@ -229,11 +229,7 @@ async fn get_peer_sync_status(
 
 /// Trigger a full library re-sync with a specific peer in the background.
 /// This sends a CatalogSync request and also requests the peer's full catalog.
-pub fn spawn_library_resync(
-    node: Arc<P2pNode>,
-    peer_node_id: String,
-    tracker: SyncTaskHandle,
-) {
+pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: SyncTaskHandle) {
     tokio::spawn(async move {
         let start = std::time::Instant::now();
 

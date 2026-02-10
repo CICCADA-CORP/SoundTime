@@ -7,11 +7,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use soundtime_db::AppState;
-use soundtime_p2p::{P2pMessage, P2pNode, PeerInfo};
 use soundtime_p2p::{
     get_library_sync_overview, spawn_library_resync, LibrarySyncOverview, LibrarySyncTaskStatus,
     SyncTaskHandle,
 };
+use soundtime_p2p::{P2pMessage, P2pNode, PeerInfo};
 use std::sync::Arc;
 
 /// Helper: extract `Arc<P2pNode>` from type-erased AppState field.
