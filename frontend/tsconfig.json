@@ -4,6 +4,7 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "bundler",
-    "strict": true
+    "strict": true,
+    "skipLibCheck": true
   }
 }

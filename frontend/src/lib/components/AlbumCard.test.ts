@@ -58,14 +58,14 @@ describe('AlbumCard', () => {
   });
 
   it('renders empty when artist_name is null', () => {
-    const albumNoArtist = { ...album, artist_name: null };
+    const albumNoArtist = { ...album, artist_name: undefined };
     render(AlbumCard, { props: { album: albumNoArtist } });
     // Should still render
     expect(screen.getByText('Test Album')).toBeInTheDocument();
   });
 
   it('renders empty when both year and artist_name are null', () => {
-    const albumMinimal = { ...album, year: null, artist_name: null };
+    const albumMinimal = { ...album, year: null, artist_name: undefined };
     render(AlbumCard, { props: { album: albumMinimal } });
     expect(screen.getByText('Test Album')).toBeInTheDocument();
   });

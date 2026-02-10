@@ -2,14 +2,14 @@
   import { page } from "$app/stores";
   import { onMount } from "svelte";
   import { api } from "$lib/api";
-  import type { Album } from "$lib/types";
+  import type { Album, Track } from "$lib/types";
   import TrackList from "$lib/components/TrackList.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { formatDuration } from "$lib/utils";
   import { t } from "$lib/i18n/index.svelte";
 
   const queue = getQueueStore();
-  let album: Album | null = $state(null);
+  let album = $state<Album | null>(null);
   let loading = $state(true);
 
   onMount(async () => {
@@ -22,7 +22,7 @@
     if (album?.tracks) queue.playQueue(album.tracks);
   }
 
-  let totalDuration = $derived(album?.tracks?.reduce((sum, t) => sum + t.duration_secs, 0) ?? 0);
+  let totalDuration = $derived(album?.tracks?.reduce((sum: number, tr: Track) => sum + tr.duration_secs, 0) ?? 0);
 </script>
 
 <svelte:head><title>{album?.title ?? "Album"} — SoundTime</title></svelte:head>

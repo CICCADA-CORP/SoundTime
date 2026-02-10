@@ -322,7 +322,7 @@ describe('API module', () => {
 			const { promise } = api.uploadWithProgress('/upload', new FormData());
 
 			const loadCall = xhr.addEventListener.mock.calls.find((c: any[]) => c[0] === 'load');
-			loadCall[1]();
+			loadCall![1]();
 
 			const result = await promise;
 			expect(result).toEqual({ id: '123' });
@@ -333,7 +333,7 @@ describe('API module', () => {
 			const { promise } = api.uploadWithProgress('/upload', new FormData());
 
 			const errorCall = xhr.addEventListener.mock.calls.find((c: any[]) => c[0] === 'error');
-			errorCall[1]();
+			errorCall![1]();
 
 			await expect(promise).rejects.toThrow('Network error');
 		});
@@ -343,7 +343,7 @@ describe('API module', () => {
 			const { promise } = api.uploadWithProgress('/upload', new FormData());
 
 			const abortCall = xhr.addEventListener.mock.calls.find((c: any[]) => c[0] === 'abort');
-			abortCall[1]();
+			abortCall![1]();
 
 			await expect(promise).rejects.toThrow('Upload cancelled');
 		});
@@ -353,7 +353,7 @@ describe('API module', () => {
 			const { promise } = api.uploadWithProgress('/upload', new FormData());
 
 			const loadCall = xhr.addEventListener.mock.calls.find((c: any[]) => c[0] === 'load');
-			loadCall[1]();
+			loadCall![1]();
 
 			await expect(promise).rejects.toThrow('File too large');
 		});

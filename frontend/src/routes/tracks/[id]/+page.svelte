@@ -9,7 +9,7 @@
 
   const auth = getAuthStore();
   const player = getPlayerStore();
-  let credits: TrackCredits | null = $state(null);
+  let credits = $state<TrackCredits | null>(null);
   let loading = $state(true);
   let editing = $state(false);
   let deleting = $state(false);
