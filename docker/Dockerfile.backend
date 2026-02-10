@@ -30,7 +30,7 @@ COPY . ./
 RUN find crates -name "*.rs" -exec touch {} + \
     && cargo build --release -p soundtime-server
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y ca-certificates ffmpeg && rm -rf /var/lib/apt/lists/*
 RUN useradd -m appuser
