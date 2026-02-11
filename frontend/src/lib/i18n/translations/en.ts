@@ -99,6 +99,8 @@ export default {
   "auth.signIn": "Sign in",
   "auth.loggingIn": "Signing in…",
   "auth.registering": "Creating account…",
+  "auth.registrationClosed": "Registration Closed",
+  "auth.registrationClosedHint": "This instance is private. Only the administrator can create accounts.",
 
   // Explore
   "explore.title": "Explore",

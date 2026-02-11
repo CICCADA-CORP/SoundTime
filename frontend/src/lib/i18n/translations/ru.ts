@@ -99,6 +99,8 @@ export default {
   "auth.signIn": "Войти",
   "auth.loggingIn": "Вход в систему…",
   "auth.registering": "Создание аккаунта…",
+  "auth.registrationClosed": "Регистрация закрыта",
+  "auth.registrationClosedHint": "Этот экземпляр является приватным. Только администратор может создавать аккаунты.",
 
   // Explore
   "explore.title": "Обзор",

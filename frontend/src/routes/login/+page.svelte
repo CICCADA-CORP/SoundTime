@@ -2,12 +2,24 @@
   import { getAuthStore } from "$lib/stores/auth.svelte";
   import { goto } from "$app/navigation";
   import { t } from "$lib/i18n/index.svelte";
+  import { onMount } from "svelte";
+  import { api } from "$lib/api";
 
   const auth = getAuthStore();
   let username = "";
   let password = "";
   let error = "";
   let loading = false;
+  let registrationOpen = $state(false);
+
+  onMount(async () => {
+    try {
+      const info = await api.get<{ open_registration: boolean }>("/nodeinfo");
+      registrationOpen = info.open_registration;
+    } catch {
+      registrationOpen = false;
+    }
+  });
 
   async function handleLogin() {
     error = "";
@@ -52,9 +64,11 @@
       </button>
     </form>
 
+    {#if registrationOpen}
     <p class="text-center text-sm text-[hsl(var(--muted-foreground))]">
       {t('auth.noAccount')}
       <a href="/register" class="text-[hsl(var(--primary))] hover:underline">{t('auth.signUp')}</a>
     </p>
+    {/if}
   </div>
 </div>

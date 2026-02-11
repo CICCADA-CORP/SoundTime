@@ -83,6 +83,26 @@ pub async fn register(
         ));
     }
 
+    // Block registration on private instances (admin creates accounts manually)
+    let is_private = instance_setting::Entity::find()
+        .filter(instance_setting::Column::Key.eq("instance_private"))
+        .one(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .map(|s| s.value == "true")
+        .unwrap_or(false);
+
+    if is_private {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Registration is disabled on this instance. Contact the administrator."
+                    .to_string(),
+            }),
+        ));
+    }
+
     // Validate input
     if body.username.len() < 3 || body.username.len() > 64 {
         return Err((

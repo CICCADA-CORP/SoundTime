@@ -99,6 +99,8 @@ export default {
   "auth.signIn": "登录",
   "auth.loggingIn": "登录中…",
   "auth.registering": "创建账户中…",
+  "auth.registrationClosed": "注册已关闭",
+  "auth.registrationClosedHint": "此实例为私有模式，只有管理员可以创建账户。",
 
   // Explore
   "explore.title": "发现",

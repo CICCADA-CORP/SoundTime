@@ -99,6 +99,8 @@ export default {
   "auth.signIn": "Inicia sesión",
   "auth.loggingIn": "Iniciando sesión…",
   "auth.registering": "Creando cuenta…",
+  "auth.registrationClosed": "Registro cerrado",
+  "auth.registrationClosedHint": "Esta instancia es privada. Solo el administrador puede crear cuentas.",
 
   // Explore
   "explore.title": "Explorar",
