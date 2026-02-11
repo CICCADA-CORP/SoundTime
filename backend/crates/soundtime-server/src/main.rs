@@ -321,6 +321,7 @@ async fn main() {
                 )
                 .route("/listing/trigger", post(listing_worker::trigger_heartbeat))
                 .route("/listing/status", get(listing_worker::listing_status))
+                .route("/listing/delist", post(listing_worker::delist))
                 .route("/metadata/status", get(api::admin::metadata_status))
                 .route(
                     "/metadata/enrich/{track_id}",

@@ -100,7 +100,7 @@ P2P_SEED_PEERS=                         # comma-separated NodeIds of peers to au
 # listing_domain = <your domain>       # domain announced to the directory
 ```
 
-The listing worker sends a heartbeat every 5 minutes to the SoundTime public directory. Instances that don't heartbeat for 48 hours are removed. Disable from the admin panel by setting `listing_public` to `false`.
+The listing worker sends a heartbeat every 5 minutes to the SoundTime public directory. Listing is **opt-in** — new instances are not listed by default. Enable it from the admin panel by setting `listing_public` to `true`. When disabled, a DELETE request is sent immediately to remove the instance from the directory. As a fallback, the directory server also removes instances that haven't sent a heartbeat for 48 hours.
 
 ### CORS & Security
 

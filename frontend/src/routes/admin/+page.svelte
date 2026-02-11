@@ -1159,10 +1159,15 @@
               <h3 class="text-sm font-semibold">{t('admin.settings.publicListing')}</h3>
               <p class="text-xs text-[hsl(var(--muted-foreground))] mt-1">{t('admin.settings.publicListingDesc')}</p>
             </div>
-            {#if (settings.find(s => s.key === 'listing_public')?.value ?? 'true') === 'true'}
+            {#if (settings.find(s => s.key === 'listing_public')?.value ?? 'false') === 'true'}
               <button
                 class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors bg-[hsl(var(--primary))]"
-                onclick={async () => { await updateSetting('listing_public', 'false'); }}
+                onclick={async () => {
+                  await updateSetting('listing_public', 'false');
+                  try {
+                    await api.post('/admin/listing/delist', {});
+                  } catch {}
+                }}
                 role="switch"
                 aria-checked={true}
                 aria-label={t('admin.settings.publicListing')}
@@ -1181,7 +1186,7 @@
               </button>
             {/if}
           </div>
-          {#if (settings.find(s => s.key === 'listing_public')?.value ?? 'true') === 'true'}
+          {#if (settings.find(s => s.key === 'listing_public')?.value ?? 'false') === 'true'}
             <!-- Real listing status from backend -->
             {#if listingStatus}
               {#if listingStatus.domain_is_local}

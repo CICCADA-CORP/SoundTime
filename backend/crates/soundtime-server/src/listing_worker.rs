@@ -1,11 +1,12 @@
 //! Listing worker — periodically announces this instance to the public SoundTime node directory.
 //!
-//! Listing is **enabled by default** (opt-out via `listing_public = false`).
+//! Listing is **disabled by default** (opt-in via `listing_public = true`).
 //! A heartbeat is sent every 5 minutes to the listing server.
-//! The listing server checks node health and removes offline nodes after 48h.
+//! When an admin disables listing, a DELETE request is sent immediately to
+//! remove the instance from the directory. Nodes that crash without delisting
+//! are removed by the listing server after 48h of failed health checks.
 //!
-//! The module also exposes a `trigger_heartbeat` endpoint so the admin UI can
-//! request an immediate heartbeat after toggling the setting.
+//! The module also exposes admin endpoints to trigger a heartbeat or delist immediately.
 
 use axum::extract::State as AxumState;
 use axum::http::StatusCode;
@@ -162,6 +163,48 @@ pub async fn trigger_heartbeat(
     }
 }
 
+/// POST /api/admin/listing/delist — immediately remove this instance from the public directory.
+pub async fn delist(
+    AxumState(state): AxumState<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let listing_url = get_listing_url(&state).await;
+    let domain = get_listing_domain(&state).await;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent(format!("SoundTime/{}", soundtime_p2p::build_version()))
+        .build()
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("HTTP client error: {e}") })),
+            )
+        })?;
+
+    match send_delist_request(&state, &client, &listing_url).await {
+        Ok(()) => {
+            save_listing_status(&state, "delisted", None).await;
+            Ok(Json(serde_json::json!({
+                "status": "ok",
+                "domain": domain,
+                "message": "Instance has been removed from the public directory."
+            })))
+        }
+        Err(e) => {
+            save_listing_status(&state, "error", Some(&e)).await;
+            Err((
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "error": "delist_failed",
+                    "message": e,
+                    "domain": domain,
+                    "listing_url": listing_url,
+                })),
+            ))
+        }
+    }
+}
+
 /// GET /api/admin/listing/status — return current listing status.
 pub async fn listing_status(AxumState(state): AxumState<Arc<AppState>>) -> Json<serde_json::Value> {
     let is_enabled = is_listing_enabled(&state).await;
@@ -191,7 +234,7 @@ pub async fn listing_status(AxumState(state): AxumState<Arc<AppState>>) -> Json<
 /// Spawn the listing heartbeat worker.
 pub fn spawn(state: Arc<AppState>) {
     tokio::spawn(async move {
-        tracing::info!("listing worker started (heartbeat every 5m, enabled by default)");
+        tracing::info!("listing worker started (heartbeat every 5m, disabled by default)");
 
         // Wait 10s before first attempt to let the server fully start
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
@@ -202,11 +245,13 @@ pub fn spawn(state: Arc<AppState>) {
             .build()
             .expect("failed to build HTTP client");
 
+        let mut was_enabled = false;
+
         loop {
-            // Check if listing is enabled
             let is_enabled = is_listing_enabled(&state).await;
 
             if is_enabled {
+                was_enabled = true;
                 let listing_url = get_listing_url(&state).await;
                 let listing_domain = get_listing_domain(&state).await;
                 tracing::info!(
@@ -225,7 +270,23 @@ pub fn spawn(state: Arc<AppState>) {
                     }
                 }
             } else {
-                tracing::debug!("listing disabled, skipping heartbeat");
+                // If listing was enabled before but is now disabled, send a delist request
+                if was_enabled {
+                    tracing::info!("listing disabled — sending immediate delist request");
+                    let listing_url = get_listing_url(&state).await;
+                    match send_delist_request(&state, &client, &listing_url).await {
+                        Ok(()) => {
+                            save_listing_status(&state, "delisted", None).await;
+                        }
+                        Err(e) => {
+                            tracing::warn!("delist request failed: {e}");
+                            save_listing_status(&state, "error", Some(&e)).await;
+                        }
+                    }
+                    was_enabled = false;
+                } else {
+                    tracing::debug!("listing disabled, skipping heartbeat");
+                }
             }
 
             // Wait for either the interval or a manual trigger
@@ -277,7 +338,7 @@ async fn get_listing_url(state: &AppState) -> String {
 }
 
 /// Check if the `listing_public` setting is enabled.
-/// Defaults to `true` — listing is opt-out, not opt-in.
+/// Defaults to `false` — listing is opt-in.
 async fn is_listing_enabled(state: &AppState) -> bool {
     instance_setting::Entity::find()
         .filter(instance_setting::Column::Key.eq("listing_public"))
@@ -286,7 +347,7 @@ async fn is_listing_enabled(state: &AppState) -> bool {
         .ok()
         .flatten()
         .map(|s| s.value == "true")
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 /// Read the listing token from instance settings.
@@ -517,7 +578,7 @@ async fn send_heartbeat(
         return Err(format!(
             "Domain '{domain}' is already registered on the listing server but the local token was lost. \
              The instance may still appear via the listing server's periodic health checks. \
-             If not, wait 48h for the old entry to expire, then re-enable listing."
+             If not, the listing server will remove the entry after 48h of failed health checks."
         ));
     }
 
@@ -542,6 +603,64 @@ async fn check_if_listed(
         .await
         .map_err(|e| format!("HTTP request failed: {e}"))?;
     Ok(resp.status().is_success())
+}
+
+/// Send a DELETE request to the listing server to immediately remove this instance.
+///
+/// Requires a valid listing token. If no token is available, the instance was
+/// never registered (or the token was lost) — in that case, the listing server's
+/// 48h health-check cleanup will handle removal.
+async fn send_delist_request(
+    state: &AppState,
+    client: &reqwest::Client,
+    listing_url: &str,
+) -> Result<(), String> {
+    let domain = get_listing_domain(state).await;
+    let token = match get_listing_token(state).await {
+        Some(t) => t,
+        None => {
+            tracing::warn!("no listing token available — cannot send delist request (instance may not have been registered)");
+            return Err("No listing token available. If the instance was previously registered, the listing server will remove it after 48h of failed health checks.".to_string());
+        }
+    };
+
+    let url = format!("{listing_url}/api/nodes/{domain}");
+    tracing::info!(domain = %domain, listing_url = %listing_url, "sending delist request to listing server");
+
+    let resp = client
+        .delete(&url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+    let status = resp.status();
+
+    if status.is_success() {
+        tracing::info!(domain = %domain, "successfully delisted from directory");
+        // Clear the token since we're no longer registered
+        delete_listing_token(state).await;
+        return Ok(());
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|_| serde_json::json!({"error": "unknown"}));
+
+    let error = body
+        .get("error")
+        .and_then(|e| e.as_str())
+        .unwrap_or("unknown error");
+
+    tracing::warn!(
+        domain = %domain,
+        status = %status,
+        error = %error,
+        "delist request failed"
+    );
+
+    Err(format!("Listing server returned {status}: {error}"))
 }
 
 #[cfg(test)]
@@ -1017,5 +1136,61 @@ mod tests {
         // Verify the error response structure when listing is disabled
         let err_body = serde_json::json!({ "error": "listing is disabled" });
         assert_eq!(err_body["error"], "listing is disabled");
+    }
+
+    // ─── delist request tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn delist_request_sends_delete_with_bearer_token() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/api/nodes/music.example.com"))
+            .and(wiremock::matchers::header("Authorization", "Bearer my-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "removed",
+                "domain": "music.example.com"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = http_client();
+        let url = format!("{}/api/nodes/music.example.com", mock_server.uri());
+        let resp = client
+            .delete(&url)
+            .header("Authorization", "Bearer my-token")
+            .send()
+            .await
+            .unwrap();
+
+        assert!(resp.status().is_success());
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "removed");
+    }
+
+    #[tokio::test]
+    async fn delist_request_returns_404_with_invalid_token() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/api/nodes/music.example.com"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": "node not found or invalid token"
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = http_client();
+        let url = format!("{}/api/nodes/music.example.com", mock_server.uri());
+        let resp = client
+            .delete(&url)
+            .header("Authorization", "Bearer bad-token")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status().as_u16(), 404);
     }
 }
