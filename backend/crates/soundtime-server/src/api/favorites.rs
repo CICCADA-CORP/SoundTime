@@ -159,7 +159,9 @@ mod tests {
     #[test]
     fn test_check_favorites_params_parsing() {
         let params = CheckFavoritesParams {
-            track_ids: "550e8400-e29b-41d4-a716-446655440000,invalid,660e8400-e29b-41d4-a716-446655440001".to_string(),
+            track_ids:
+                "550e8400-e29b-41d4-a716-446655440000,invalid,660e8400-e29b-41d4-a716-446655440001"
+                    .to_string(),
         };
         let ids: Vec<Uuid> = params
             .track_ids

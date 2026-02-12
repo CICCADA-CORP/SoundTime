@@ -187,4 +187,31 @@ describe('PluginSlot', () => {
 		);
 		expect(pluginEvents.length).toBe(0);
 	});
+
+	it('handles null data in messages', async () => {
+		vi.mocked(pluginApi.list).mockResolvedValue({ plugins: [] });
+		render(PluginSlot, { props: { slot: 'sidebar' } });
+
+		const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+		window.dispatchEvent(new MessageEvent('message', { data: null }));
+		const pluginEvents = dispatchSpy.mock.calls.filter(
+			(call) => call[0] instanceof CustomEvent && (call[0] as CustomEvent).type === 'soundtime:plugin-action'
+		);
+		expect(pluginEvents.length).toBe(0);
+	});
+
+	it('renders multiple iframes for multiple enabled plugins', async () => {
+		vi.mocked(pluginApi.list).mockResolvedValue({
+			plugins: [
+				mockPlugin({ id: 'p1', name: 'Plugin A' }),
+				mockPlugin({ id: 'p2', name: 'Plugin B' }),
+				mockPlugin({ id: 'p3', name: 'Plugin C' }),
+			],
+		});
+		const { container } = render(PluginSlot, { props: { slot: 'sidebar' } });
+		await waitFor(() => {
+			const iframes = container.querySelectorAll('iframe');
+			expect(iframes.length).toBe(3);
+		});
+	});
 });

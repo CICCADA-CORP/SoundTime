@@ -6,10 +6,10 @@
   import { api } from "$lib/api";
 
   const auth = getAuthStore();
-  let username = "";
-  let password = "";
-  let error = "";
-  let loading = false;
+  let username = $state("");
+  let password = $state("");
+  let error = $state("");
+  let loading = $state(false);
   let registrationOpen = $state(false);
 
   onMount(async () => {

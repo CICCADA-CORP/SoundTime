@@ -70,4 +70,30 @@ describe('WaveformViewer', () => {
     const rects = container.querySelectorAll('rect');
     expect(rects.length).toBe(2);
   });
+
+  it('renders with single data point', () => {
+    const { container } = render(WaveformViewer, { props: { data: [1.0], progress: 0.5 } });
+    const rects = container.querySelectorAll('rect');
+    expect(rects.length).toBe(1);
+  });
+
+  it('handles progress at exactly 0.5', () => {
+    const data = [0.5, 0.5];
+    const { container } = render(WaveformViewer, { props: { data, progress: 0.5 } });
+    const rects = container.querySelectorAll('rect');
+    expect(rects.length).toBe(2);
+  });
+
+  it('handles large data arrays', () => {
+    const data = Array.from({ length: 100 }, () => Math.random());
+    const { container } = render(WaveformViewer, { props: { data, progress: 0.5 } });
+    const rects = container.querySelectorAll('rect');
+    expect(rects.length).toBe(100);
+  });
+
+  it('uses default height of 60 when not specified', () => {
+    const { container } = render(WaveformViewer, { props: { data: [0.5], progress: 0 } });
+    const div = container.querySelector('div');
+    expect(div?.getAttribute('style')).toContain('height: 60px');
+  });
 });

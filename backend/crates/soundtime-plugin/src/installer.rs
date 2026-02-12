@@ -828,11 +828,11 @@ mod tests {
         let wasm = vec![
             0x00, 0x61, 0x73, 0x6D, // magic
             0x01, 0x00, 0x00, 0x00, // version
-            0x02, 0x0F,             // import section, 15 bytes
-            0x01,                   // 1 import
+            0x02, 0x0F, // import section, 15 bytes
+            0x01, // 1 import
             0x03, b'e', b'n', b'v', // module: "env"
             0x06, b'm', b'e', b'm', b'o', b'r', b'y', // name: "memory"
-            0x02, 0x00, 0x01,       // memory, limits: min=1
+            0x02, 0x00, 0x01, // memory, limits: min=1
         ];
 
         let installer = PluginInstaller {
@@ -850,11 +850,11 @@ mod tests {
         let wasm = vec![
             0x00, 0x61, 0x73, 0x6D, // magic
             0x01, 0x00, 0x00, 0x00, // version
-            0x02, 0x0D,             // import section, 13 bytes
-            0x01,                   // 1 import
+            0x02, 0x0D, // import section, 13 bytes
+            0x01, // 1 import
             0x04, b'e', b'v', b'i', b'l', // module: "evil"
             0x04, b'f', b'u', b'n', b'c', // name: "func"
-            0x00, 0x00,             // function, type index 0
+            0x00, 0x00, // function, type index 0
         ];
 
         let installer = PluginInstaller {

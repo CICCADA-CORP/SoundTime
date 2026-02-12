@@ -760,9 +760,9 @@ mod tests {
     // 10. report_track reason validation — empty reason
     #[tokio::test]
     async fn test_report_track_empty_reason() {
-        use axum::{body::Body, http::Request, routing::post, Extension, Router};
         use crate::auth::jwt::{Claims, TokenType};
         use crate::auth::middleware::AuthUser;
+        use axum::{body::Body, http::Request, routing::post, Extension, Router};
         use tower::ServiceExt;
 
         fn test_state() -> Arc<AppState> {
@@ -806,9 +806,9 @@ mod tests {
     // 11. report_track reason too long
     #[tokio::test]
     async fn test_report_track_reason_too_long() {
-        use axum::{body::Body, http::Request, routing::post, Extension, Router};
         use crate::auth::jwt::{Claims, TokenType};
         use crate::auth::middleware::AuthUser;
+        use axum::{body::Body, http::Request, routing::post, Extension, Router};
         use tower::ServiceExt;
 
         fn test_state() -> Arc<AppState> {
@@ -854,9 +854,9 @@ mod tests {
     // 12. report_track whitespace-only reason (trim → empty)
     #[tokio::test]
     async fn test_report_track_whitespace_reason() {
-        use axum::{body::Body, http::Request, routing::post, Extension, Router};
         use crate::auth::jwt::{Claims, TokenType};
         use crate::auth::middleware::AuthUser;
+        use axum::{body::Body, http::Request, routing::post, Extension, Router};
         use tower::ServiceExt;
 
         fn test_state() -> Arc<AppState> {

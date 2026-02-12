@@ -118,8 +118,7 @@ impl ThemeManifest {
 /// Only HTTPS URLs are allowed. File, HTTP, SSH, and git protocols are
 /// blocked to prevent SSRF and local file access.
 fn validate_git_url(url: &str) -> Result<(), String> {
-    let parsed =
-        url::Url::parse(url).map_err(|_| format!("invalid git URL: '{url}'"))?;
+    let parsed = url::Url::parse(url).map_err(|_| format!("invalid git URL: '{url}'"))?;
 
     if parsed.scheme() != "https" {
         return Err(format!(
@@ -154,9 +153,7 @@ fn validate_git_url(url: &str) -> Result<(), String> {
             std::net::IpAddr::V6(v6) => v6.is_loopback(),
         };
         if is_private {
-            return Err(format!(
-                "git URL resolves to private IP: '{host}'"
-            ));
+            return Err(format!("git URL resolves to private IP: '{host}'"));
         }
     }
 
@@ -338,8 +335,7 @@ pub struct ThemeInstaller {
 impl ThemeInstaller {
     /// Create a new installer with configuration from environment.
     pub fn new(db: sea_orm::DatabaseConnection) -> Self {
-        let theme_dir =
-            std::env::var("THEME_DIR").unwrap_or_else(|_| "/data/themes".to_string());
+        let theme_dir = std::env::var("THEME_DIR").unwrap_or_else(|_| "/data/themes".to_string());
         let max_theme_size = std::env::var("THEME_MAX_SIZE_MB")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -376,8 +372,8 @@ impl ThemeInstaller {
         validate_git_url(git_url)?;
 
         // 1. Clone to temp directory
-        let temp_dir = tempfile::tempdir()
-            .map_err(|e| format!("failed to create temp dir: {e}"))?;
+        let temp_dir =
+            tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {e}"))?;
 
         self.clone_repo(git_url, temp_dir.path())?;
 
@@ -467,7 +463,9 @@ impl ThemeInstaller {
                     .canonicalize()
                     .map_err(|e| format!("invalid assets path: {e}"))?;
                 if !assets_src.starts_with(temp_dir.path()) {
-                    return Err("assets_dir path escapes repository directory (path traversal)".into());
+                    return Err(
+                        "assets_dir path escapes repository directory (path traversal)".into(),
+                    );
                 }
 
                 let dest_assets = install_dir.join("assets");
@@ -501,9 +499,10 @@ impl ThemeInstaller {
             installed_by: Set(installed_by),
         };
 
-        let model = new_theme.insert(&self.db).await.map_err(|e| {
-            format!("failed to insert theme record: {e}")
-        })?;
+        let model = new_theme
+            .insert(&self.db)
+            .await
+            .map_err(|e| format!("failed to insert theme record: {e}"))?;
 
         tracing::info!(
             theme_name = %manifest.theme.name,
@@ -536,8 +535,8 @@ impl ThemeInstaller {
         validate_git_url(&git_url)?;
 
         // Clone new version to temp
-        let temp_dir = tempfile::tempdir()
-            .map_err(|e| format!("failed to create temp dir: {e}"))?;
+        let temp_dir =
+            tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {e}"))?;
 
         self.clone_repo(&git_url, temp_dir.path())?;
 
@@ -638,7 +637,9 @@ impl ThemeInstaller {
                     .canonicalize()
                     .map_err(|e| format!("invalid assets path: {e}"))?;
                 if !assets_src.starts_with(temp_dir.path()) {
-                    return Err("assets_dir path escapes repository directory (path traversal)".into());
+                    return Err(
+                        "assets_dir path escapes repository directory (path traversal)".into(),
+                    );
                 }
                 let dest_assets = install_dir.join("assets");
                 copy_filtered_dir(&assets_src, &dest_assets).await?;
@@ -663,9 +664,10 @@ impl ThemeInstaller {
         active.assets_path = Set(dest_assets_path);
         active.updated_at = Set(now);
 
-        let model = active.update(&self.db).await.map_err(|e| {
-            format!("failed to update theme record: {e}")
-        })?;
+        let model = active
+            .update(&self.db)
+            .await
+            .map_err(|e| format!("failed to update theme record: {e}"))?;
 
         // Clean up backup on success
         if let Some(ref bak) = backup_dir {
@@ -739,8 +741,7 @@ impl ThemeInstaller {
     fn clone_repo(&self, url: &str, dest: &StdPath) -> Result<(), String> {
         tracing::info!(url = %url, dest = %dest.display(), "cloning theme repository");
 
-        git2::Repository::clone(url, dest)
-            .map_err(|e| format!("git clone failed: {e}"))?;
+        git2::Repository::clone(url, dest).map_err(|e| format!("git clone failed: {e}"))?;
 
         Ok(())
     }

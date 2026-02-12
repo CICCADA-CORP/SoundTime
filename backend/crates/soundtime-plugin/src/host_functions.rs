@@ -878,7 +878,8 @@ mod tests {
     #[test]
     fn test_check_http_host_wildcard_allows_all() {
         let ctx = test_context(vec!["*".into()]);
-        ctx.check_http_host("https://anything.example.com/path").unwrap();
+        ctx.check_http_host("https://anything.example.com/path")
+            .unwrap();
         ctx.check_http_host("https://evil.com/hack").unwrap();
         ctx.check_http_host("https://192.168.1.1/admin").unwrap();
     }
@@ -887,7 +888,8 @@ mod tests {
     fn test_check_http_host_exact_match() {
         let ctx = test_context(vec!["api.example.com".into()]);
         ctx.check_http_host("https://api.example.com/path").unwrap();
-        ctx.check_http_host("https://api.example.com/other?q=1").unwrap();
+        ctx.check_http_host("https://api.example.com/other?q=1")
+            .unwrap();
         ctx.check_http_host("http://api.example.com/").unwrap();
     }
 
@@ -910,7 +912,8 @@ mod tests {
     fn test_check_http_host_glob_nested() {
         let ctx = test_context(vec!["*.example.com".into()]);
         ctx.check_http_host("https://a.b.example.com/path").unwrap();
-        ctx.check_http_host("https://deep.nested.sub.example.com/").unwrap();
+        ctx.check_http_host("https://deep.nested.sub.example.com/")
+            .unwrap();
     }
 
     #[test]
@@ -940,7 +943,9 @@ mod tests {
     fn test_check_http_host_url_no_host() {
         // Use a non-wildcard host so URL parsing is actually reached
         let ctx = test_context(vec!["example.com".into()]);
-        let err = ctx.check_http_host("data:text/html,<h1>hi</h1>").unwrap_err();
+        let err = ctx
+            .check_http_host("data:text/html,<h1>hi</h1>")
+            .unwrap_err();
         assert!(matches!(err, PluginError::HostFunction(_)));
         assert!(err.to_string().contains("no host"));
     }
@@ -949,7 +954,8 @@ mod tests {
     fn test_check_http_host_multiple_patterns() {
         let ctx = test_context(vec!["api.example.com".into(), "*.cdn.example.com".into()]);
         ctx.check_http_host("https://api.example.com/v1").unwrap();
-        ctx.check_http_host("https://img.cdn.example.com/pic.jpg").unwrap();
+        ctx.check_http_host("https://img.cdn.example.com/pic.jpg")
+            .unwrap();
         let err = ctx.check_http_host("https://evil.com/").unwrap_err();
         assert!(matches!(err, PluginError::PermissionDenied(_)));
     }
@@ -1021,7 +1027,9 @@ mod tests {
     #[test]
     fn test_check_private_ip_192_168_range() {
         let ctx = test_context(vec!["*".into()]);
-        let err = ctx.check_private_ip("https://192.168.1.1/path").unwrap_err();
+        let err = ctx
+            .check_private_ip("https://192.168.1.1/path")
+            .unwrap_err();
         assert!(matches!(err, PluginError::PermissionDenied(_)));
     }
 
@@ -1034,13 +1042,16 @@ mod tests {
     #[test]
     fn test_check_private_ip_public_domain_ok() {
         let ctx = test_context(vec!["*".into()]);
-        ctx.check_private_ip("https://api.example.com/path").unwrap();
+        ctx.check_private_ip("https://api.example.com/path")
+            .unwrap();
     }
 
     #[test]
     fn test_check_private_ip_link_local() {
         let ctx = test_context(vec!["*".into()]);
-        let err = ctx.check_private_ip("https://169.254.0.1/path").unwrap_err();
+        let err = ctx
+            .check_private_ip("https://169.254.0.1/path")
+            .unwrap_err();
         assert!(matches!(err, PluginError::PermissionDenied(_)));
     }
 
@@ -1174,7 +1185,10 @@ mod tests {
         let now = Utc::now();
         let diff = now.signed_duration_since(parsed);
         // Should be within 2 seconds of now
-        assert!(diff.num_seconds().abs() < 2, "timestamp too far from now: {ts}");
+        assert!(
+            diff.num_seconds().abs() < 2,
+            "timestamp too far from now: {ts}"
+        );
     }
 
     // ─── Extended sanitize_log_message tests ────────────────────────

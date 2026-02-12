@@ -350,7 +350,10 @@ async fn main() {
         // Public theme routes
         .route("/themes/active", get(api::themes::get_active_theme))
         .route("/themes/active.css", get(api::themes::serve_active_css))
-        .route("/themes/assets/{*path}", get(api::themes::serve_theme_asset))
+        .route(
+            "/themes/assets/{*path}",
+            get(api::themes::serve_theme_asset),
+        )
         .nest(
             "/admin",
             Router::new()
