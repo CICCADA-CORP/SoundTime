@@ -144,3 +144,41 @@ pub async fn remove_favorite(
 
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_check_favorites_params() {
+        let json = r#"{"track_ids":"id1,id2,id3"}"#;
+        let params: CheckFavoritesParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.track_ids, "id1,id2,id3");
+    }
+
+    #[test]
+    fn test_check_favorites_params_parsing() {
+        let params = CheckFavoritesParams {
+            track_ids: "550e8400-e29b-41d4-a716-446655440000,invalid,660e8400-e29b-41d4-a716-446655440001".to_string(),
+        };
+        let ids: Vec<Uuid> = params
+            .track_ids
+            .split(',')
+            .filter_map(|s| s.trim().parse::<Uuid>().ok())
+            .collect();
+        assert_eq!(ids.len(), 2); // "invalid" is filtered out
+    }
+
+    #[test]
+    fn test_check_favorites_params_empty() {
+        let params = CheckFavoritesParams {
+            track_ids: "".to_string(),
+        };
+        let ids: Vec<Uuid> = params
+            .track_ids
+            .split(',')
+            .filter_map(|s| s.trim().parse::<Uuid>().ok())
+            .collect();
+        assert!(ids.is_empty());
+    }
+}

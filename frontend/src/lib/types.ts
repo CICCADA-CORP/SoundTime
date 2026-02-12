@@ -112,6 +112,7 @@ export interface SearchResults {
   albums: Album[];
   artists: Artist[];
   total: number;
+  p2p_results?: NetworkSearchResult[];
 }
 
 /** A search result from a remote P2P peer. */
@@ -216,6 +217,8 @@ export interface NetworkGraphNode {
   node_type: "self" | "peer" | "relay";
   label: string;
   online: boolean;
+  track_count?: number;
+  version?: string;
 }
 
 export interface NetworkGraphLink {
@@ -528,3 +531,83 @@ export type LibrarySyncTaskStatus =
   | { status: "running"; peer_id: string; progress: SyncProgress }
   | { status: "completed"; result: SyncResult }
   | { status: "error"; message: string };
+
+// ─── Plugins ────────────────────────────────────────────────────────
+
+export interface Plugin {
+  id: string;
+  name: string;
+  version: string;
+  description: string | null;
+  author: string | null;
+  license: string | null;
+  homepage: string | null;
+  git_url: string;
+  permissions: PluginPermissions;
+  status: "disabled" | "enabled" | "error";
+  error_message: string | null;
+  installed_at: string;
+  updated_at: string;
+}
+
+export interface PluginPermissions {
+  http_hosts: string[];
+  events: string[];
+  write_tracks: boolean;
+  config_access: boolean;
+  read_users: boolean;
+}
+
+export interface PluginConfig {
+  key: string;
+  value: string;
+}
+
+export interface PluginEventLog {
+  id: string;
+  plugin_id: string;
+  event_name: string;
+  payload: unknown;
+  result: "success" | "error" | "timeout";
+  execution_time_ms: number;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface PluginListResponse {
+  plugins: Plugin[];
+}
+
+export interface PluginConfigResponse {
+  config: PluginConfig[];
+}
+
+export interface PluginLogsResponse {
+  logs: PluginEventLog[];
+  total: number;
+  page: number;
+  per_page: number;
+}
+
+// ─── Themes ─────────────────────────────────────────────────────────
+
+export interface Theme {
+  id: string;
+  name: string;
+  version: string;
+  description: string | null;
+  author: string | null;
+  license: string | null;
+  homepage: string | null;
+  git_url: string;
+  css_path: string;
+  assets_path: string | null;
+  status: "enabled" | "disabled";
+  installed_at: string;
+  updated_at: string;
+  installed_by: string | null;
+}
+
+export interface ThemeListResponse {
+  themes: Theme[];
+}

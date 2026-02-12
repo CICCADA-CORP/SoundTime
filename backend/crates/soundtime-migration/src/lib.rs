@@ -23,6 +23,8 @@ mod m20240101_000020_add_editorial_to_playlists;
 mod m20240101_000021_create_track_reports;
 mod m20240101_000022_remove_ap_add_p2p;
 mod m20240101_000023_create_p2p_peers;
+mod m20240101_000024_create_plugins;
+mod m20240101_000025_create_themes;
 
 pub struct Migrator;
 
@@ -53,6 +55,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000021_create_track_reports::Migration),
             Box::new(m20240101_000022_remove_ap_add_p2p::Migration),
             Box::new(m20240101_000023_create_p2p_peers::Migration),
+            Box::new(m20240101_000024_create_plugins::Migration),
+            Box::new(m20240101_000025_create_themes::Migration),
         ]
     }
 }

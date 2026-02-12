@@ -8,7 +8,7 @@ use axum::{
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 use soundtime_audio::extract_metadata_from_file;
-use soundtime_db::entities::{album, artist, track};
+use soundtime_db::entities::{album, artist, remote_track, track};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
@@ -328,64 +328,30 @@ pub async fn upload_track(
     })?;
 
     // Publish track to P2P blob store (best-effort)
-    if let Some(p2p) = get_p2p_node(&state) {
-        let data_bytes = bytes::Bytes::from(data);
-        match p2p.publish_track(data_bytes).await {
-            Ok(hash) => {
-                tracing::info!(%track_id, %hash, "track published to P2P blob store");
-                // Update the content_hash in the DB
-                let update = track::ActiveModel {
-                    id: Set(track_id),
-                    content_hash: Set(Some(hash.to_string())),
-                    ..Default::default()
-                };
-                if let Err(e) = update.update(&state.db).await {
-                    tracing::warn!(%track_id, "failed to save content_hash: {e}");
-                }
+    publish_track_to_p2p(
+        &state,
+        track_id,
+        &data,
+        &track_title,
+        &artist_name,
+        &album_title,
+        &audio_meta,
+    )
+    .await;
 
-                // Publish cover art to P2P blob store if available
-                let cover_hash = if let Some(cover_data) = &audio_meta.cover_art {
-                    match p2p
-                        .publish_cover(bytes::Bytes::from(cover_data.clone()))
-                        .await
-                    {
-                        Ok(h) => Some(h.to_string()),
-                        Err(e) => {
-                            tracing::warn!(%track_id, "failed to publish cover to P2P: {e}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                // Broadcast full track metadata to all connected peers
-                let announcement = soundtime_p2p::TrackAnnouncement {
-                    hash: hash.to_string(),
-                    title: track_title.clone(),
-                    artist_name: artist_name.clone(),
-                    album_title: Some(album_title.clone()),
-                    duration_secs: audio_meta.duration_secs as f32,
-                    format: audio_meta.format.clone(),
-                    file_size: audio_meta.file_size as i64,
-                    genre: audio_meta.genre.clone(),
-                    year: audio_meta.year.map(|y| y as i16),
-                    track_number: audio_meta.track_number.map(|n| n as i16),
-                    disc_number: audio_meta.disc_number.map(|n| n as i16),
-                    bitrate: audio_meta.bitrate.map(|b| b as i32),
-                    sample_rate: audio_meta.sample_rate.map(|s| s as i32),
-                    origin_node: p2p.node_id().to_string(),
-                    cover_hash,
-                };
-                let p2p_clone = Arc::clone(&p2p);
-                tokio::spawn(async move {
-                    p2p_clone.broadcast_announce_track(announcement).await;
-                });
-            }
-            Err(e) => {
-                tracing::warn!(%track_id, "failed to publish track to P2P: {e}");
-            }
-        }
+    // Dispatch plugin event (best-effort)
+    if let Some(registry) = super::get_plugin_registry(&state) {
+        let payload = soundtime_plugin::TrackAddedPayload {
+            track_id: track_id.to_string(),
+            title: track_title.clone(),
+            artist: artist_name.clone(),
+            album: Some(album_title.clone()),
+        };
+        let payload_val = serde_json::to_value(&payload).unwrap_or_default();
+        let registry = registry.clone();
+        tokio::spawn(async move {
+            registry.dispatch("on_track_added", &payload_val).await;
+        });
     }
 
     Ok(Json(UploadResponse {
@@ -454,6 +420,29 @@ pub async fn stream_track(
             )
         })?;
 
+        // FIX-16: Check if the remote track is marked unavailable before attempting fetch
+        let remote_record = remote_track::Entity::find()
+            .filter(remote_track::Column::RemoteUri.ends_with(format!("/{hash_str}")))
+            .one(&state.db)
+            .await
+            .map_err(|e| {
+                tracing::error!("DB error looking up remote track: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("DB error: {e}") })),
+                )
+            })?;
+
+        if let Some(ref rt) = remote_record {
+            if !rt.is_available {
+                tracing::warn!(%hash_str, "P2P track marked unavailable, returning 410 Gone");
+                return Err((
+                    StatusCode::GONE,
+                    Json(serde_json::json!({ "error": "P2P track is no longer available" })),
+                ));
+            }
+        }
+
         let hash: soundtime_p2p::BlobHash = hash_str.parse().map_err(|_| {
             (
                 StatusCode::BAD_REQUEST,
@@ -461,12 +450,44 @@ pub async fn stream_track(
             )
         })?;
 
-        let data = p2p_node.get_local_track(hash).await.map_err(|_| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "P2P track data not found locally" })),
-            )
-        })?;
+        // FIX-15: When fetch fails, trigger auto_repair_on_failure for health tracking
+        let data = match p2p_node.get_or_fetch_track(hash).await {
+            Ok(data) => data,
+            Err(e) => {
+                tracing::warn!(%hash, error = %e, "failed to fetch P2P track");
+
+                // Determine origin node from the remote_track record
+                let origin_node = remote_record
+                    .as_ref()
+                    .map(|rt| {
+                        rt.instance_domain
+                            .strip_prefix("p2p://")
+                            .unwrap_or(&rt.instance_domain)
+                            .to_string()
+                    })
+                    .unwrap_or_default();
+
+                if !origin_node.is_empty() {
+                    let health_manager = Arc::clone(p2p_node.health_manager());
+                    let p2p_clone = Arc::clone(&p2p_node);
+                    let hash_string = hash_str.to_string();
+                    tokio::spawn(async move {
+                        soundtime_p2p::auto_repair_on_failure(
+                            &health_manager,
+                            &p2p_clone,
+                            &hash_string,
+                            &origin_node,
+                        )
+                        .await;
+                    });
+                }
+
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "P2P track data not available" })),
+                ));
+            }
+        };
 
         let file_size = data.len() as u64;
 
@@ -897,6 +918,33 @@ async fn process_single_upload(
         .await
         .map_err(|e| format!("DB: {e}"))?;
 
+    // Publish track to P2P blob store (best-effort)
+    publish_track_to_p2p(
+        state,
+        track_id,
+        data,
+        &track_title,
+        &artist_name,
+        &album_title,
+        &audio_meta,
+    )
+    .await;
+
+    // Dispatch plugin event (best-effort)
+    if let Some(registry) = super::get_plugin_registry(state) {
+        let payload = soundtime_plugin::TrackAddedPayload {
+            track_id: track_id.to_string(),
+            title: track_title.clone(),
+            artist: artist_name.clone(),
+            album: Some(album_title.clone()),
+        };
+        let payload_val = serde_json::to_value(&payload).unwrap_or_default();
+        let registry = registry.clone();
+        tokio::spawn(async move {
+            registry.dispatch("on_track_added", &payload_val).await;
+        });
+    }
+
     Ok(UploadResponse {
         id: track_id,
         title: track_title,
@@ -904,6 +952,86 @@ async fn process_single_upload(
         format: audio_meta.format,
         message: "Track uploaded successfully".into(),
     })
+}
+
+// ─── P2P publication helper ─────────────────────────────────────────
+
+/// Publish a newly uploaded track to the P2P blob store and broadcast
+/// an announcement to all connected peers.
+///
+/// This is best-effort: failures are logged but do not prevent the upload
+/// from succeeding. Called from both single and batch upload paths.
+async fn publish_track_to_p2p(
+    state: &AppState,
+    track_id: Uuid,
+    data: &[u8],
+    track_title: &str,
+    artist_name: &str,
+    album_title: &str,
+    audio_meta: &soundtime_audio::AudioMetadata,
+) {
+    let p2p = match get_p2p_node(state) {
+        Some(p2p) => p2p,
+        None => return,
+    };
+
+    let data_bytes = bytes::Bytes::from(data.to_vec());
+    match p2p.publish_track(data_bytes).await {
+        Ok(hash) => {
+            tracing::info!(%track_id, %hash, "track published to P2P blob store");
+            // Update the content_hash in the DB
+            let update = track::ActiveModel {
+                id: Set(track_id),
+                content_hash: Set(Some(hash.to_string())),
+                ..Default::default()
+            };
+            if let Err(e) = update.update(&state.db).await {
+                tracing::warn!(%track_id, "failed to save content_hash: {e}");
+            }
+
+            // Publish cover art to P2P blob store if available
+            let cover_hash = if let Some(cover_data) = &audio_meta.cover_art {
+                match p2p
+                    .publish_cover(bytes::Bytes::from(cover_data.clone()))
+                    .await
+                {
+                    Ok(h) => Some(h.to_string()),
+                    Err(e) => {
+                        tracing::warn!(%track_id, "failed to publish cover to P2P: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Broadcast full track metadata to all connected peers
+            let announcement = soundtime_p2p::TrackAnnouncement {
+                hash: hash.to_string(),
+                title: track_title.to_string(),
+                artist_name: artist_name.to_string(),
+                album_title: Some(album_title.to_string()),
+                duration_secs: audio_meta.duration_secs as f32,
+                format: audio_meta.format.clone(),
+                file_size: audio_meta.file_size as i64,
+                genre: audio_meta.genre.clone(),
+                year: audio_meta.year.map(|y| y as i16),
+                track_number: audio_meta.track_number.map(|n| n as i16),
+                disc_number: audio_meta.disc_number.map(|n| n as i16),
+                bitrate: audio_meta.bitrate.map(|b| b as i32),
+                sample_rate: audio_meta.sample_rate.map(|s| s as i32),
+                origin_node: p2p.node_id().to_string(),
+                cover_hash,
+            };
+            let p2p_clone = Arc::clone(&p2p);
+            tokio::spawn(async move {
+                p2p_clone.broadcast_announce_track(announcement).await;
+            });
+        }
+        Err(e) => {
+            tracing::warn!(%track_id, "failed to publish track to P2P: {e}");
+        }
+    }
 }
 
 // ─── Album Cover Upload ────────────────────────────────────────────
@@ -1049,4 +1177,224 @@ pub async fn upload_album_cover(
         "message": "Cover updated successfully",
         "cover_url": cover_url
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── validate_audio_magic_bytes tests ──────────────────────────
+
+    #[test]
+    fn test_magic_bytes_mp3_id3() {
+        let mut data = b"ID3".to_vec();
+        data.extend_from_slice(&[0u8; 12]);
+        assert!(validate_audio_magic_bytes(&data));
+    }
+
+    #[test]
+    fn test_magic_bytes_mp3_sync() {
+        // MP3 sync frame: 0xFF followed by byte with top 3 bits set (0xE0 mask)
+        let mut data = vec![0xFF, 0xE0];
+        data.extend_from_slice(&[0u8; 12]);
+        assert!(validate_audio_magic_bytes(&data));
+    }
+
+    #[test]
+    fn test_magic_bytes_flac() {
+        let mut data = b"fLaC".to_vec();
+        data.extend_from_slice(&[0u8; 12]);
+        assert!(validate_audio_magic_bytes(&data));
+    }
+
+    #[test]
+    fn test_magic_bytes_ogg() {
+        let mut data = b"OggS".to_vec();
+        data.extend_from_slice(&[0u8; 12]);
+        assert!(validate_audio_magic_bytes(&data));
+    }
+
+    #[test]
+    fn test_magic_bytes_wav() {
+        // WAV: "RIFF" + 4 arbitrary bytes + "WAVE"
+        let mut data = b"RIFF".to_vec();
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        data.extend_from_slice(b"WAVE");
+        assert!(validate_audio_magic_bytes(&data));
+    }
+
+    #[test]
+    fn test_magic_bytes_aiff() {
+        // AIFF: "FORM" + 4 arbitrary bytes + "AIFF"
+        let mut data = b"FORM".to_vec();
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        data.extend_from_slice(b"AIFF");
+        assert!(validate_audio_magic_bytes(&data));
+    }
+
+    #[test]
+    fn test_magic_bytes_aac_m4a() {
+        // AAC/M4A: 4 bytes + "ftyp" + padding
+        let mut data = vec![0x00, 0x00, 0x00, 0x20]; // size bytes
+        data.extend_from_slice(b"ftyp");
+        data.extend_from_slice(&[0u8; 8]);
+        assert!(validate_audio_magic_bytes(&data));
+    }
+
+    #[test]
+    fn test_magic_bytes_wma() {
+        // WMA/ASF: starts with [0x30, 0x26, 0xB2, 0x75]
+        let mut data = vec![0x30, 0x26, 0xB2, 0x75];
+        data.extend_from_slice(&[0u8; 12]);
+        assert!(validate_audio_magic_bytes(&data));
+    }
+
+    #[test]
+    fn test_magic_bytes_too_short() {
+        // Only 2 bytes — below the 12-byte minimum
+        let data = b"ID";
+        assert!(!validate_audio_magic_bytes(data));
+    }
+
+    #[test]
+    fn test_magic_bytes_random() {
+        let data = vec![
+            0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x11, 0x22, 0x33, 0x44,
+        ];
+        assert!(!validate_audio_magic_bytes(&data));
+    }
+
+    #[test]
+    fn test_magic_bytes_elf() {
+        // ELF binary magic: 0x7F "ELF"
+        let mut data = vec![0x7F];
+        data.extend_from_slice(b"ELF");
+        data.extend_from_slice(&[0u8; 12]);
+        assert!(!validate_audio_magic_bytes(&data));
+    }
+
+    #[test]
+    fn test_magic_bytes_pdf() {
+        // PDF magic: "%PDF"
+        let mut data = b"%PDF-1.4".to_vec();
+        data.extend_from_slice(&[0u8; 8]);
+        assert!(!validate_audio_magic_bytes(&data));
+    }
+
+    #[test]
+    fn test_magic_bytes_empty() {
+        let data: &[u8] = &[];
+        assert!(!validate_audio_magic_bytes(data));
+    }
+
+    // ─── parse_range_header tests ──────────────────────────────────
+
+    #[test]
+    fn test_parse_range_open_end() {
+        let result = parse_range_header("bytes=0-");
+        assert_eq!(result, Some((0, None)));
+    }
+
+    #[test]
+    fn test_parse_range_full() {
+        let result = parse_range_header("bytes=100-200");
+        assert_eq!(result, Some((100, Some(200))));
+    }
+
+    #[test]
+    fn test_parse_range_from_start() {
+        let result = parse_range_header("bytes=0-499");
+        assert_eq!(result, Some((0, Some(499))));
+    }
+
+    #[test]
+    fn test_parse_range_no_prefix() {
+        let result = parse_range_header("0-100");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_range_invalid() {
+        let result = parse_range_header("invalid");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_range_empty() {
+        let result = parse_range_header("");
+        assert_eq!(result, None);
+    }
+
+    // ─── DTO serialization tests ───────────────────────────────────
+
+    #[test]
+    fn test_upload_response_serialize() {
+        let resp = UploadResponse {
+            id: Uuid::nil(),
+            title: "My Song".to_string(),
+            duration: 180.5,
+            format: "mp3".to_string(),
+            message: "Track uploaded successfully".to_string(),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["title"], "My Song");
+        assert_eq!(json["duration"], 180.5);
+        assert_eq!(json["format"], "mp3");
+        assert_eq!(json["message"], "Track uploaded successfully");
+        assert!(json["id"].is_string());
+    }
+
+    #[test]
+    fn test_batch_upload_response_serialize() {
+        let resp = BatchUploadResponse {
+            results: vec![
+                BatchUploadItem {
+                    filename: "song.mp3".to_string(),
+                    success: true,
+                    track: Some(UploadResponse {
+                        id: Uuid::nil(),
+                        title: "Song".to_string(),
+                        duration: 120.0,
+                        format: "mp3".to_string(),
+                        message: "ok".to_string(),
+                    }),
+                    error: None,
+                },
+                BatchUploadItem {
+                    filename: "bad.exe".to_string(),
+                    success: false,
+                    track: None,
+                    error: Some("Unsupported format".to_string()),
+                },
+            ],
+            total: 2,
+            success: 1,
+            failed: 1,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["total"], 2);
+        assert_eq!(json["success"], 1);
+        assert_eq!(json["failed"], 1);
+        assert_eq!(json["results"].as_array().unwrap().len(), 2);
+        assert_eq!(json["results"][0]["filename"], "song.mp3");
+        assert!(json["results"][0]["success"].as_bool().unwrap());
+        assert_eq!(json["results"][1]["filename"], "bad.exe");
+        assert!(!json["results"][1]["success"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn test_batch_upload_item_skip_none() {
+        let item = BatchUploadItem {
+            filename: "test.flac".to_string(),
+            success: true,
+            track: None,
+            error: None,
+        };
+        let json = serde_json::to_value(&item).unwrap();
+        // Fields with skip_serializing_if = "Option::is_none" should be absent
+        assert!(!json.as_object().unwrap().contains_key("track"));
+        assert!(!json.as_object().unwrap().contains_key("error"));
+        assert_eq!(json["filename"], "test.flac");
+        assert!(json["success"].as_bool().unwrap());
+    }
 }

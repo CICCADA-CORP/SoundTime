@@ -112,6 +112,12 @@ export const api = {
       body: body ? JSON.stringify(body) : undefined,
     }),
 
+  patch: <T = unknown>(path: string, body?: unknown) =>
+    apiFetch<T>(path, {
+      method: "PATCH",
+      body: body ? JSON.stringify(body) : undefined,
+    }),
+
   delete: <T = unknown>(path: string) =>
     apiFetch<T>(path, { method: "DELETE" }),
 
@@ -176,5 +182,68 @@ export function streamUrl(trackId: string): string {
   const token = getAccessToken();
   return `${API_BASE}/tracks/${trackId}/stream${token ? `?token=${token}` : ""}`;
 }
+
+// ─── Plugin API ─────────────────────────────────────────────────────
+
+export const pluginApi = {
+  /** List all installed plugins. */
+  list: () => api.get<import("./types").PluginListResponse>("/admin/plugins"),
+
+  /** Install a plugin from a git repository URL. */
+  install: (gitUrl: string) =>
+    api.post<import("./types").Plugin>("/admin/plugins/install", { git_url: gitUrl }),
+
+  /** Enable a plugin. */
+  enable: (id: string) => api.post<{ status: string }>(`/admin/plugins/${id}/enable`),
+
+  /** Disable a plugin. */
+  disable: (id: string) => api.post<{ status: string }>(`/admin/plugins/${id}/disable`),
+
+  /** Uninstall a plugin. */
+  uninstall: (id: string) => api.delete(`/admin/plugins/${id}`),
+
+  /** Update a plugin from its git repository. */
+  update: (id: string) => api.post<import("./types").Plugin>(`/admin/plugins/${id}/update`),
+
+  /** Get plugin configuration. */
+  getConfig: (id: string) =>
+    api.get<import("./types").PluginConfigResponse>(`/admin/plugins/${id}/config`),
+
+  /** Update plugin configuration. */
+  updateConfig: (id: string, config: import("./types").PluginConfig[]) =>
+    api.put<{ updated: number }>(`/admin/plugins/${id}/config`, { config }),
+
+  /** Get plugin event logs. */
+  getLogs: (id: string, page = 1, perPage = 50) =>
+    api.get<import("./types").PluginLogsResponse>(
+      `/admin/plugins/${id}/logs?page=${page}&per_page=${perPage}`
+    ),
+};
+
+// ─── Theme API ──────────────────────────────────────────────────────
+
+export const themeApi = {
+  /** List all installed themes. */
+  list: () => api.get<import("./types").ThemeListResponse>("/admin/themes"),
+
+  /** Install a theme from a git URL. */
+  install: (gitUrl: string) =>
+    api.post<import("./types").Theme>("/admin/themes/install", { git_url: gitUrl }),
+
+  /** Enable (activate) a theme. */
+  enable: (id: string) => api.post<import("./types").Theme>(`/admin/themes/${id}/enable`),
+
+  /** Disable a theme. */
+  disable: (id: string) => api.post<import("./types").Theme>(`/admin/themes/${id}/disable`),
+
+  /** Update a theme from its git repository. */
+  update: (id: string) => api.post<import("./types").Theme>(`/admin/themes/${id}/update`),
+
+  /** Uninstall a theme. */
+  uninstall: (id: string) => api.delete(`/admin/themes/${id}`),
+
+  /** Get the currently active theme (or null if none). */
+  active: () => api.get<import("./types").Theme>("/themes/active"),
+};
 
 export { setTokens, API_BASE };

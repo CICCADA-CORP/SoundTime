@@ -144,12 +144,52 @@ async fn main() {
         }
     };
 
+    // ─── Plugin system (opt-in) ──────────────────────────────────────
+    let plugins: Option<Arc<dyn std::any::Any + Send + Sync>> = {
+        let plugin_enabled = std::env::var("PLUGIN_ENABLED")
+            .unwrap_or_default()
+            .eq_ignore_ascii_case("true");
+        if plugin_enabled {
+            tracing::info!("initializing plugin system...");
+            match soundtime_plugin::PluginRegistry::new(
+                &db,
+                &domain,
+                soundtime_p2p::build_version(),
+            )
+            .await
+            {
+                Ok(registry) => {
+                    let registry = Arc::new(registry);
+                    registry.load_enabled_plugins().await;
+                    tracing::info!(
+                        loaded = registry.loaded_count().await,
+                        "plugin system ready"
+                    );
+                    Some(registry as Arc<dyn std::any::Any + Send + Sync>)
+                }
+                Err(e) => {
+                    tracing::error!("failed to initialize plugin system: {e}");
+                    tracing::warn!("continuing without plugin support");
+                    None
+                }
+            }
+        } else {
+            tracing::info!("plugin system disabled (set PLUGIN_ENABLED=true to enable)");
+            None
+        }
+    };
+
+    // Determine whether plugin UI iframes should be allowed.
+    // Plugins require a server restart to toggle, so this is safe at startup.
+    let has_plugin_ui = plugins.is_some();
+
     let state = Arc::new(AppState {
         db,
         jwt_secret,
         domain,
         storage,
         p2p,
+        plugins,
     });
 
     // Spawn the editorial playlist auto-regeneration scheduler
@@ -172,6 +212,24 @@ async fn main() {
             .burst_size(10)
             .finish()
             .expect("failed to build rate limiter config"),
+    );
+
+    // Rate limiter for plugin installs: 5 requests per 60 seconds per IP
+    let plugin_install_governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(12)
+            .burst_size(5)
+            .finish()
+            .expect("failed to build plugin install rate limiter config"),
+    );
+
+    // Rate limiter for theme installs: 5 requests per 60 seconds per IP
+    let theme_install_governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(12)
+            .burst_size(5)
+            .finish()
+            .expect("failed to build theme install rate limiter config"),
     );
 
     // Auth routes (public, rate-limited)
@@ -289,6 +347,10 @@ async fn main() {
         .route("/p2p/status", get(api::p2p::p2p_status))
         .route("/p2p/network-graph", get(api::p2p::network_graph))
         .route("/p2p/search", get(api::p2p::network_search))
+        // Public theme routes
+        .route("/themes/active", get(api::themes::get_active_theme))
+        .route("/themes/active.css", get(api::themes::serve_active_css))
+        .route("/themes/assets/{*path}", get(api::themes::serve_theme_asset))
         .nest(
             "/admin",
             Router::new()
@@ -394,6 +456,52 @@ async fn main() {
                     post(api::p2p::trigger_library_resync),
                 )
                 .layer(Extension(sync_task_tracker))
+                // P2P remote track admin routes
+                .route(
+                    "/p2p/tracks/{id}/dereference",
+                    axum::routing::patch(api::p2p::dereference_remote_track),
+                )
+                .route(
+                    "/p2p/tracks/{id}/rereference",
+                    axum::routing::patch(api::p2p::rereference_remote_track),
+                )
+                // Plugin admin routes
+                .route("/plugins", get(api::plugins::list_plugins))
+                .merge(
+                    Router::new()
+                        .route("/plugins/install", post(api::plugins::install_plugin))
+                        .layer(GovernorLayer::new(plugin_install_governor_conf)),
+                )
+                .route("/plugins/{id}/enable", post(api::plugins::enable_plugin))
+                .route("/plugins/{id}/disable", post(api::plugins::disable_plugin))
+                .route(
+                    "/plugins/{id}",
+                    axum::routing::delete(api::plugins::uninstall_plugin),
+                )
+                .route("/plugins/{id}/update", post(api::plugins::update_plugin))
+                .route(
+                    "/plugins/{id}/config",
+                    get(api::plugins::get_config).put(api::plugins::update_config),
+                )
+                .route("/plugins/{id}/logs", get(api::plugins::get_logs))
+                .route(
+                    "/plugins/{id}/ui/{*path}",
+                    get(api::plugins::serve_plugin_ui),
+                )
+                // Theme admin routes
+                .route("/themes", get(api::themes::list_themes))
+                .merge(
+                    Router::new()
+                        .route("/themes/install", post(api::themes::install_theme))
+                        .layer(GovernorLayer::new(theme_install_governor_conf)),
+                )
+                .route("/themes/{id}/enable", post(api::themes::enable_theme))
+                .route("/themes/{id}/disable", post(api::themes::disable_theme))
+                .route("/themes/{id}/update", post(api::themes::update_theme))
+                .route(
+                    "/themes/{id}",
+                    axum::routing::delete(api::themes::uninstall_theme),
+                )
                 // P2P log routes
                 .route(
                     "/p2p/logs",
@@ -462,18 +570,27 @@ async fn main() {
             axum::http::header::X_CONTENT_TYPE_OPTIONS,
             HeaderValue::from_static("nosniff"),
         ))
+        // Security headers — X-Frame-Options (relaxed when plugin UI iframes are needed)
         .layer(SetResponseHeaderLayer::overriding(
             axum::http::header::X_FRAME_OPTIONS,
-            HeaderValue::from_static("DENY"),
+            if has_plugin_ui {
+                HeaderValue::from_static("SAMEORIGIN")
+            } else {
+                HeaderValue::from_static("DENY")
+            },
         ))
         .layer(SetResponseHeaderLayer::overriding(
             axum::http::header::STRICT_TRANSPORT_SECURITY,
             HeaderValue::from_static("max-age=63072000; includeSubDomains; preload"),
         ))
-        // Content-Security-Policy
+        // Content-Security-Policy — relaxed for plugin UI iframes if plugins enabled
         .layer(SetResponseHeaderLayer::overriding(
             axum::http::header::HeaderName::from_static("content-security-policy"),
-            HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'"),
+            if has_plugin_ui {
+                HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob:; connect-src 'self'; font-src 'self' https: data:; frame-src 'self'; frame-ancestors 'self'")
+            } else {
+                HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob:; connect-src 'self'; font-src 'self' https: data:; frame-ancestors 'none'")
+            },
         ))
         // Referrer-Policy
         .layer(SetResponseHeaderLayer::overriding(

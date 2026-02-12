@@ -6,6 +6,7 @@ members = [
   "crates/soundtime-db",
   "crates/soundtime-migration",
   "crates/soundtime-p2p",
+  "crates/soundtime-plugin",
 ]
 
 # ── Build profiles ───────────────────────────────────────────────────

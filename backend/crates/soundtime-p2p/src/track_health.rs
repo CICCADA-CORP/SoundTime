@@ -1,16 +1,15 @@
-//! Track health monitoring and automatic recovery for remote P2P tracks.
+//! Track health monitoring for remote P2P tracks (lazy-fetch model).
 //!
 //! This module provides:
-//! - **Auto-retry on playback failure**: When a P2P track cannot be read locally,
-//!   automatically request re-send from the originating peer.
 //! - **Periodic health monitoring**: Background task that verifies remote tracks
-//!   are still available, re-fetching them if needed.
+//!   are still cataloged and their origin peers are reachable.
+//! - **Lazy-fetch awareness**: Missing blobs are normal — tracks are fetched
+//!   on-demand when played. The health sweep does NOT auto-recover blobs.
+//! - **Auto-repair on playback failure**: When a P2P track cannot be fetched
+//!   during playback, `auto_repair_on_failure` tries alternative peers.
 //! - **3-strike dereference with automatic re-referencing**: After 3 consecutive
-//!   failed recovery attempts the track is marked unavailable. If the track
-//!   later becomes available again (e.g. the peer comes back online), it is
-//!   automatically re-referenced during the next health sweep.
-//! - **Duplicate resolution**: When a track exists on multiple peers, selects
-//!   the best quality copy from the most available peer.
+//!   failed playback attempts the track is marked unavailable. If the track
+//!   later becomes available again, it is automatically re-referenced.
 //!
 //! Designed for high throughput (TB-scale catalogs) using:
 //! - Concurrent batch processing with configurable parallelism
@@ -436,6 +435,8 @@ pub struct BatchCheckResult {
     pub dereferenced: usize,
     /// Tracks that were re-referenced after being dereferenced.
     pub re_referenced: usize,
+    /// Tracks whose origin peer is currently offline (data not cached locally).
+    pub unavailable_source: usize,
 }
 
 impl BatchCheckResult {
@@ -447,6 +448,7 @@ impl BatchCheckResult {
             failed: 0,
             dereferenced: 0,
             re_referenced: 0,
+            unavailable_source: 0,
         }
     }
 
@@ -457,6 +459,7 @@ impl BatchCheckResult {
         self.failed += other.failed;
         self.dereferenced += other.dereferenced;
         self.re_referenced += other.re_referenced;
+        self.unavailable_source += other.unavailable_source;
     }
 }
 
@@ -491,24 +494,33 @@ where
     fetch_fn(peer_id.to_string(), content_hash.to_string()).await
 }
 
-/// Process a batch of tracks for health checking.
-/// Uses the health manager for state tracking and rate limiting.
+/// Process a batch of tracks for health checking (lazy-fetch model).
+/// Uses the health manager for state tracking.
 ///
 /// The `check_fn` is called for each track to determine if it exists locally.
-/// The `recover_fn` is called for tracks that need recovery.
+/// The `_recover_fn` parameter is retained for API compatibility but is no
+/// longer invoked — recovery only happens on-demand during playback via
+/// `auto_repair_on_failure`.
+/// The `peer_online_fn` checks whether the origin peer is currently reachable.
+/// For tracks not cached locally, an offline origin peer increments
+/// `unavailable_source` (the track is still counted as healthy since it may
+/// become fetchable once the peer returns).
 ///
 /// Returns aggregated results.
-pub async fn process_health_batch<CF, CFut, RF, RFut>(
+pub async fn process_health_batch<CF, CFut, RF, RFut, PF, PFut>(
     manager: &TrackHealthManager,
     items: &[TrackCheckItem],
     check_fn: CF,
-    recover_fn: RF,
+    _recover_fn: RF,
+    peer_online_fn: PF,
 ) -> BatchCheckResult
 where
     CF: Fn(String) -> CFut + Send + Sync,
     CFut: std::future::Future<Output = bool> + Send,
     RF: Fn(String, String) -> RFut + Send + Sync,
     RFut: std::future::Future<Output = Result<Bytes, P2pError>> + Send,
+    PF: Fn(String) -> PFut + Send + Sync,
+    PFut: std::future::Future<Output = bool> + Send,
 {
     let mut result = BatchCheckResult::new();
 
@@ -533,58 +545,33 @@ where
             continue;
         }
 
-        // Still-dereferenced tracks that are not locally available:
-        // skip recovery attempts — they'll be retried on next sweep.
-        if was_dereferenced {
-            result.dereferenced += 1;
+        // Blob not cached locally — this is normal in the lazy-fetch model.
+        // The blob will be fetched on-demand when the user plays the track.
+        // Don't attempt background recovery; just count as healthy (fetchable).
+        if !was_dereferenced {
+            // Check if the origin peer is still online so we can report
+            // tracks whose source is currently unreachable.
+            if !peer_online_fn(item.origin_node.clone()).await {
+                debug!(
+                    hash = %item.content_hash,
+                    title = %item.title,
+                    origin = %item.origin_node,
+                    "blob not cached locally and origin peer is offline"
+                );
+                result.unavailable_source += 1;
+            } else {
+                debug!(
+                    hash = %item.content_hash,
+                    title = %item.title,
+                    "blob not cached locally (normal in lazy-fetch mode)"
+                );
+            }
+            result.healthy += 1;
             continue;
         }
 
-        // Acquire a recovery permit (rate limiting)
-        let _permit = manager.acquire_recovery_permit().await;
-
-        // Attempt recovery from the origin peer
-        debug!(
-            hash = %item.content_hash,
-            peer = %item.origin_node,
-            title = %item.title,
-            "recovering track"
-        );
-
-        match recover_fn(item.origin_node.clone(), item.content_hash.clone()).await {
-            Ok(_data) => {
-                manager
-                    .mark_healthy(&item.content_hash, &item.origin_node)
-                    .await;
-                manager.record_success(&item.content_hash).await;
-                info!(
-                    hash = %item.content_hash,
-                    title = %item.title,
-                    "track recovered successfully"
-                );
-                result.recovered += 1;
-            }
-            Err(e) => {
-                let status = manager
-                    .record_failure(&item.content_hash, &item.origin_node)
-                    .await;
-                warn!(
-                    hash = %item.content_hash,
-                    title = %item.title,
-                    error = %e,
-                    ?status,
-                    "track recovery failed"
-                );
-                match status {
-                    HealthStatus::Dereferenced => {
-                        result.dereferenced += 1;
-                    }
-                    _ => {
-                        result.failed += 1;
-                    }
-                }
-            }
-        }
+        // Previously dereferenced tracks: skip recovery, keep dereferenced status
+        result.dereferenced += 1;
     }
 
     result
@@ -740,6 +727,7 @@ pub fn spawn_health_monitor<F: TrackFetcher>(
                         recovered = result.recovered,
                         failed = result.failed,
                         dereferenced = result.dereferenced,
+                        unavailable_source = result.unavailable_source,
                         "health monitor: sweep complete"
                     );
                 }
@@ -833,6 +821,11 @@ pub async fn run_health_sweep<F: TrackFetcher>(
                 let h = h.clone();
                 async move { fetcher_ref.fetch_track(&peer, &h).await }
             },
+            |peer| {
+                let fetcher_ref = &fetcher;
+                let peer = peer.clone();
+                async move { fetcher_ref.peer_is_online(&peer).await }
+            },
         )
         .await;
 
@@ -857,6 +850,7 @@ pub async fn run_health_sweep<F: TrackFetcher>(
         recovered = overall.recovered,
         failed = overall.failed,
         dereferenced = overall.dereferenced,
+        unavailable_source = overall.unavailable_source,
         "health sweep: finished"
     );
 
@@ -1555,6 +1549,7 @@ mod tests {
         assert_eq!(r.failed, 0);
         assert_eq!(r.dereferenced, 0);
         assert_eq!(r.re_referenced, 0);
+        assert_eq!(r.unavailable_source, 0);
     }
 
     #[test]
@@ -1566,6 +1561,7 @@ mod tests {
             failed: 2,
             dereferenced: 1,
             re_referenced: 1,
+            unavailable_source: 3,
         };
         let r2 = BatchCheckResult {
             total_checked: 5,
@@ -1574,6 +1570,7 @@ mod tests {
             failed: 1,
             dereferenced: 0,
             re_referenced: 2,
+            unavailable_source: 1,
         };
         r1.merge(&r2);
         assert_eq!(r1.total_checked, 15);
@@ -1582,6 +1579,7 @@ mod tests {
         assert_eq!(r1.failed, 3);
         assert_eq!(r1.dereferenced, 1);
         assert_eq!(r1.re_referenced, 3);
+        assert_eq!(r1.unavailable_source, 4);
     }
 
     // ── check_blob_exists ────────────────────────────────────────────
@@ -1641,6 +1639,7 @@ mod tests {
             &items,
             |_h| async { true }, // all blobs exist
             |_p, _h| async { Ok(Bytes::new()) },
+            |_| async { true }, // all peers online
         )
         .await;
 
@@ -1651,7 +1650,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_batch_recovery_success() {
+    async fn test_batch_not_cached_counts_as_healthy() {
         let mgr = TrackHealthManager::new();
         let items = vec![TrackCheckItem {
             content_hash: "h1".into(),
@@ -1664,21 +1663,19 @@ mod tests {
             &items,
             |_h| async { false }, // blob not found locally
             |_p, _h| async { Ok(Bytes::from_static(b"recovered data")) },
+            |_| async { true }, // peer online
         )
         .await;
 
+        // In lazy-fetch mode, missing blobs are normal — counted as healthy
         assert_eq!(result.total_checked, 1);
-        assert_eq!(result.healthy, 0);
-        assert_eq!(result.recovered, 1);
+        assert_eq!(result.healthy, 1);
+        assert_eq!(result.recovered, 0);
         assert_eq!(result.failed, 0);
-
-        // Manager should show the track as recovered
-        let record = mgr.get_record("h1").await.unwrap();
-        assert_eq!(record.status, HealthStatus::Recovered);
     }
 
     #[tokio::test]
-    async fn test_batch_recovery_failure() {
+    async fn test_batch_not_cached_no_recovery_attempt() {
         let mgr = TrackHealthManager::new();
         let items = vec![TrackCheckItem {
             content_hash: "h1".into(),
@@ -1691,16 +1688,18 @@ mod tests {
             &items,
             |_h| async { false },
             |_p, _h| async { Err(P2pError::Connection("timeout".into())) },
+            |_| async { true }, // peer online
         )
         .await;
 
+        // In lazy-fetch mode, missing blobs don't trigger recovery
         assert_eq!(result.total_checked, 1);
-        assert_eq!(result.healthy, 0);
+        assert_eq!(result.healthy, 1);
         assert_eq!(result.recovered, 0);
-        assert_eq!(result.failed, 1);
+        assert_eq!(result.failed, 0);
 
-        let record = mgr.get_record("h1").await.unwrap();
-        assert_eq!(record.status, HealthStatus::Degraded { attempts: 1 });
+        // No health record should be created (no failure recorded)
+        assert!(mgr.get_record("h1").await.is_none());
     }
 
     #[tokio::test]
@@ -1723,6 +1722,7 @@ mod tests {
             &items,
             |_h| async { false }, // blob NOT available locally
             |_p, _h| async { Ok(Bytes::new()) },
+            |_| async { true }, // peer online
         )
         .await;
 
@@ -1753,6 +1753,7 @@ mod tests {
             &items,
             |_h| async { true }, // blob IS available locally now!
             |_p, _h| async { Ok(Bytes::new()) },
+            |_| async { true }, // peer online
         )
         .await;
 
@@ -1786,7 +1787,7 @@ mod tests {
             TrackCheckItem {
                 content_hash: "h2".into(),
                 origin_node: "n2".into(),
-                title: "Recoverable Track".into(),
+                title: "Not Cached Track".into(),
             },
             TrackCheckItem {
                 content_hash: "h3".into(),
@@ -1796,7 +1797,7 @@ mod tests {
             TrackCheckItem {
                 content_hash: "h4".into(),
                 origin_node: "n4".into(),
-                title: "Failing Track".into(),
+                title: "Also Not Cached Track".into(),
             },
         ];
 
@@ -1807,38 +1808,34 @@ mod tests {
                 let h = h.clone();
                 async move { h == "h1" } // Only h1 exists locally
             },
-            |_p, h| {
-                let h = h.clone();
-                async move {
-                    if h == "h2" {
-                        Ok(Bytes::from_static(b"recovered"))
-                    } else {
-                        Err(P2pError::TrackNotFound(h))
-                    }
-                }
-            },
+            |_p, _h| async { Ok(Bytes::new()) },
+            |_| async { true }, // all peers online
         )
         .await;
 
+        // h1: locally cached → healthy
+        // h2: not cached, not dereferenced → healthy (lazy-fetch)
+        // h3: not cached, dereferenced → dereferenced
+        // h4: not cached, not dereferenced → healthy (lazy-fetch)
         assert_eq!(result.total_checked, 4);
-        assert_eq!(result.healthy, 1);
-        assert_eq!(result.recovered, 1);
+        assert_eq!(result.healthy, 3);
+        assert_eq!(result.recovered, 0);
         assert_eq!(result.dereferenced, 1);
-        assert_eq!(result.failed, 1);
+        assert_eq!(result.failed, 0);
     }
 
     #[tokio::test]
-    async fn test_batch_escalation_to_dereference() {
+    async fn test_batch_not_cached_pre_failed_still_healthy() {
         let mgr = TrackHealthManager::new();
 
-        // Pre-fail twice so next failure dereferences
+        // Pre-fail twice (not yet dereferenced)
         mgr.record_failure("h1", "n1").await;
         mgr.record_failure("h1", "n1").await;
 
         let items = vec![TrackCheckItem {
             content_hash: "h1".into(),
             origin_node: "n1".into(),
-            title: "About to dereference".into(),
+            title: "Pre-failed but not dereferenced".into(),
         }];
 
         let result = process_health_batch(
@@ -1846,12 +1843,70 @@ mod tests {
             &items,
             |_h| async { false },
             |_p, _h| async { Err(P2pError::Connection("refused".into())) },
+            |_| async { true }, // peer online
         )
         .await;
 
+        // In lazy-fetch mode, not-dereferenced tracks with missing blobs
+        // are still considered healthy (fetchable on demand)
         assert_eq!(result.total_checked, 1);
-        assert_eq!(result.dereferenced, 1);
-        assert!(mgr.is_dereferenced("h1").await);
+        assert_eq!(result.healthy, 1);
+        assert_eq!(result.dereferenced, 0);
+        // The track should NOT have been further escalated
+        assert!(!mgr.is_dereferenced("h1").await);
+    }
+
+    #[tokio::test]
+    async fn test_batch_unavailable_source_counting() {
+        let mgr = TrackHealthManager::new();
+        let items = vec![
+            TrackCheckItem {
+                content_hash: "h1".into(),
+                origin_node: "online_peer".into(),
+                title: "Online Track".into(),
+            },
+            TrackCheckItem {
+                content_hash: "h2".into(),
+                origin_node: "offline_peer".into(),
+                title: "Offline Track".into(),
+            },
+            TrackCheckItem {
+                content_hash: "h3".into(),
+                origin_node: "offline_peer".into(),
+                title: "Another Offline Track".into(),
+            },
+            TrackCheckItem {
+                content_hash: "h4".into(),
+                origin_node: "online_peer".into(),
+                title: "Cached Track".into(),
+            },
+        ];
+
+        let result = process_health_batch(
+            &mgr,
+            &items,
+            |h| {
+                let h = h.clone();
+                async move { h == "h4" } // Only h4 is cached locally
+            },
+            |_p, _h| async { Ok(Bytes::new()) },
+            |peer| {
+                let peer = peer.clone();
+                async move { peer == "online_peer" }
+            },
+        )
+        .await;
+
+        // h1: not cached, peer online → healthy, not unavailable
+        // h2: not cached, peer offline → healthy + unavailable_source
+        // h3: not cached, peer offline → healthy + unavailable_source
+        // h4: cached locally → healthy
+        assert_eq!(result.total_checked, 4);
+        assert_eq!(result.healthy, 4);
+        assert_eq!(result.unavailable_source, 2);
+        assert_eq!(result.recovered, 0);
+        assert_eq!(result.failed, 0);
+        assert_eq!(result.dereferenced, 0);
     }
 
     // ── Concurrent behavior ──────────────────────────────────────────
@@ -2081,6 +2136,7 @@ mod tests {
             &items,
             |_h| async { true }, // all healthy
             |_p, _h| async { Ok(Bytes::new()) },
+            |_| async { true }, // all peers online
         )
         .await;
 
@@ -2098,6 +2154,7 @@ mod tests {
             &[],
             |_h| async { true },
             |_p, _h| async { Ok(Bytes::new()) },
+            |_| async { true },
         )
         .await;
         assert_eq!(result.total_checked, 0);
@@ -2119,11 +2176,13 @@ mod tests {
             &items,
             |_h| async { false },
             |_p, _h| async { Ok(Bytes::from_static(b"data")) },
+            |_| async { true }, // all peers online
         )
         .await;
 
+        // In lazy-fetch mode, all uncached non-dereferenced tracks are healthy
         assert_eq!(result.total_checked, 5);
-        assert_eq!(result.recovered, 5);
+        assert_eq!(result.healthy, 5);
     }
 
     // ── Quality score edge cases ─────────────────────────────────────
@@ -2707,6 +2766,7 @@ mod tests {
                 let h = h.clone();
                 async move { f.fetch_track(&p, &h).await }
             },
+            |_| async { true }, // peer online
         )
         .await;
 
@@ -2720,7 +2780,13 @@ mod tests {
     fn test_batch_check_result_default_is_zero() {
         let r = BatchCheckResult::new();
         assert_eq!(
-            r.total_checked + r.healthy + r.recovered + r.failed + r.dereferenced + r.re_referenced,
+            r.total_checked
+                + r.healthy
+                + r.recovered
+                + r.failed
+                + r.dereferenced
+                + r.re_referenced
+                + r.unavailable_source,
             0
         );
     }

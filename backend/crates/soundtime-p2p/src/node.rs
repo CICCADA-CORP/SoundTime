@@ -8,6 +8,7 @@
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -15,15 +16,20 @@ use bytes::Bytes;
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use iroh_blobs::store::fs::FsStore;
-use iroh_blobs::Hash;
+use iroh_blobs::{Hash, HashAndFormat};
 use rand::SeedableRng;
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
+    Set,
+};
 use soundtime_db::entities::{album, artist, remote_track, track};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::blob_cache::BlobCache;
 use crate::blocked::is_peer_blocked;
+use crate::connection_pool::ConnectionPool;
 use crate::discovery::PeerRegistry;
 use crate::error::P2pError;
 use crate::musicbrainz::MusicBrainzClient;
@@ -32,6 +38,13 @@ use crate::track_health::{spawn_health_monitor, PeerTrackInfo, TrackFetcher, Tra
 
 /// ALPN protocol identifier for SoundTime P2P
 pub const SOUNDTIME_ALPN: &[u8] = b"soundtime/p2p/1";
+
+/// Maximum allowed size for a single P2P message (64 MiB).
+/// CatalogSync messages can be large for instances with many tracks.
+const MAX_P2P_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+
+/// Maximum number of concurrent incoming P2P connections.
+const MAX_CONCURRENT_P2P_CONNECTIONS: usize = 64;
 
 /// Sanitize a string for use as a filesystem directory name.
 fn sanitize_for_path(name: &str) -> String {
@@ -84,7 +97,7 @@ pub struct TrackAnnouncement {
 }
 
 /// Protocol message types exchanged between peers.
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub enum P2pMessage {
     /// Request a track blob by its content hash
     FetchTrack { hash: String },
@@ -255,6 +268,21 @@ pub struct P2pNode {
     _config: P2pConfig,
     /// Path to audio file storage (for writing cover art from peers)
     audio_storage_path: PathBuf,
+    /// LRU cache for P2P track blobs.
+    blob_cache: Arc<BlobCache>,
+    /// Track health manager for failure tracking and auto-repair.
+    health_manager: Arc<TrackHealthManager>,
+    /// Semaphore to limit concurrent incoming P2P connections.
+    conn_semaphore: Arc<tokio::sync::Semaphore>,
+    /// Set of blob hashes that have been explicitly published/announced.
+    /// Only these blobs can be served to peers via FetchTrack.
+    published_hashes: tokio::sync::RwLock<std::collections::HashSet<String>>,
+    /// Round-robin index for PEX peer rotation.
+    pex_index: AtomicUsize,
+    /// Set of peer IDs currently being processed for CatalogSync (prevents duplicates).
+    catalog_sync_in_progress: tokio::sync::Mutex<std::collections::HashSet<String>>,
+    /// Pool of reusable QUIC connections to peers (FIX-30).
+    conn_pool: Arc<ConnectionPool>,
 }
 
 impl P2pNode {
@@ -352,6 +380,12 @@ impl P2pNode {
 
         let audio_storage_path = config.audio_storage_path.clone();
 
+        let blob_cache = Arc::new(BlobCache::from_env());
+
+        let health_manager = Arc::new(TrackHealthManager::new());
+
+        let conn_pool = Arc::new(ConnectionPool::new(endpoint.clone(), SOUNDTIME_ALPN));
+
         let node = Arc::new(Self {
             endpoint,
             blob_store,
@@ -362,6 +396,13 @@ impl P2pNode {
             shutdown_tx,
             _config: config,
             audio_storage_path,
+            blob_cache,
+            health_manager,
+            conn_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_P2P_CONNECTIONS)),
+            published_hashes: tokio::sync::RwLock::new(std::collections::HashSet::new()),
+            pex_index: AtomicUsize::new(0),
+            catalog_sync_in_progress: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+            conn_pool,
         });
 
         // Build the local Bloom filter index from existing tracks in DB
@@ -369,6 +410,34 @@ impl P2pNode {
             let node_clone = Arc::clone(&node);
             tokio::spawn(async move {
                 node_clone.rebuild_search_index().await;
+            });
+        }
+
+        // Pre-populate published_hashes with all locally-uploaded tracks (FIX-19)
+        {
+            let node_clone = Arc::clone(&node);
+            tokio::spawn(async move {
+                match track::Entity::find()
+                    .filter(track::Column::ContentHash.is_not_null())
+                    .all(&node_clone.db)
+                    .await
+                {
+                    Ok(tracks) => {
+                        let mut hashes = node_clone.published_hashes.write().await;
+                        for t in &tracks {
+                            if let Some(ref h) = t.content_hash {
+                                hashes.insert(h.clone());
+                            }
+                        }
+                        info!(
+                            count = hashes.len(),
+                            "pre-populated published hashes from database"
+                        );
+                    }
+                    Err(e) => {
+                        warn!("failed to pre-populate published hashes: {e}");
+                    }
+                }
             });
         }
 
@@ -416,8 +485,20 @@ impl P2pNode {
                             let peers = node_clone.registry.online_peers().await;
                             if !peers.is_empty() {
                                 info!(online = peers.len(), "periodic peer exchange + bloom sync");
-                                if let Ok(nid) = peers[0].node_id.parse::<EndpointId>() {
-                                    node_clone.discover_via_peer(nid).await;
+                                // Query up to 3 peers per cycle, rotating through the list
+                                let start = node_clone.pex_index.fetch_add(1, Ordering::Relaxed) % peers.len();
+                                let count = std::cmp::min(3, peers.len());
+                                for i in 0..count {
+                                    let idx = (start + i) % peers.len();
+                                    if let Ok(nid) = peers[idx].node_id.parse::<EndpointId>() {
+                                        node_clone.discover_via_peer(nid).await;
+                                    }
+                                }
+                                // Rebuild Bloom filter if it was marked dirty (e.g. track deletion)
+                                if node_clone.search_index.is_dirty() {
+                                    if let Err(e) = node_clone.search_index.rebuild_from_db(&node_clone.db).await {
+                                        warn!("failed to rebuild dirty search index: {e}");
+                                    }
                                 }
                                 // Exchange Bloom filters with all online peers
                                 node_clone.broadcast_bloom_filter().await;
@@ -438,7 +519,7 @@ impl P2pNode {
         // Spawn periodic health monitor for remote tracks
         {
             let node_clone: Arc<P2pNode> = Arc::clone(&node);
-            let health_manager = Arc::new(TrackHealthManager::new());
+            let health_manager = Arc::clone(&node.health_manager);
             let shutdown_rx = node.shutdown_tx.subscribe();
             let db_clone = node_clone.db.clone();
             // TrackFetcher is implemented for Arc<P2pNode>, so we wrap in Arc
@@ -531,10 +612,20 @@ impl P2pNode {
             .unwrap_or(0)
     }
 
+    /// Get a reference to the blob cache.
+    pub fn blob_cache(&self) -> &Arc<BlobCache> {
+        &self.blob_cache
+    }
+
+    /// Get the track health manager for failure tracking and auto-repair.
+    pub fn health_manager(&self) -> &Arc<TrackHealthManager> {
+        &self.health_manager
+    }
+
     /// Publish a track's audio data to the local blob store.
     /// Returns the content hash (BLAKE3) that identifies the blob.
     pub async fn publish_track(&self, data: Bytes) -> Result<Hash, P2pError> {
-        let tag = self
+        let outcome = self
             .blob_store
             .blobs()
             .add_bytes(data)
@@ -542,7 +633,18 @@ impl P2pNode {
             .await
             .map_err(|e| P2pError::BlobStore(e.to_string()))?;
 
-        let hash = tag.hash();
+        let hash = outcome.hash();
+
+        // Create a persistent tag so the blob is not garbage collected
+        let tag_name = format!("published-{}", hash);
+        self.blob_store
+            .tags()
+            .set(tag_name, HashAndFormat::raw(hash))
+            .await
+            .map_err(|e| P2pError::BlobStore(format!("failed to set persistent tag: {e}")))?;
+
+        // SECURITY: Register hash so it can be served to peers (FIX-19)
+        self.published_hashes.write().await.insert(hash.to_string());
         info!(%hash, "track published to blob store");
         Ok(hash)
     }
@@ -550,7 +652,7 @@ impl P2pNode {
     /// Publish cover art data to the local blob store.
     /// Returns the content hash (BLAKE3) that identifies the blob.
     pub async fn publish_cover(&self, data: Bytes) -> Result<Hash, P2pError> {
-        let tag = self
+        let outcome = self
             .blob_store
             .blobs()
             .add_bytes(data)
@@ -558,7 +660,18 @@ impl P2pNode {
             .await
             .map_err(|e| P2pError::BlobStore(e.to_string()))?;
 
-        let hash = tag.hash();
+        let hash = outcome.hash();
+
+        // Create a persistent tag so the blob is not garbage collected
+        let tag_name = format!("published-{}", hash);
+        self.blob_store
+            .tags()
+            .set(tag_name, HashAndFormat::raw(hash))
+            .await
+            .map_err(|e| P2pError::BlobStore(format!("failed to set persistent tag: {e}")))?;
+
+        // SECURITY: Register hash so it can be served to peers (FIX-19)
+        self.published_hashes.write().await.insert(hash.to_string());
         debug!(%hash, "cover art published to blob store");
         Ok(hash)
     }
@@ -573,6 +686,85 @@ impl P2pNode {
             .map_err(|e| P2pError::BlobStore(e.to_string()))?;
 
         Ok(data)
+    }
+
+    /// Retrieve a P2P track by hash, fetching from the origin peer on-demand if not cached.
+    ///
+    /// 1. Try the local blob store (fast path).
+    /// 2. If missing, look up the origin peer from `remote_tracks` and fetch via P2P.
+    /// 3. Store the fetched blob locally and register it in the LRU cache.
+    /// 4. Trigger eviction if the cache exceeds the configured limit.
+    pub async fn get_or_fetch_track(&self, hash: Hash) -> Result<Bytes, P2pError> {
+        // Fast path: blob exists locally
+        if let Ok(data) = self.get_local_track(hash).await {
+            self.blob_cache
+                .record_access_with_tag(hash, data.len() as u64, &self.blob_store)
+                .await;
+            return Ok(data);
+        }
+
+        // Look up origin peer from remote_track table
+        let hash_str = hash.to_string();
+        let remote = remote_track::Entity::find()
+            .filter(remote_track::Column::RemoteUri.ends_with(format!("/{}", hash_str)))
+            .one(&self.db)
+            .await
+            .map_err(P2pError::Database)?
+            .ok_or_else(|| P2pError::TrackNotFound(hash_str.clone()))?;
+
+        let origin = remote
+            .instance_domain
+            .strip_prefix("p2p://")
+            .unwrap_or(&remote.instance_domain);
+
+        let nid: EndpointId = origin
+            .parse()
+            .map_err(|_| P2pError::Connection(format!("invalid peer id: {}", origin)))?;
+
+        // In-flight dedup: if another task is already fetching this blob, wait and retry
+        if !self.blob_cache.try_start_fetch(hash).await {
+            debug!(%hash, "another fetch in progress, waiting");
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            // Retry local — the other fetch may have completed
+            if let Ok(data) = self.get_local_track(hash).await {
+                self.blob_cache
+                    .record_access_with_tag(hash, data.len() as u64, &self.blob_store)
+                    .await;
+                return Ok(data);
+            }
+            return Err(P2pError::TrackNotFound(hash_str));
+        }
+
+        // Fetch from peer
+        let result = async {
+            info!(%hash, peer = %origin, "on-demand fetch from peer");
+            let peer_addr = EndpointAddr::new(nid);
+            let data = self.fetch_track_from_peer(peer_addr, hash).await?;
+
+            // Store in local blob store
+            let _tag = self
+                .blob_store
+                .blobs()
+                .add_bytes(data.clone())
+                .temp_tag()
+                .await
+                .map_err(|e| P2pError::BlobStore(e.to_string()))?;
+
+            // Register in LRU cache and evict if over limit
+            self.blob_cache
+                .record_access_with_tag(hash, data.len() as u64, &self.blob_store)
+                .await;
+            self.blob_cache.evict_if_needed(&self.blob_store).await;
+
+            info!(%hash, bytes = data.len(), "on-demand fetch complete, blob cached");
+            Ok(data)
+        }
+        .await;
+
+        // Always clear in-flight flag
+        self.blob_cache.finish_fetch(hash).await;
+
+        result
     }
 
     /// Check if a blob exists locally.
@@ -595,17 +787,16 @@ impl P2pNode {
 
         info!(peer = %peer_id, %hash, "fetching track from peer");
 
-        let conn = self
-            .endpoint
-            .connect(peer_addr, SOUNDTIME_ALPN)
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        let conn = self.conn_pool.get_connection(peer_addr.id).await?;
 
         // Send fetch request
-        let (mut send, mut recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        let (mut send, mut recv) = match conn.open_bi().await {
+            Ok(streams) => streams,
+            Err(e) => {
+                self.conn_pool.invalidate(&peer_addr.id).await;
+                return Err(P2pError::Connection(e.to_string()));
+            }
+        };
 
         let request = P2pMessage::FetchTrack {
             hash: hash.to_string(),
@@ -642,25 +833,24 @@ impl P2pNode {
 
     /// Send a ping to a peer and wait for pong.
     pub async fn ping_peer(&self, peer_addr: EndpointAddr) -> Result<P2pMessage, P2pError> {
-        let conn = self
-            .endpoint
-            .connect(peer_addr, SOUNDTIME_ALPN)
-            .await
-            .map_err(|e| {
-                let err_str = format!("{e}");
-                if err_str.contains("ALPN") || err_str.contains("protocol") || err_str.contains("timed out") {
-                    P2pError::Connection(format!(
-                        "{e} (possible protocol version mismatch — this node uses iroh 0.96 / ALPN 'soundtime/p2p/1')"
-                    ))
-                } else {
-                    P2pError::Connection(e.to_string())
-                }
-            })?;
+        let conn = self.conn_pool.get_connection(peer_addr.id).await.map_err(|e| {
+            let err_str = format!("{e}");
+            if err_str.contains("ALPN") || err_str.contains("protocol") || err_str.contains("timed out") {
+                P2pError::Connection(format!(
+                    "{e} (possible protocol version mismatch — this node uses iroh 0.96 / ALPN 'soundtime/p2p/1')"
+                ))
+            } else {
+                e
+            }
+        })?;
 
-        let (mut send, mut recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        let (mut send, mut recv) = match conn.open_bi().await {
+            Ok(streams) => streams,
+            Err(e) => {
+                self.conn_pool.invalidate(&peer_addr.id).await;
+                return Err(P2pError::Connection(e.to_string()));
+            }
+        };
 
         let ping = serde_json::to_vec(&P2pMessage::Ping)?;
         send.write_all(&(ping.len() as u32).to_be_bytes())
@@ -755,47 +945,76 @@ impl P2pNode {
         info!(%total, %online, "seed peer discovery complete");
     }
 
-    /// Send a message to a specific peer.
+    /// Send a message to a specific peer with retry and exponential backoff.
+    ///
+    /// Serializes the message once, then attempts to deliver it up to 3 times
+    /// with doubling delays (1s, 2s, 4s) between retries.
     async fn send_message_to_peer(
         &self,
         node_id: EndpointId,
         msg: &P2pMessage,
     ) -> Result<(), P2pError> {
-        let peer_addr = EndpointAddr::new(node_id);
-        let conn = self
-            .endpoint
-            .connect(peer_addr, SOUNDTIME_ALPN)
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
-
-        let (mut send, _recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
-
         let msg_bytes = serde_json::to_vec(msg)?;
-        send.write_all(&(msg_bytes.len() as u32).to_be_bytes())
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
-        send.write_all(&msg_bytes)
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
-        send.finish()
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        let max_retries = 3u32;
+        let mut delay = std::time::Duration::from_secs(1);
 
-        // CRITICAL: Keep the connection alive so the QUIC transport driver can
-        // flush all buffered stream data to the network.  Without this delay
-        // `conn` would be dropped immediately, sending CONNECTION_CLOSE before
-        // the stream data has been fully transmitted — silently truncating
-        // large messages like CatalogSync.
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-        Ok(())
+        for attempt in 0..max_retries {
+            match self.try_send_bytes(node_id, &msg_bytes).await {
+                Ok(()) => return Ok(()),
+                Err(e) if attempt < max_retries - 1 => {
+                    warn!(peer = %node_id, attempt, "send failed, retrying in {:?}: {e}", delay);
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
     }
 
-    /// Broadcast a track announcement to all online peers.
+    /// Internal: single attempt to send pre-serialized message bytes to a peer.
+    async fn try_send_bytes(&self, node_id: EndpointId, msg_bytes: &[u8]) -> Result<(), P2pError> {
+        let conn = self.conn_pool.get_connection(node_id).await?;
+
+        let result: Result<(), P2pError> = async {
+            let (mut send, _recv) = conn
+                .open_bi()
+                .await
+                .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+            send.write_all(&(msg_bytes.len() as u32).to_be_bytes())
+                .await
+                .map_err(|e| P2pError::Connection(e.to_string()))?;
+            send.write_all(msg_bytes)
+                .await
+                .map_err(|e| P2pError::Connection(e.to_string()))?;
+            send.finish()
+                .map_err(|e| P2pError::Connection(e.to_string()))?;
+
+            // Wait for the peer to acknowledge receipt (with timeout)
+            match tokio::time::timeout(std::time::Duration::from_secs(30), send.stopped()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => {}
+                Err(_) => {
+                    warn!("timed out waiting for stream ack");
+                }
+            }
+
+            Ok(())
+        }
+        .await;
+
+        if result.is_err() {
+            self.conn_pool.invalidate(&node_id).await;
+        }
+
+        result
+    }
+
+    /// Broadcast a track announcement to all online peers concurrently.
     /// Called after a track is published to the local blob store.
-    pub async fn broadcast_announce_track(&self, announcement: TrackAnnouncement) {
+    /// Uses a semaphore to limit concurrency to 10 simultaneous sends.
+    pub async fn broadcast_announce_track(self: &Arc<Self>, announcement: TrackAnnouncement) {
         let peers = self.registry.online_peers().await;
         if peers.is_empty() {
             debug!(hash = %announcement.hash, "no online peers to announce track to");
@@ -811,6 +1030,8 @@ impl P2pNode {
         );
 
         let msg = P2pMessage::AnnounceTrack(announcement);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(10));
+        let mut handles = Vec::new();
 
         for peer in &peers {
             let node_id: EndpointId = match peer.node_id.parse() {
@@ -818,128 +1039,163 @@ impl P2pNode {
                 Err(_) => continue,
             };
 
-            if let Err(e) = self.send_message_to_peer(node_id, &msg).await {
-                warn!(peer = %peer.node_id, "failed to announce track: {e}");
-                self.registry.mark_offline(&peer.node_id).await;
-            } else {
-                debug!(peer = %peer.node_id, "track announced");
-            }
+            let node = Arc::clone(self);
+            let msg = msg.clone();
+            let sem = Arc::clone(&semaphore);
+            let peer_id = peer.node_id.clone();
+
+            handles.push(tokio::spawn(async move {
+                let _permit = sem.acquire().await.ok();
+                if let Err(e) = node.send_message_to_peer(node_id, &msg).await {
+                    warn!(peer = %peer_id, "failed to announce track: {e}");
+                    node.registry.mark_offline(&peer_id).await;
+                } else {
+                    debug!(peer = %peer_id, "track announced");
+                }
+            }));
+        }
+
+        for h in handles {
+            let _ = h.await;
         }
     }
 
-    /// Announce all locally-uploaded tracks to a specific peer.
+    /// Announce all locally-uploaded tracks to a specific peer using paginated queries.
     /// Called when a new peer connects to sync existing catalogs.
-    /// Sends a single CatalogSync message with all tracks, which is
-    /// processed on the receiving side identically to individual AnnounceTrack messages.
+    /// Sends one CatalogSync message per page (500 tracks) to avoid loading all
+    /// tracks into memory at once.
     pub async fn announce_all_tracks_to_peer(&self, peer_id: EndpointId) {
-        let tracks = match track::Entity::find()
+        let page_size = 500u64;
+        let total = match track::Entity::find()
             .filter(track::Column::ContentHash.is_not_null())
-            .all(&self.db)
+            .count(&self.db)
             .await
         {
-            Ok(t) => t,
+            Ok(c) => c,
             Err(e) => {
-                warn!("failed to read tracks for catalog sync: {e}");
+                warn!("failed to count tracks for catalog sync: {e}");
                 return;
             }
         };
 
-        if tracks.is_empty() {
+        if total == 0 {
             debug!(peer = %peer_id, "no tracks to sync");
             return;
         }
 
-        let mut announcements = Vec::with_capacity(tracks.len());
+        let num_pages = total.div_ceil(page_size);
+        info!(peer = %peer_id, total, pages = num_pages, "starting paginated catalog sync");
+
         let our_node = self.node_id().to_string();
 
-        for t in &tracks {
-            // Skip P2P-replicated tracks (they came from another peer, don't re-announce)
-            if t.file_path.starts_with("p2p://") {
-                continue;
+        for page_num in 0..num_pages {
+            let tracks = match track::Entity::find()
+                .filter(track::Column::ContentHash.is_not_null())
+                .paginate(&self.db, page_size)
+                .fetch_page(page_num)
+                .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        page = page_num,
+                        "failed to read tracks page for catalog sync: {e}"
+                    );
+                    continue;
+                }
+            };
+
+            let mut announcements = Vec::with_capacity(tracks.len());
+
+            for t in &tracks {
+                // Skip P2P-replicated tracks (they came from another peer, don't re-announce)
+                if t.file_path.starts_with("p2p://") {
+                    continue;
+                }
+
+                let hash = match &t.content_hash {
+                    Some(h) => h.clone(),
+                    None => continue,
+                };
+
+                let artist_name = artist::Entity::find_by_id(t.artist_id)
+                    .one(&self.db)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|a| a.name)
+                    .unwrap_or_else(|| "Unknown".to_string());
+
+                let (album_title, cover_hash) = match t.album_id {
+                    Some(aid) => {
+                        let album_opt = album::Entity::find_by_id(aid)
+                            .one(&self.db)
+                            .await
+                            .ok()
+                            .flatten();
+                        match album_opt {
+                            Some(a) => {
+                                let title = Some(a.title);
+                                // Publish cover art to blob store if available
+                                let ch = if let Some(ref url) = a.cover_url {
+                                    // cover_url is like "/api/media/<relative_path>"
+                                    let rel = url.strip_prefix("/api/media/").unwrap_or(url);
+                                    let full = self.audio_storage_path.join(rel);
+                                    match tokio::fs::read(&full).await {
+                                        Ok(data) => {
+                                            match self.publish_cover(Bytes::from(data)).await {
+                                                Ok(h) => Some(h.to_string()),
+                                                Err(e) => {
+                                                    warn!("failed to publish cover blob: {e}");
+                                                    None
+                                                }
+                                            }
+                                        }
+                                        Err(_) => None,
+                                    }
+                                } else {
+                                    None
+                                };
+                                (title, ch)
+                            }
+                            None => (None, None),
+                        }
+                    }
+                    None => (None, None),
+                };
+
+                announcements.push(TrackAnnouncement {
+                    hash,
+                    title: t.title.clone(),
+                    artist_name,
+                    album_title,
+                    duration_secs: t.duration_secs,
+                    format: t.format.clone(),
+                    file_size: t.file_size,
+                    genre: t.genre.clone(),
+                    year: t.year,
+                    track_number: t.track_number,
+                    disc_number: t.disc_number,
+                    bitrate: t.bitrate,
+                    sample_rate: t.sample_rate,
+                    origin_node: our_node.clone(),
+                    cover_hash,
+                });
             }
 
-            let hash = match &t.content_hash {
-                Some(h) => h.clone(),
-                None => continue,
-            };
+            if !announcements.is_empty() {
+                info!(
+                    peer = %peer_id,
+                    count = announcements.len(),
+                    page = page_num,
+                    "syncing catalog page to peer"
+                );
 
-            let artist_name = artist::Entity::find_by_id(t.artist_id)
-                .one(&self.db)
-                .await
-                .ok()
-                .flatten()
-                .map(|a| a.name)
-                .unwrap_or_else(|| "Unknown".to_string());
-
-            let (album_title, cover_hash) = match t.album_id {
-                Some(aid) => {
-                    let album_opt = album::Entity::find_by_id(aid)
-                        .one(&self.db)
-                        .await
-                        .ok()
-                        .flatten();
-                    match album_opt {
-                        Some(a) => {
-                            let title = Some(a.title);
-                            // Publish cover art to blob store if available
-                            let ch = if let Some(ref url) = a.cover_url {
-                                // cover_url is like "/api/media/<relative_path>"
-                                let rel = url.strip_prefix("/api/media/").unwrap_or(url);
-                                let full = self.audio_storage_path.join(rel);
-                                match tokio::fs::read(&full).await {
-                                    Ok(data) => match self.publish_cover(Bytes::from(data)).await {
-                                        Ok(h) => Some(h.to_string()),
-                                        Err(e) => {
-                                            warn!("failed to publish cover blob: {e}");
-                                            None
-                                        }
-                                    },
-                                    Err(_) => None,
-                                }
-                            } else {
-                                None
-                            };
-                            (title, ch)
-                        }
-                        None => (None, None),
-                    }
+                let msg = P2pMessage::CatalogSync(announcements);
+                if let Err(e) = self.send_message_to_peer(peer_id, &msg).await {
+                    warn!(peer = %peer_id, page = page_num, "failed to sync catalog page: {e}");
                 }
-                None => (None, None),
-            };
-
-            announcements.push(TrackAnnouncement {
-                hash,
-                title: t.title.clone(),
-                artist_name,
-                album_title,
-                duration_secs: t.duration_secs,
-                format: t.format.clone(),
-                file_size: t.file_size,
-                genre: t.genre.clone(),
-                year: t.year,
-                track_number: t.track_number,
-                disc_number: t.disc_number,
-                bitrate: t.bitrate,
-                sample_rate: t.sample_rate,
-                origin_node: our_node.clone(),
-                cover_hash,
-            });
-        }
-
-        if announcements.is_empty() {
-            debug!(peer = %peer_id, "no locally-uploaded tracks to sync");
-            return;
-        }
-
-        info!(
-            peer = %peer_id,
-            count = announcements.len(),
-            "syncing catalog to peer"
-        );
-
-        let msg = P2pMessage::CatalogSync(announcements);
-        if let Err(e) = self.send_message_to_peer(peer_id, &msg).await {
-            warn!(peer = %peer_id, "failed to sync catalog: {e}");
+            }
         }
     }
 
@@ -1000,16 +1256,15 @@ impl P2pNode {
 
     /// Send our peer list to a remote peer and receive theirs.
     async fn exchange_peers(&self, peer_addr: EndpointAddr) -> Result<Vec<String>, P2pError> {
-        let conn = self
-            .endpoint
-            .connect(peer_addr, SOUNDTIME_ALPN)
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        let conn = self.conn_pool.get_connection(peer_addr.id).await?;
 
-        let (mut send, mut recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        let (mut send, mut recv) = match conn.open_bi().await {
+            Ok(streams) => streams,
+            Err(e) => {
+                self.conn_pool.invalidate(&peer_addr.id).await;
+                return Err(P2pError::Connection(e.to_string()));
+            }
+        };
 
         // Build our peer list (include ourselves so remote knows us)
         let mut our_peers: Vec<String> = self
@@ -1063,44 +1318,10 @@ impl P2pNode {
 
     /// Rebuild the local Bloom filter search index from all tracks in the database.
     async fn rebuild_search_index(&self) {
-        let tracks_with_artists: Vec<(track::Model, Option<artist::Model>)> =
-            match track::Entity::find()
-                .find_also_related(artist::Entity)
-                .all(&self.db)
-                .await
-            {
-                Ok(results) => results,
-                Err(e) => {
-                    warn!("failed to load tracks for search index rebuild: {e}");
-                    return;
-                }
-            };
-
-        let mut index_data: Vec<(String, String, Option<String>)> = Vec::new();
-
-        for (t, artist_opt) in &tracks_with_artists {
-            let artist_name = artist_opt
-                .as_ref()
-                .map(|a| a.name.clone())
-                .unwrap_or_default();
-
-            // Get album title if available
-            let album_title = if let Some(album_id) = t.album_id {
-                album::Entity::find_by_id(album_id)
-                    .one(&self.db)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|a| a.title)
-            } else {
-                None
-            };
-
-            index_data.push((t.title.clone(), artist_name, album_title));
+        match self.search_index.rebuild_from_db(&self.db).await {
+            Ok(()) => info!("search index rebuilt at startup"),
+            Err(e) => warn!("failed to rebuild search index from database: {e}"),
         }
-
-        self.search_index.rebuild_from_tracks(&index_data).await;
-        info!(tracks = index_data.len(), "search index rebuilt at startup");
     }
 
     /// Broadcast our Bloom filter to all online peers for search routing.
@@ -1126,8 +1347,13 @@ impl P2pNode {
 
     /// Perform a distributed search across the P2P network.
     /// Uses Bloom filters to route the query only to peers likely to have results.
+    /// Queries up to 10 matching peers concurrently with a 10-second timeout per peer.
     /// Returns search results from all matching peers, merged and sorted by relevance.
-    pub async fn distributed_search(&self, query: &str, limit: u32) -> Vec<SearchResultItem> {
+    pub async fn distributed_search(
+        self: &Arc<Self>,
+        query: &str,
+        limit: u32,
+    ) -> Vec<SearchResultItem> {
         let matching_peers = self.search_index.peers_matching_query(query).await;
 
         if matching_peers.is_empty() {
@@ -1144,30 +1370,45 @@ impl P2pNode {
 
         let mut all_results: Vec<SearchResultItem> = Vec::new();
 
-        // Query matched peers concurrently (up to 10 at a time)
-        let mut futures = Vec::new();
+        // Collect peers to query (up to 10)
+        let mut peers_to_query = Vec::new();
         for peer_id_str in matching_peers.iter().take(10) {
             let nid: EndpointId = match peer_id_str.parse() {
                 Ok(id) => id,
                 Err(_) => continue,
             };
             let peer_addr = EndpointAddr::new(nid);
-            futures.push((peer_id_str.clone(), peer_addr));
+            peers_to_query.push((peer_id_str.clone(), peer_addr));
         }
 
-        for (peer_id_str, peer_addr) in futures {
-            match self.search_peer(peer_addr, &msg).await {
-                Ok(results) => {
-                    info!(
-                        peer = %peer_id_str,
-                        results = results.len(),
-                        "received search results"
-                    );
-                    all_results.extend(results);
+        // Query all matched peers concurrently using JoinSet
+        let timeout_dur = std::time::Duration::from_secs(10);
+        let mut join_set = tokio::task::JoinSet::new();
+
+        for (peer_id_str, peer_addr) in peers_to_query {
+            let node = Arc::clone(self);
+            let msg = msg.clone();
+            join_set.spawn(async move {
+                match tokio::time::timeout(timeout_dur, node.search_peer(peer_addr, &msg)).await {
+                    Ok(Ok(results)) => {
+                        info!(peer = %peer_id_str, results = results.len(), "received search results");
+                        results
+                    }
+                    Ok(Err(e)) => {
+                        debug!(peer = %peer_id_str, "search failed: {e}");
+                        vec![]
+                    }
+                    Err(_) => {
+                        debug!(peer = %peer_id_str, "search timed out");
+                        vec![]
+                    }
                 }
-                Err(e) => {
-                    debug!(peer = %peer_id_str, "search failed: {e}");
-                }
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            if let Ok(results) = result {
+                all_results.extend(results);
             }
         }
 
@@ -1200,16 +1441,15 @@ impl P2pNode {
         peer_addr: EndpointAddr,
         msg: &P2pMessage,
     ) -> Result<Vec<SearchResultItem>, P2pError> {
-        let conn = self
-            .endpoint
-            .connect(peer_addr, SOUNDTIME_ALPN)
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        let conn = self.conn_pool.get_connection(peer_addr.id).await?;
 
-        let (mut send, mut recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
+        let (mut send, mut recv) = match conn.open_bi().await {
+            Ok(streams) => streams,
+            Err(e) => {
+                self.conn_pool.invalidate(&peer_addr.id).await;
+                return Err(P2pError::Connection(e.to_string()));
+            }
+        };
 
         let msg_bytes = serde_json::to_vec(msg)?;
         send.write_all(&(msg_bytes.len() as u32).to_be_bytes())
@@ -1508,7 +1748,15 @@ impl P2pNode {
                     match incoming {
                         Some(incoming) => {
                             let node = Arc::clone(self);
+                            let permit = match node.conn_semaphore.clone().try_acquire_owned() {
+                                Ok(p) => p,
+                                Err(_) => {
+                                    warn!("max concurrent P2P connections reached, dropping connection");
+                                    continue;
+                                }
+                            };
                             tokio::spawn(async move {
+                                let _permit = permit; // held for the duration
                                 match incoming.await {
                                     Ok(conn) => {
                                         if let Err(e) = node.handle_connection(conn).await {
@@ -1561,11 +1809,20 @@ impl P2pNode {
                 break;
             }
             let msg_len = u32::from_be_bytes(len_buf) as usize;
+
+            // SECURITY: Reject oversized messages to prevent OOM (FIX-17)
+            if msg_len > MAX_P2P_MESSAGE_SIZE {
+                warn!(%peer_id, msg_len, "rejecting oversized P2P message (max: {MAX_P2P_MESSAGE_SIZE})");
+                break;
+            }
+
             let msg_bytes = match recv.read_to_end(msg_len).await {
                 Ok(b) => b,
                 Err(_) => break,
             };
 
+            // SECURITY: Message size is bounded by MAX_P2P_MESSAGE_SIZE (FIX-17).
+            // serde_json's default recursion limit (128) provides depth protection.
             let msg: P2pMessage = match serde_json::from_slice(&msg_bytes) {
                 Ok(m) => m,
                 Err(e) => {
@@ -1607,31 +1864,8 @@ impl P2pNode {
             return;
         }
 
-        // Auto-fetch the blob if we don't have it
-        let blob_hash: Result<Hash, _> = ann.hash.parse();
-        if let Ok(h) = blob_hash {
-            if !self.has_blob(h).await {
-                if let Ok(nid) = peer_id.parse::<EndpointId>() {
-                    info!(hash = %ann.hash, %peer_id, "auto-fetching announced track");
-                    let peer_addr = EndpointAddr::new(nid);
-                    match self.fetch_track_from_peer(peer_addr, h).await {
-                        Ok(data) => {
-                            match self.blob_store.blobs().add_bytes(data).temp_tag().await {
-                                Ok(_tag) => {
-                                    // Tag kept alive by the store's tag system
-                                }
-                                Err(e) => {
-                                    warn!(hash = %ann.hash, "failed to import blob: {e}");
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!(hash = %ann.hash, %peer_id, "failed to fetch: {e}");
-                        }
-                    }
-                }
-            }
-        }
+        // Blob is fetched lazily on first play (get_or_fetch_track) — no eager download
+        debug!(hash = %ann.hash, %peer_id, "track metadata stored, blob will be fetched on demand");
 
         // Create artist (find or create)
         let artist_id = match artist::Entity::find()
@@ -1755,7 +1989,7 @@ impl P2pNode {
 
                 // Index in Bloom filter for search routing
                 self.search_index
-                    .insert_track(&ann.title, &ann.artist_name, ann.album_title.as_deref())
+                    .add_track_tokens(&ann.title, &ann.artist_name, ann.album_title.as_deref())
                     .await;
 
                 let remote_track_id = Uuid::new_v4();
@@ -1821,6 +2055,17 @@ impl P2pNode {
     ) -> Result<(), P2pError> {
         match msg {
             P2pMessage::FetchTrack { hash } => {
+                // SECURITY: Only serve blobs that were explicitly published (FIX-19)
+                if !self.published_hashes.read().await.contains(&hash) {
+                    warn!(%peer_id, %hash, "rejected FetchTrack for non-published blob");
+                    send.write_all(&0u32.to_be_bytes())
+                        .await
+                        .map_err(|e| P2pError::Connection(e.to_string()))?;
+                    send.finish()
+                        .map_err(|e| P2pError::Connection(e.to_string()))?;
+                    return Ok(());
+                }
+
                 let hash: Hash = hash
                     .parse()
                     .map_err(|_| P2pError::TrackNotFound(hash.clone()))?;
@@ -1846,9 +2091,12 @@ impl P2pNode {
                     .map_err(|e| P2pError::Connection(e.to_string()))?;
             }
             P2pMessage::Ping => {
+                // Get actual track count from DB
+                let track_count = track::Entity::find().count(&self.db).await.unwrap_or(0);
+
                 let pong = P2pMessage::Pong {
                     node_id: node_id.to_string(),
-                    track_count: 0, // TODO: get actual track count from DB
+                    track_count,
                     version: Some(crate::build_version().to_string()),
                 };
                 let pong_bytes = serde_json::to_vec(&pong)?;
@@ -1879,23 +2127,87 @@ impl P2pNode {
                 let _ = send.finish();
             }
             P2pMessage::CatalogSync(announcements) => {
-                info!(count = announcements.len(), %peer_id, "received catalog sync");
-                for ann in announcements {
-                    self.process_track_announcement(ann, peer_id).await;
+                // Dedup guard: skip if already processing a CatalogSync from this peer
+                {
+                    let mut in_progress = self.catalog_sync_in_progress.lock().await;
+                    if !in_progress.insert(peer_id.to_string()) {
+                        warn!(%peer_id, count = announcements.len(), "duplicate CatalogSync rejected (already in progress)");
+                        let _ = send.finish();
+                        return Ok(());
+                    }
                 }
+
+                info!(count = announcements.len(), %peer_id, "received catalog sync");
+
+                // Process in batches of 100 with yielding to avoid blocking the runtime
+                for (i, ann) in announcements.into_iter().enumerate() {
+                    self.process_track_announcement(ann, peer_id).await;
+                    if (i + 1) % 100 == 0 {
+                        tokio::task::yield_now().await;
+                        debug!(%peer_id, processed = i + 1, "catalog sync batch progress");
+                    }
+                }
+
+                // Remove from in-progress
+                self.catalog_sync_in_progress.lock().await.remove(peer_id);
                 // Properly close our side of the stream
                 let _ = send.finish();
             }
             P2pMessage::PeerExchange { peers } => {
                 info!(count = peers.len(), %peer_id, "received peer exchange request");
 
-                // Register new peers from the exchange (as known but unverified)
+                // Verify new peers before adding them
                 let our_id = self.node_id().to_string();
+                let mut new_peers: Vec<String> = Vec::new();
                 for pid in &peers {
                     if *pid != our_id && self.registry.get_peer(pid).await.is_none() {
-                        self.registry.upsert_peer(pid, None, 0).await;
-                        debug!(peer = %pid, "discovered peer via PEX");
+                        new_peers.push(pid.clone());
                     }
+                }
+
+                if !new_peers.is_empty() {
+                    let node = Arc::clone(self);
+                    tokio::spawn(async move {
+                        // Limit concurrent verification to 5
+                        let semaphore = Arc::new(tokio::sync::Semaphore::new(5));
+                        let mut handles = Vec::new();
+
+                        for pid in new_peers {
+                            let node = Arc::clone(&node);
+                            let sem = Arc::clone(&semaphore);
+                            handles.push(tokio::spawn(async move {
+                                let _permit = sem.acquire().await.ok()?;
+                                // Try to ping the peer with a 5s timeout
+                                if let Ok(nid) = pid.parse::<EndpointId>() {
+                                    let ping = P2pMessage::Ping;
+                                    match tokio::time::timeout(
+                                        std::time::Duration::from_secs(5),
+                                        node.send_message_to_peer(nid, &ping),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(_)) => {
+                                            node.registry.upsert_peer(&pid, None, 0).await;
+                                            info!(peer = %pid, "PEX peer verified and added");
+                                            // Sync catalogs with new peer
+                                            node.announce_all_tracks_to_peer(nid).await;
+                                            Some(pid)
+                                        }
+                                        _ => {
+                                            debug!(peer = %pid, "PEX peer unreachable, not adding");
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    None
+                                }
+                            }));
+                        }
+
+                        for h in handles {
+                            let _ = h.await;
+                        }
+                    });
                 }
 
                 // Reply with our peer list (including ourselves)
@@ -2048,7 +2360,7 @@ impl P2pNode {
             let peer_addr = EndpointAddr::new(nid);
             match self.fetch_track_from_peer(peer_addr, blob_hash).await {
                 Ok(data) => {
-                    // Store in blob store
+                    // Store in blob store with a persistent tag
                     match self
                         .blob_store
                         .blobs()
@@ -2056,7 +2368,20 @@ impl P2pNode {
                         .temp_tag()
                         .await
                     {
-                        Ok(_tag) => {}
+                        Ok(outcome) => {
+                            let h = outcome.hash();
+                            let tag_name = format!("published-{}", h);
+                            if let Err(e) = self
+                                .blob_store
+                                .tags()
+                                .set(tag_name, HashAndFormat::raw(h))
+                                .await
+                            {
+                                warn!(hash = %cover_hash_str, "failed to set persistent tag for cover: {e}");
+                            }
+                            // Register hash so it can be served to peers
+                            self.published_hashes.write().await.insert(h.to_string());
+                        }
                         Err(e) => warn!(hash = %cover_hash_str, "failed to import cover blob: {e}"),
                     }
                     data
@@ -2174,13 +2499,25 @@ impl TrackFetcher for Arc<P2pNode> {
                 .map(|p| p.is_online)
                 .unwrap_or(false);
 
+            // Look up file_size from the linked local track record
+            let file_size = match rt.local_track_id {
+                Some(track_id) => track::Entity::find_by_id(track_id)
+                    .one(&self.db)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|t| t.file_size)
+                    .unwrap_or(0),
+                None => 0,
+            };
+
             sources.push(PeerTrackInfo {
                 peer_id: origin,
                 format: rt.format.unwrap_or_default(),
                 bitrate: rt.bitrate,
                 sample_rate: rt.sample_rate,
                 is_online,
-                file_size: 0,
+                file_size,
             });
         }
 

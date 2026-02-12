@@ -15,6 +15,14 @@ use soundtime_db::entities::{album, artist, listen_history, remote_track, track}
 use soundtime_db::AppState;
 use std::collections::HashMap;
 
+/// Extract p2p node from type-erased state
+fn get_p2p_node(state: &AppState) -> Option<std::sync::Arc<soundtime_p2p::P2pNode>> {
+    state
+        .p2p
+        .as_ref()
+        .and_then(|any| any.clone().downcast::<soundtime_p2p::P2pNode>().ok())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PaginationParams {
     pub page: Option<u64>,
@@ -536,6 +544,12 @@ pub async fn update_track(
 }
 
 /// DELETE /api/tracks/:id — delete track (owner only)
+///
+/// Performs cascade cleanup of all associated data:
+/// - Audio file on disk
+/// - Playlist entries, favorites, listen history
+/// - Remote track records referencing this track
+/// - P2P blob cache entries, health records, and search index
 pub async fn delete_track(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<AuthUser>,
@@ -581,11 +595,63 @@ pub async fn delete_track(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
+    // Delete associated remote_track records that reference this track
+    remote_track::Entity::delete_many()
+        .filter(remote_track::Column::LocalTrackId.eq(Some(id)))
+        .exec(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    // Best-effort P2P cleanup: blob cache, health records
+    if let Some(p2p_node) = get_p2p_node(&state) {
+        if let Some(ref content_hash) = existing.content_hash {
+            // Remove from blob cache tracker
+            if let Ok(hash) = content_hash.parse::<soundtime_p2p::BlobHash>() {
+                p2p_node.blob_cache().remove(&hash).await;
+            } else {
+                tracing::warn!(
+                    track_id = %id,
+                    content_hash = %content_hash,
+                    "failed to parse content_hash for blob cache cleanup"
+                );
+            }
+
+            // Remove health record for this track
+            p2p_node.health_manager().remove_record(content_hash).await;
+        }
+    }
+
     // Delete the track itself
     track::Entity::delete_by_id(id)
         .exec(&state.db)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    // Best-effort: rebuild search index after the track is deleted from DB.
+    // Bloom filters don't support individual removal, so we mark the index
+    // dirty and trigger an async rebuild from the database.
+    if let Some(p2p_node) = get_p2p_node(&state) {
+        p2p_node.search_index().mark_dirty().await;
+        let db = state.db.clone();
+        let search_index = p2p_node.search_index().clone();
+        tokio::spawn(async move {
+            if let Err(e) = search_index.rebuild_from_db(&db).await {
+                tracing::warn!("failed to rebuild search index after track deletion: {e}");
+            }
+        });
+    }
+
+    // Dispatch plugin event (best-effort)
+    if let Some(registry) = super::get_plugin_registry(&state) {
+        let payload = soundtime_plugin::TrackDeletedPayload {
+            track_id: id.to_string(),
+        };
+        let payload_val = serde_json::to_value(&payload).unwrap_or_default();
+        let registry = registry.clone();
+        tokio::spawn(async move {
+            registry.dispatch("on_track_deleted", &payload_val).await;
+        });
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

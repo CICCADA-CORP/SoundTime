@@ -5,7 +5,9 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
+use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, Set};
 use serde::{Deserialize, Serialize};
+use soundtime_db::entities::remote_track;
 use soundtime_db::AppState;
 use soundtime_p2p::{
     get_library_sync_overview, spawn_library_resync, LibrarySyncOverview, LibrarySyncTaskStatus,
@@ -13,6 +15,7 @@ use soundtime_p2p::{
 };
 use soundtime_p2p::{P2pMessage, P2pNode, PeerInfo};
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Helper: extract `Arc<P2pNode>` from type-erased AppState field.
 fn get_p2p_node(state: &AppState) -> Option<Arc<P2pNode>> {
@@ -207,6 +210,12 @@ pub struct NetworkGraphNode {
     pub node_type: String,
     pub label: String,
     pub online: bool,
+    /// Number of tracks on this node (for peers: from Pong data; for self: from DB)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track_count: Option<u64>,
+    /// Software version (for peers: from Pong data)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -242,12 +251,20 @@ pub async fn network_graph(State(state): State<Arc<AppState>>) -> Json<NetworkGr
         &node_id
     };
 
+    // Self node — get local track count
+    let self_track_count = {
+        use soundtime_db::entities::track;
+        track::Entity::find().count(&state.db).await.unwrap_or(0)
+    };
+
     // Self node (always present)
     nodes.push(NetworkGraphNode {
         id: node_id.clone(),
         node_type: "self".to_string(),
         label: format!("Me ({short_id}…)"),
         online: true,
+        track_count: Some(self_track_count),
+        version: Some(soundtime_p2p::build_version().to_string()),
     });
 
     // Relay node
@@ -263,6 +280,8 @@ pub async fn network_graph(State(state): State<Arc<AppState>>) -> Json<NetworkGr
             node_type: "relay".to_string(),
             label: relay_host,
             online: true,
+            track_count: None,
+            version: None,
         });
         links.push(NetworkGraphLink {
             source: node_id.clone(),
@@ -290,6 +309,8 @@ pub async fn network_graph(State(state): State<Arc<AppState>>) -> Json<NetworkGr
             node_type: "peer".to_string(),
             label,
             online: peer.is_online,
+            track_count: Some(peer.track_count),
+            version: peer.version.clone(),
         });
         links.push(NetworkGraphLink {
             source: node_id.clone(),
@@ -428,4 +449,262 @@ pub async fn library_sync_task_dismiss(
     Json(MessageResponse {
         message: "Task status reset".to_string(),
     })
+}
+
+// ── Remote track dereference / rereference ───────────────────────
+
+/// PATCH /api/admin/p2p/tracks/{id}/dereference — mark a remote track as unavailable (admin only)
+pub async fn dereference_remote_track(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<MessageResponse>, (StatusCode, Json<MessageResponse>)> {
+    let track = remote_track::Entity::find_by_id(id)
+        .one(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to query remote track: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(MessageResponse {
+                    message: "Database error".to_string(),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(MessageResponse {
+                    message: format!("Remote track {id} not found"),
+                }),
+            )
+        })?;
+
+    let mut update: remote_track::ActiveModel = track.into();
+    update.is_available = Set(false);
+    update.update(&state.db).await.map_err(|e| {
+        tracing::error!("Failed to dereference remote track {id}: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(MessageResponse {
+                message: "Failed to update remote track".to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(MessageResponse {
+        message: format!("Remote track {id} dereferenced (marked unavailable)"),
+    }))
+}
+
+/// PATCH /api/admin/p2p/tracks/{id}/rereference — mark a remote track as available (admin only)
+pub async fn rereference_remote_track(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<MessageResponse>, (StatusCode, Json<MessageResponse>)> {
+    let track = remote_track::Entity::find_by_id(id)
+        .one(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to query remote track: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(MessageResponse {
+                    message: "Database error".to_string(),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(MessageResponse {
+                    message: format!("Remote track {id} not found"),
+                }),
+            )
+        })?;
+
+    let mut update: remote_track::ActiveModel = track.into();
+    update.is_available = Set(true);
+    update.update(&state.db).await.map_err(|e| {
+        tracing::error!("Failed to rereference remote track {id}: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(MessageResponse {
+                message: "Failed to update remote track".to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(MessageResponse {
+        message: format!("Remote track {id} rereferenced (marked available)"),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 1. P2pStatus serialization (disabled)
+    #[test]
+    fn test_serialize_p2p_status_disabled() {
+        let status = P2pStatus {
+            enabled: false,
+            node_id: None,
+            relay_url: None,
+            relay_connected: false,
+            direct_addresses: 0,
+            peer_count: 0,
+            online_peer_count: 0,
+        };
+        let val = serde_json::to_value(&status).unwrap();
+        assert_eq!(val["enabled"], false);
+        assert!(val["node_id"].is_null());
+    }
+
+    // 2. P2pStatus serialization (enabled)
+    #[test]
+    fn test_serialize_p2p_status_enabled() {
+        let status = P2pStatus {
+            enabled: true,
+            node_id: Some("abc123".to_string()),
+            relay_url: Some("https://relay.example.com".to_string()),
+            relay_connected: true,
+            direct_addresses: 2,
+            peer_count: 5,
+            online_peer_count: 3,
+        };
+        let val = serde_json::to_value(&status).unwrap();
+        assert_eq!(val["enabled"], true);
+        assert_eq!(val["node_id"], "abc123");
+        assert_eq!(val["peer_count"], 5);
+    }
+
+    // 3. AddPeerRequest deserialization
+    #[test]
+    fn test_deserialize_add_peer_request() {
+        let json = r#"{"node_id":"abc123def456"}"#;
+        let req: AddPeerRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.node_id, "abc123def456");
+    }
+
+    // 4. MessageResponse serialization
+    #[test]
+    fn test_serialize_message_response() {
+        let resp = MessageResponse {
+            message: "peer added".to_string(),
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["message"], "peer added");
+    }
+
+    // 5. NetworkGraphNode serialization
+    #[test]
+    fn test_serialize_network_graph_node() {
+        let node = NetworkGraphNode {
+            id: "node123".to_string(),
+            node_type: "peer".to_string(),
+            label: "Peer (node123)".to_string(),
+            online: true,
+            track_count: Some(42),
+            version: Some("0.1.0".to_string()),
+        };
+        let val = serde_json::to_value(&node).unwrap();
+        assert_eq!(val["node_type"], "peer");
+        assert_eq!(val["track_count"], 42);
+    }
+
+    // 6. NetworkGraphNode with skip_serializing_if None
+    #[test]
+    fn test_serialize_network_graph_node_no_optional() {
+        let node = NetworkGraphNode {
+            id: "relay1".to_string(),
+            node_type: "relay".to_string(),
+            label: "Relay".to_string(),
+            online: true,
+            track_count: None,
+            version: None,
+        };
+        let val = serde_json::to_value(&node).unwrap();
+        // track_count and version have skip_serializing_if = "Option::is_none"
+        assert!(val.get("track_count").is_none());
+        assert!(val.get("version").is_none());
+    }
+
+    // 7. NetworkGraphLink serialization
+    #[test]
+    fn test_serialize_network_graph_link() {
+        let link = NetworkGraphLink {
+            source: "node1".to_string(),
+            target: "node2".to_string(),
+            link_type: "peer".to_string(),
+        };
+        let val = serde_json::to_value(&link).unwrap();
+        assert_eq!(val["source"], "node1");
+        assert_eq!(val["link_type"], "peer");
+    }
+
+    // 8. NetworkGraph serialization (empty)
+    #[test]
+    fn test_serialize_network_graph_empty() {
+        let graph = NetworkGraph {
+            nodes: vec![],
+            links: vec![],
+        };
+        let val = serde_json::to_value(&graph).unwrap();
+        assert!(val["nodes"].as_array().unwrap().is_empty());
+        assert!(val["links"].as_array().unwrap().is_empty());
+    }
+
+    // 9. NetworkSearchQuery deserialization
+    #[test]
+    fn test_deserialize_network_search_query() {
+        let json = r#"{"q":"rock music","limit":50}"#;
+        let query: NetworkSearchQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.q, "rock music");
+        assert_eq!(query.limit, Some(50));
+    }
+
+    // 10. NetworkSearchQuery without limit
+    #[test]
+    fn test_deserialize_network_search_query_no_limit() {
+        let json = r#"{"q":"jazz"}"#;
+        let query: NetworkSearchQuery = serde_json::from_str(json).unwrap();
+        assert_eq!(query.q, "jazz");
+        assert_eq!(query.limit, None);
+    }
+
+    // 11. p2p_status returns disabled when no P2P node
+    #[tokio::test]
+    async fn test_p2p_status_disabled() {
+        use axum::{body::Body, http::Request, routing::get, Router};
+        use tower::ServiceExt;
+
+        let state = Arc::new(AppState {
+            db: sea_orm::DatabaseConnection::Disconnected,
+            jwt_secret: "test".to_string(),
+            domain: "localhost".to_string(),
+            storage: Arc::new(soundtime_audio::AudioStorage::new("/tmp/test")),
+            p2p: None,
+            plugins: None,
+        });
+
+        let app = Router::new()
+            .route("/p2p/status", get(p2p_status))
+            .with_state(state);
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/p2p/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(val["enabled"], false);
+        assert!(val["node_id"].is_null());
+    }
 }

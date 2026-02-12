@@ -845,3 +845,50 @@ Respond ONLY with valid JSON in this exact format:
     .await;
     Ok(created_count)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serialize_generate_result() {
+        let result = GenerateResult {
+            playlists_created: 4,
+            message: "4 playlists créées".to_string(),
+        };
+        let val = serde_json::to_value(&result).unwrap();
+        assert_eq!(val["playlists_created"], 4);
+        assert_eq!(val["message"], "4 playlists créées");
+    }
+
+    #[test]
+    fn test_serialize_editorial_status() {
+        let status = EditorialStatus {
+            ai_configured: true,
+            ai_base_url: "https://api.openai.com/v1".to_string(),
+            ai_model: "gpt-4o-mini".to_string(),
+            last_generated: Some("2024-06-01T00:00:00Z".to_string()),
+            playlist_count: 4,
+            needs_regeneration: false,
+        };
+        let val = serde_json::to_value(&status).unwrap();
+        assert_eq!(val["ai_configured"], true);
+        assert_eq!(val["ai_model"], "gpt-4o-mini");
+        assert_eq!(val["playlist_count"], 4);
+    }
+
+    #[test]
+    fn test_serialize_editorial_status_not_configured() {
+        let status = EditorialStatus {
+            ai_configured: false,
+            ai_base_url: "https://api.openai.com/v1".to_string(),
+            ai_model: "gpt-4o-mini".to_string(),
+            last_generated: None,
+            playlist_count: 0,
+            needs_regeneration: false,
+        };
+        let val = serde_json::to_value(&status).unwrap();
+        assert_eq!(val["ai_configured"], false);
+        assert!(val["last_generated"].is_null());
+    }
+}

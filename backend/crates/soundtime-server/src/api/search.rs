@@ -16,6 +16,9 @@ pub struct SearchParams {
     #[allow(dead_code)]
     pub page: Option<u64>,
     pub per_page: Option<u64>,
+    /// When true, also query P2P peers via distributed search
+    #[serde(default)]
+    pub include_p2p: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -25,6 +28,9 @@ pub struct SearchResults {
     pub artists: Vec<super::artists::ArtistResponse>,
     /// Total number of results across all categories
     pub total: usize,
+    /// P2P search results from remote peers (only present when include_p2p=true)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p2p_results: Option<Vec<soundtime_p2p::SearchResultItem>>,
 }
 
 /// Helper: build a tsquery string from user input.
@@ -72,6 +78,7 @@ pub async fn search(
             albums: vec![],
             artists: vec![],
             total: 0,
+            p2p_results: None,
         }));
     }
 
@@ -216,11 +223,35 @@ pub async fn search(
 
     let total = tracks.len() + albums.len() + artists.len();
 
+    // ── P2P search (optional) ──
+    let p2p_results = if params.include_p2p.unwrap_or(false) {
+        // Extract P2P node from state
+        let p2p_node: Option<Arc<soundtime_p2p::P2pNode>> = state
+            .p2p
+            .as_ref()
+            .and_then(|any| any.clone().downcast::<soundtime_p2p::P2pNode>().ok());
+
+        if let Some(node) = p2p_node {
+            let p2p_limit = limit.min(20) as u32;
+            let results = node.distributed_search(q_trimmed, p2p_limit).await;
+            if results.is_empty() {
+                None
+            } else {
+                Some(results)
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     Ok(Json(SearchResults {
         tracks,
         albums,
         artists,
         total,
+        p2p_results,
     }))
 }
 
@@ -253,6 +284,7 @@ mod tests {
             albums: vec![],
             artists: vec![],
             total: 0,
+            p2p_results: None,
         };
         let json = serde_json::to_value(&results).unwrap();
         assert!(json["tracks"].as_array().unwrap().is_empty());

@@ -7,6 +7,7 @@
   import SearchBar from "$lib/components/SearchBar.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
+  import { getThemeStore } from "$lib/stores/theme.svelte";
   import { api } from "$lib/api";
   import type { SetupStatus } from "$lib/types";
   import { t } from "$lib/i18n/index.svelte";
@@ -32,6 +33,7 @@
 
   const auth = getAuthStore();
   const player = getPlayerStore();
+  const theme = getThemeStore();
 
   let setupChecked = $state(false);
   let instancePrivate = $state(false);
@@ -51,6 +53,7 @@
     }
     setupChecked = true;
     auth.init();
+    theme.init();
   });
 
   // Close sidebar on navigation
@@ -58,6 +61,15 @@
     void $page.url.pathname;
     sidebarOpen = false;
     mobileSearchOpen = false;
+  });
+
+  // Reactively inject/remove theme stylesheet
+  $effect(() => {
+    if (theme.activeTheme) {
+      theme.injectTheme();
+    } else {
+      theme.removeTheme();
+    }
   });
 
   // Reactive guard: redirect to login if instance is private and user not authenticated

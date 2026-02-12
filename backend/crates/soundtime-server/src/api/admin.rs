@@ -971,3 +971,288 @@ pub async fn storage_task_status(
         None => Json(serde_json::json!({ "status": "idle" })),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 1. SettingResponse serialization
+    #[test]
+    fn test_serialize_setting_response() {
+        let resp = SettingResponse {
+            key: "foo".to_string(),
+            value: "bar".to_string(),
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["key"], "foo");
+        assert_eq!(val["value"], "bar");
+    }
+
+    // 2. BlockedDomainResponse serialization
+    #[test]
+    fn test_serialize_blocked_domain_response() {
+        let resp = BlockedDomainResponse {
+            id: Uuid::new_v4(),
+            domain: "evil.com".to_string(),
+            reason: Some("spam".to_string()),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["domain"], "evil.com");
+        assert_eq!(val["reason"], "spam");
+    }
+
+    // 3. AdminStats serialization
+    #[test]
+    fn test_serialize_admin_stats() {
+        let stats = AdminStats {
+            total_users: 42,
+            total_tracks: 100,
+            total_blocked_domains: 3,
+            total_remote_tracks: 50,
+            p2p_enabled: true,
+            p2p_node_id: Some("abc123".to_string()),
+        };
+        let val = serde_json::to_value(&stats).unwrap();
+        assert_eq!(val["total_users"], 42);
+        assert_eq!(val["p2p_enabled"], true);
+        assert_eq!(val["p2p_node_id"], "abc123");
+    }
+
+    // 4. AdminStats without P2P
+    #[test]
+    fn test_serialize_admin_stats_no_p2p() {
+        let stats = AdminStats {
+            total_users: 1,
+            total_tracks: 0,
+            total_blocked_domains: 0,
+            total_remote_tracks: 0,
+            p2p_enabled: false,
+            p2p_node_id: None,
+        };
+        let val = serde_json::to_value(&stats).unwrap();
+        assert_eq!(val["p2p_enabled"], false);
+        assert!(val["p2p_node_id"].is_null());
+    }
+
+    // 5. NodeInfo serialization
+    #[test]
+    fn test_serialize_node_info() {
+        let info = NodeInfo {
+            name: "My Instance".to_string(),
+            description: "A test instance".to_string(),
+            version: "0.1.0".to_string(),
+            track_count: 100,
+            user_count: 10,
+            open_registration: true,
+            p2p_enabled: false,
+            p2p_node_id: None,
+        };
+        let val = serde_json::to_value(&info).unwrap();
+        assert_eq!(val["name"], "My Instance");
+        assert_eq!(val["version"], "0.1.0");
+        assert_eq!(val["open_registration"], true);
+    }
+
+    // 6. ImportResult serialization
+    #[test]
+    fn test_serialize_import_result() {
+        let result = ImportResult {
+            imported: 5,
+            skipped: 2,
+        };
+        let val = serde_json::to_value(&result).unwrap();
+        assert_eq!(val["imported"], 5);
+        assert_eq!(val["skipped"], 2);
+    }
+
+    // 7. KnownInstance serialization
+    #[test]
+    fn test_serialize_known_instance() {
+        let inst = KnownInstance {
+            domain: "other.example.com".to_string(),
+            track_count: 42,
+            is_blocked: false,
+        };
+        let val = serde_json::to_value(&inst).unwrap();
+        assert_eq!(val["domain"], "other.example.com");
+        assert_eq!(val["track_count"], 42);
+        assert_eq!(val["is_blocked"], false);
+    }
+
+    // 8. UserResponse serialization
+    #[test]
+    fn test_serialize_user_response() {
+        let resp = UserResponse {
+            id: Uuid::new_v4(),
+            username: "alice".to_string(),
+            email: "alice@example.com".to_string(),
+            display_name: Some("Alice".to_string()),
+            role: "admin".to_string(),
+            is_banned: false,
+            ban_reason: None,
+            banned_at: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["username"], "alice");
+        assert_eq!(val["role"], "admin");
+        assert!(!val["is_banned"].as_bool().unwrap());
+    }
+
+    // 9. UpdateUserRoleRequest deserialization
+    #[test]
+    fn test_deserialize_update_user_role_request() {
+        let json = r#"{"role":"admin"}"#;
+        let req: UpdateUserRoleRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.role, "admin");
+    }
+
+    // 10. BanUserRequest deserialization
+    #[test]
+    fn test_deserialize_ban_user_request() {
+        let json = r#"{"reason":"spam"}"#;
+        let req: BanUserRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.reason, Some("spam".to_string()));
+    }
+
+    // 11. BanUserRequest without reason
+    #[test]
+    fn test_deserialize_ban_user_request_no_reason() {
+        let json = r#"{}"#;
+        let req: BanUserRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.reason, None);
+    }
+
+    // 12. MetadataStatusResponse serialization
+    #[test]
+    fn test_serialize_metadata_status_response() {
+        let resp = MetadataStatusResponse {
+            total_tracks: 100,
+            enriched_tracks: 80,
+            pending_tracks: 20,
+            tracks_with_bitrate: 95,
+            total_albums: 10,
+            albums_with_cover: 8,
+            total_remote_tracks: 50,
+            available_remote_tracks: 45,
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["total_tracks"], 100);
+        assert_eq!(val["pending_tracks"], 20);
+    }
+
+    // 13. StorageStatusResponse serialization
+    #[test]
+    fn test_serialize_storage_status_response() {
+        let resp = StorageStatusResponse {
+            backend: "local".to_string(),
+            total_tracks: 50,
+            total_size_bytes: 1_000_000,
+            storage_path_or_bucket: "/data/music".to_string(),
+            remote_track_count: 20,
+            remote_available_count: 15,
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["backend"], "local");
+        assert_eq!(val["total_size_bytes"], 1_000_000);
+    }
+
+    // 14. RemoteTrackResponse serialization
+    #[test]
+    fn test_serialize_remote_track_response() {
+        let resp = RemoteTrackResponse {
+            id: Uuid::new_v4(),
+            local_track_id: None,
+            title: "Song".to_string(),
+            artist_name: "Artist".to_string(),
+            album_title: Some("Album".to_string()),
+            instance_domain: "other.com".to_string(),
+            remote_uri: "https://other.com/api/audio/stream/123".to_string(),
+            bitrate: Some(320),
+            sample_rate: Some(44100),
+            format: Some("mp3".to_string()),
+            is_available: true,
+            last_checked_at: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["title"], "Song");
+        assert_eq!(val["bitrate"], 320);
+        assert!(val["local_track_id"].is_null());
+    }
+
+    // 15. update_user_role invalid role validation (runs BEFORE DB access)
+    #[tokio::test]
+    async fn test_update_user_role_invalid_role() {
+        use axum::{body::Body, http::Request, routing::put, Router};
+        use tower::ServiceExt;
+
+        fn test_state() -> Arc<AppState> {
+            Arc::new(AppState {
+                db: sea_orm::DatabaseConnection::Disconnected,
+                jwt_secret: "test-secret".to_string(),
+                domain: "localhost".to_string(),
+                storage: Arc::new(soundtime_audio::AudioStorage::new("/tmp/test")),
+                p2p: None,
+                plugins: None,
+            })
+        }
+
+        let state = test_state();
+        let app = Router::new()
+            .route("/users/{id}/role", put(update_user_role))
+            .with_state(state);
+
+        let user_id = Uuid::new_v4();
+        let req = Request::builder()
+            .method("PUT")
+            .uri(format!("/users/{user_id}/role"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"role":"superadmin"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // 16. UpdateSettingRequest deserialization
+    #[test]
+    fn test_deserialize_update_setting_request() {
+        let json = r#"{"value":"new_value"}"#;
+        let req: UpdateSettingRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.value, "new_value");
+    }
+
+    // 17. BlockDomainRequest deserialization
+    #[test]
+    fn test_deserialize_block_domain_request() {
+        let json = r#"{"domain":"bad.com","reason":"malware"}"#;
+        let req: BlockDomainRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.domain, "bad.com");
+        assert_eq!(req.reason, Some("malware".to_string()));
+    }
+
+    // 18. ImportDomainEntry deserialization
+    #[test]
+    fn test_deserialize_import_domain_entry() {
+        let json = r#"{"domain":"spam.org","reason":null}"#;
+        let entry: ImportDomainEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.domain, "spam.org");
+        assert_eq!(entry.reason, None);
+    }
+
+    // 19. get_p2p_node returns None when state.p2p is None
+    #[test]
+    fn test_get_p2p_node_returns_none() {
+        let state = AppState {
+            db: sea_orm::DatabaseConnection::Disconnected,
+            jwt_secret: "test".to_string(),
+            domain: "localhost".to_string(),
+            storage: Arc::new(soundtime_audio::AudioStorage::new("/tmp/test")),
+            p2p: None,
+            plugins: None,
+        };
+        assert!(get_p2p_node(&state).is_none());
+    }
+}

@@ -1,11 +1,11 @@
 <script lang="ts">
   import { getAuthStore } from "$lib/stores/auth.svelte";
-  import { api } from "$lib/api";
+  import { api, pluginApi, themeApi } from "$lib/api";
   import { t } from "$lib/i18n/index.svelte";
   import {
     LayoutDashboard, Settings, Users, Database, Sparkles,
     Radio, Globe, Network, Ban, Flag, FileText,
-    HardDrive, ShieldCheck, FolderSync, Music, Share2, ScrollText, RefreshCw
+    HardDrive, ShieldCheck, FolderSync, Music, Share2, ScrollText, RefreshCw, Puzzle, Palette
   } from "lucide-svelte";
   import NetworkGraph from "$lib/components/NetworkGraph.svelte";
   import type {
@@ -36,6 +36,10 @@
     ListingStatus,
     LibrarySyncOverview,
     LibrarySyncTaskStatus,
+    Plugin,
+    PluginConfig,
+    PluginEventLog,
+    Theme,
   } from "$lib/types";
 
   const auth = getAuthStore();
@@ -115,6 +119,27 @@
   let librarySyncPolling = $state(false);
   let librarySyncResyncingPeer = $state<string | null>(null);
 
+  // Plugin state
+  let plugins = $state<Plugin[]>([]);
+  let pluginInstallUrl = $state("");
+  let pluginInstalling = $state(false);
+  let pluginUpdating = $state<string | null>(null);
+  let selectedPlugin = $state<Plugin | null>(null);
+  let pluginConfig = $state<PluginConfig[]>([]);
+  let pluginLogs = $state<PluginEventLog[]>([]);
+  let pluginLogsTotal = $state(0);
+  let pluginLogsPage = $state(1);
+  let pluginConfigNewKey = $state("");
+  let pluginConfigNewValue = $state("");
+  let pluginSuccess = $state("");
+
+  // Theme state
+  let themes = $state<Theme[]>([]);
+  let themeInstallUrl = $state("");
+  let themeInstalling = $state(false);
+  let themeUpdating = $state<string | null>(null);
+  let themeSuccess = $state("");
+
   /** Poll /admin/storage/task-status until the background task finishes. */
   async function pollTaskStatus(kind: "sync" | "integrity") {
     const POLL_INTERVAL = 1500; // ms
@@ -186,6 +211,8 @@
         { id: "overview", label: t("admin.tab.overview"), icon: LayoutDashboard },
         { id: "settings", label: t("admin.tab.settings"), icon: Settings },
         { id: "users", label: t("admin.tab.users"), icon: Users },
+        { id: "plugins", label: t("admin.tab.plugins"), icon: Puzzle },
+        { id: "themes", label: t("admin.tab.themes"), icon: Palette },
       ],
     },
     {
@@ -314,6 +341,22 @@
           break;
         case "sync":
           storageStatus = await api.get<StorageStatus>("/admin/storage/status");
+          break;
+        case "plugins":
+          try {
+            const pluginResp = await pluginApi.list();
+            plugins = pluginResp.plugins;
+          } catch {
+            plugins = [];
+          }
+          break;
+        case "themes":
+          try {
+            const themeResp = await themeApi.list();
+            themes = themeResp.themes;
+          } catch {
+            themes = [];
+          }
           break;
       }
     } catch (e: any) {
@@ -580,6 +623,163 @@
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`;
     if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} Go`;
+  }
+
+  // ── Plugin functions ───────────────────────────────────────────
+
+  async function installPlugin() {
+    if (!pluginInstallUrl.trim()) return;
+    pluginInstalling = true;
+    pluginSuccess = "";
+    error = null;
+    try {
+      const newPlugin = await pluginApi.install(pluginInstallUrl.trim());
+      plugins = [newPlugin, ...plugins];
+      pluginInstallUrl = "";
+      pluginSuccess = t("admin.plugins.installSuccess");
+    } catch (e: any) {
+      error = e.message || t("admin.plugins.installError");
+    } finally {
+      pluginInstalling = false;
+    }
+  }
+
+  async function enablePlugin(id: string) {
+    try {
+      await pluginApi.enable(id);
+      plugins = plugins.map(p => p.id === id ? { ...p, status: "enabled" as const } : p);
+      pluginSuccess = t("admin.plugins.enableSuccess");
+    } catch (e: any) { error = e.message; }
+  }
+
+  async function disablePlugin(id: string) {
+    if (!confirm(t("admin.plugins.confirmDisable"))) return;
+    try {
+      await pluginApi.disable(id);
+      plugins = plugins.map(p => p.id === id ? { ...p, status: "disabled" as const } : p);
+      pluginSuccess = t("admin.plugins.disableSuccess");
+    } catch (e: any) { error = e.message; }
+  }
+
+  async function uninstallPlugin(id: string) {
+    if (!confirm(t("admin.plugins.confirmUninstall"))) return;
+    try {
+      await pluginApi.uninstall(id);
+      plugins = plugins.filter(p => p.id !== id);
+      if (selectedPlugin?.id === id) selectedPlugin = null;
+      pluginSuccess = t("admin.plugins.uninstallSuccess");
+    } catch (e: any) { error = e.message; }
+  }
+
+  async function updatePlugin(id: string) {
+    pluginUpdating = id;
+    try {
+      const updated = await pluginApi.update(id);
+      plugins = plugins.map(p => p.id === id ? updated : p);
+      if (selectedPlugin?.id === id) selectedPlugin = updated;
+      pluginSuccess = t("admin.plugins.updateSuccess");
+    } catch (e: any) { error = e.message; }
+    finally { pluginUpdating = null; }
+  }
+
+  async function loadPluginConfig(plugin: Plugin) {
+    selectedPlugin = plugin;
+    pluginConfigNewKey = "";
+    pluginConfigNewValue = "";
+    try {
+      const resp = await pluginApi.getConfig(plugin.id);
+      pluginConfig = resp.config;
+    } catch { pluginConfig = []; }
+    try {
+      const logResp = await pluginApi.getLogs(plugin.id, 1, 20);
+      pluginLogs = logResp.logs;
+      pluginLogsTotal = logResp.total;
+      pluginLogsPage = 1;
+    } catch { pluginLogs = []; pluginLogsTotal = 0; }
+  }
+
+  async function savePluginConfig() {
+    if (!selectedPlugin) return;
+    try {
+      await pluginApi.updateConfig(selectedPlugin.id, pluginConfig);
+      pluginSuccess = t("admin.plugins.configSaved");
+    } catch (e: any) { error = e.message; }
+  }
+
+  function addPluginConfigEntry() {
+    if (!pluginConfigNewKey.trim()) return;
+    pluginConfig = [...pluginConfig, { key: pluginConfigNewKey.trim(), value: pluginConfigNewValue }];
+    pluginConfigNewKey = "";
+    pluginConfigNewValue = "";
+  }
+
+  function removePluginConfigEntry(key: string) {
+    pluginConfig = pluginConfig.filter(c => c.key !== key);
+  }
+
+  async function loadPluginLogs(page: number) {
+    if (!selectedPlugin) return;
+    try {
+      const resp = await pluginApi.getLogs(selectedPlugin.id, page, 20);
+      pluginLogs = resp.logs;
+      pluginLogsTotal = resp.total;
+      pluginLogsPage = page;
+    } catch { /* silent */ }
+  }
+
+  // ── Theme functions ─────────────────────────────────────────────
+
+  async function installTheme() {
+    if (!themeInstallUrl.trim()) return;
+    themeInstalling = true;
+    themeSuccess = "";
+    error = null;
+    try {
+      const newTheme = await themeApi.install(themeInstallUrl.trim());
+      themes = [newTheme, ...themes];
+      themeInstallUrl = "";
+      themeSuccess = t("admin.themes.installSuccess");
+    } catch (e: any) {
+      error = e.message || t("admin.themes.installError");
+    } finally {
+      themeInstalling = false;
+    }
+  }
+
+  async function enableTheme(id: string) {
+    try {
+      const updated = await themeApi.enable(id);
+      themes = themes.map(th => th.id === id ? updated : { ...th, status: "disabled" as const });
+      themeSuccess = t("admin.themes.enableSuccess");
+    } catch (e: any) { error = e.message; }
+  }
+
+  async function disableTheme(id: string) {
+    if (!confirm(t("admin.themes.confirmDisable"))) return;
+    try {
+      const updated = await themeApi.disable(id);
+      themes = themes.map(th => th.id === id ? updated : th);
+      themeSuccess = t("admin.themes.disableSuccess");
+    } catch (e: any) { error = e.message; }
+  }
+
+  async function uninstallTheme(id: string) {
+    if (!confirm(t("admin.themes.confirmUninstall"))) return;
+    try {
+      await themeApi.uninstall(id);
+      themes = themes.filter(th => th.id !== id);
+      themeSuccess = t("admin.themes.uninstallSuccess");
+    } catch (e: any) { error = e.message; }
+  }
+
+  async function updateTheme(id: string) {
+    themeUpdating = id;
+    try {
+      const updated = await themeApi.update(id);
+      themes = themes.map(th => th.id === id ? updated : th);
+      themeSuccess = t("admin.themes.updateSuccess");
+    } catch (e: any) { error = e.message; }
+    finally { themeUpdating = null; }
   }
 
   function switchTab(tab: string) {
@@ -1072,6 +1272,7 @@
                   <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">{t('admin.remote.colFormat')}</th>
                   <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">{t('admin.remote.colAvailable')}</th>
                   <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">{t('admin.remote.colLinked')}</th>
+                  <th class="text-center p-3 text-[hsl(var(--muted-foreground))]">{t('admin.remote.colActions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1100,6 +1301,33 @@
                         <span class="text-blue-400 text-xs" title="{t('admin.remote.colLinked')}">{t('common.yes')}</span>
                       {:else}
                         <span class="text-[hsl(var(--muted-foreground))] text-xs">{t('common.no')}</span>
+                      {/if}
+                    </td>
+                    <td class="p-3 text-center">
+                      {#if rt.is_available}
+                        <button
+                          class="text-xs text-red-400 hover:text-red-300 font-medium transition"
+                          onclick={async () => {
+                            try {
+                              await api.patch(`/admin/p2p/tracks/${rt.id}/dereference`);
+                              rt.is_available = false;
+                            } catch (e) { console.error(e); }
+                          }}
+                        >
+                          {t('admin.remote.dereference')}
+                        </button>
+                      {:else}
+                        <button
+                          class="text-xs text-green-400 hover:text-green-300 font-medium transition"
+                          onclick={async () => {
+                            try {
+                              await api.patch(`/admin/p2p/tracks/${rt.id}/rereference`);
+                              rt.is_available = true;
+                            } catch (e) { console.error(e); }
+                          }}
+                        >
+                          {t('admin.remote.rereference')}
+                        </button>
                       {/if}
                     </td>
                   </tr>
@@ -2436,6 +2664,369 @@
             {/if}
           {/if}
         </div>
+      </div>
+      {/if}
+
+      <!-- Plugins -->
+      {#if activeTab === "plugins"}
+      <div class="space-y-6">
+        {#if pluginSuccess}
+          <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-4 text-green-400">
+            {pluginSuccess}
+            <button class="ml-2 underline" onclick={() => (pluginSuccess = "")}>{t('common.close')}</button>
+          </div>
+        {/if}
+
+        <!-- Install form -->
+        <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6">
+          <h2 class="text-lg font-semibold mb-1">{t('admin.plugins.install')}</h2>
+          <p class="text-sm text-[hsl(var(--muted-foreground))] mb-4">{t('admin.plugins.installDescription')}</p>
+          <div class="flex gap-3">
+            <input
+              type="url"
+              bind:value={pluginInstallUrl}
+              placeholder={t('admin.plugins.gitUrlPlaceholder')}
+              class="flex-1 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-4 py-2 text-sm"
+            />
+            <button
+              class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
+              disabled={pluginInstalling || !pluginInstallUrl.trim()}
+              onclick={installPlugin}
+            >
+              {pluginInstalling ? t('admin.plugins.installing') : t('admin.plugins.install')}
+            </button>
+          </div>
+        </div>
+
+        <!-- Plugin list -->
+        {#if plugins.length === 0}
+          <div class="text-center py-12 text-[hsl(var(--muted-foreground))]">
+            <Puzzle size={48} class="mx-auto mb-4 opacity-30" />
+            <p class="font-medium">{t('admin.plugins.noPlugins')}</p>
+            <p class="text-sm mt-1">{t('admin.plugins.noPluginsHint')}</p>
+          </div>
+        {:else}
+          <div class="space-y-3">
+            {#each plugins as plugin (plugin.id)}
+              <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-5">
+                <div class="flex items-start justify-between">
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-3">
+                      <h3 class="font-semibold text-base">{plugin.name}</h3>
+                      <span class="text-xs font-mono text-[hsl(var(--muted-foreground))]">v{plugin.version}</span>
+                      <span class="px-2 py-0.5 rounded-full text-xs font-medium {
+                        plugin.status === 'enabled' ? 'bg-green-500/15 text-green-400' :
+                        plugin.status === 'error' ? 'bg-red-500/15 text-red-400' :
+                        'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
+                      }">
+                        {t(`admin.plugins.status.${plugin.status}`)}
+                      </span>
+                    </div>
+                    {#if plugin.description}
+                      <p class="text-sm text-[hsl(var(--muted-foreground))] mt-1">{plugin.description}</p>
+                    {/if}
+                    <div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-[hsl(var(--muted-foreground))] mt-2">
+                      {#if plugin.author}<span>{t('admin.plugins.author')}: {plugin.author}</span>{/if}
+                      {#if plugin.license}<span>{t('admin.plugins.license')}: {plugin.license}</span>{/if}
+                      {#if plugin.homepage}<a href={plugin.homepage} target="_blank" rel="noopener" class="underline hover:text-[hsl(var(--foreground))]">{t('admin.plugins.homepage')}</a>{/if}
+                      <span>{t('admin.plugins.installedAt')}: {new Date(plugin.installed_at).toLocaleDateString()}</span>
+                    </div>
+                    {#if plugin.status === "error" && plugin.error_message}
+                      <p class="text-xs text-red-400 mt-2 font-mono">{plugin.error_message}</p>
+                    {/if}
+                  </div>
+                  <div class="flex items-center gap-2 ml-4 shrink-0">
+                    {#if plugin.status === "disabled" || plugin.status === "error"}
+                      <button
+                        class="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-medium hover:opacity-90 transition"
+                        onclick={() => enablePlugin(plugin.id)}
+                      >{t('admin.plugins.enable')}</button>
+                    {:else}
+                      <button
+                        class="px-3 py-1.5 bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-lg text-xs font-medium hover:opacity-90 transition"
+                        onclick={() => disablePlugin(plugin.id)}
+                      >{t('admin.plugins.disable')}</button>
+                    {/if}
+                    <button
+                      class="px-3 py-1.5 bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-lg text-xs font-medium hover:opacity-90 transition disabled:opacity-50"
+                      disabled={pluginUpdating === plugin.id}
+                      onclick={() => updatePlugin(plugin.id)}
+                    >{pluginUpdating === plugin.id ? t('admin.plugins.updating') : t('admin.plugins.update')}</button>
+                    <button
+                      class="px-3 py-1.5 bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-lg text-xs font-medium hover:opacity-90 transition"
+                      onclick={() => loadPluginConfig(plugin)}
+                    >{t('admin.plugins.configure')}</button>
+                    <button
+                      class="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:opacity-90 transition"
+                      onclick={() => uninstallPlugin(plugin.id)}
+                    >{t('admin.plugins.uninstall')}</button>
+                  </div>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        <!-- Plugin detail panel (config + logs) -->
+        {#if selectedPlugin}
+          <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6 space-y-6">
+            <div class="flex items-center justify-between">
+              <h2 class="text-lg font-semibold">{selectedPlugin.name} — {t('admin.plugins.configure')}</h2>
+              <button class="text-sm text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] underline" onclick={() => (selectedPlugin = null)}>{t('common.close')}</button>
+            </div>
+
+            <!-- Permissions -->
+            <div>
+              <h3 class="text-sm font-medium mb-2">{t('admin.plugins.permissions')}</h3>
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+                {#if selectedPlugin.permissions.http_hosts.length > 0}
+                  <div class="bg-[hsl(var(--secondary))] rounded px-3 py-2">
+                    <span class="text-[hsl(var(--muted-foreground))]">{t('admin.plugins.httpHosts')}:</span>
+                    <span class="ml-1 font-mono">{selectedPlugin.permissions.http_hosts.join(", ")}</span>
+                  </div>
+                {/if}
+                {#if selectedPlugin.permissions.events.length > 0}
+                  <div class="bg-[hsl(var(--secondary))] rounded px-3 py-2">
+                    <span class="text-[hsl(var(--muted-foreground))]">{t('admin.plugins.events')}:</span>
+                    <span class="ml-1 font-mono">{selectedPlugin.permissions.events.join(", ")}</span>
+                  </div>
+                {/if}
+                {#if selectedPlugin.permissions.write_tracks}
+                  <div class="bg-yellow-500/10 border border-yellow-500/30 rounded px-3 py-2">{t('admin.plugins.writeTracks')}: ✓</div>
+                {/if}
+                {#if selectedPlugin.permissions.config_access}
+                  <div class="bg-[hsl(var(--secondary))] rounded px-3 py-2">{t('admin.plugins.configAccess')}: ✓</div>
+                {/if}
+                {#if selectedPlugin.permissions.read_users}
+                  <div class="bg-yellow-500/10 border border-yellow-500/30 rounded px-3 py-2">{t('admin.plugins.readUsers')}: ✓</div>
+                {/if}
+              </div>
+            </div>
+
+            <!-- Configuration editor -->
+            <div>
+              <h3 class="text-sm font-medium mb-2">{t('admin.plugins.config')}</h3>
+              {#if pluginConfig.length === 0}
+                <p class="text-sm text-[hsl(var(--muted-foreground))]">{t('admin.plugins.noConfig')}</p>
+                <p class="text-xs text-[hsl(var(--muted-foreground))] mt-1">{t('admin.plugins.noConfigHint')}</p>
+              {:else}
+                <div class="space-y-2">
+                  {#each pluginConfig as entry, i}
+                    <div class="flex gap-2 items-center">
+                      <input
+                        type="text"
+                        value={entry.key}
+                        readonly
+                        class="w-1/3 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded px-3 py-1.5 text-xs font-mono"
+                      />
+                      <input
+                        type="text"
+                        bind:value={pluginConfig[i].value}
+                        class="flex-1 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded px-3 py-1.5 text-xs"
+                      />
+                      <button
+                        class="text-red-400 hover:text-red-300 text-xs"
+                        onclick={() => removePluginConfigEntry(entry.key)}
+                      >{t('common.delete')}</button>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+              <div class="flex gap-2 items-center mt-3">
+                <input
+                  type="text"
+                  bind:value={pluginConfigNewKey}
+                  placeholder={t('admin.plugins.addConfigKey')}
+                  class="w-1/3 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded px-3 py-1.5 text-xs"
+                />
+                <input
+                  type="text"
+                  bind:value={pluginConfigNewValue}
+                  placeholder={t('admin.plugins.addConfigValue')}
+                  class="flex-1 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded px-3 py-1.5 text-xs"
+                />
+                <button
+                  class="px-3 py-1.5 bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded text-xs font-medium hover:opacity-90 transition"
+                  onclick={addPluginConfigEntry}
+                >{t('admin.plugins.addConfig')}</button>
+              </div>
+              <button
+                class="mt-3 px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition"
+                onclick={savePluginConfig}
+              >{t('admin.plugins.saveConfig')}</button>
+            </div>
+
+            <!-- Event logs -->
+            <div>
+              <h3 class="text-sm font-medium mb-2">{t('admin.plugins.logs')} ({pluginLogsTotal})</h3>
+              {#if pluginLogs.length === 0}
+                <p class="text-sm text-[hsl(var(--muted-foreground))]">{t('admin.plugins.noLogs')}</p>
+                <p class="text-xs text-[hsl(var(--muted-foreground))] mt-1">{t('admin.plugins.noLogsHint')}</p>
+              {:else}
+                <div class="overflow-x-auto">
+                  <table class="w-full text-xs">
+                    <thead>
+                      <tr class="border-b border-[hsl(var(--border))]">
+                        <th class="text-left py-2 px-2 font-medium text-[hsl(var(--muted-foreground))]">{t('admin.plugins.eventName')}</th>
+                        <th class="text-left py-2 px-2 font-medium text-[hsl(var(--muted-foreground))]">{t('admin.plugins.result')}</th>
+                        <th class="text-right py-2 px-2 font-medium text-[hsl(var(--muted-foreground))]">{t('admin.plugins.executionTime')}</th>
+                        <th class="text-right py-2 px-2 font-medium text-[hsl(var(--muted-foreground))]">Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {#each pluginLogs as log (log.id)}
+                        <tr class="border-b border-[hsl(var(--border))]/50">
+                          <td class="py-2 px-2 font-mono">{log.event_name}</td>
+                          <td class="py-2 px-2">
+                            <span class="px-1.5 py-0.5 rounded text-[10px] font-medium {
+                              log.result === 'success' ? 'bg-green-500/15 text-green-400' :
+                              log.result === 'error' ? 'bg-red-500/15 text-red-400' :
+                              'bg-yellow-500/15 text-yellow-400'
+                            }">{log.result}</span>
+                          </td>
+                          <td class="py-2 px-2 text-right font-mono">{log.execution_time_ms}ms</td>
+                          <td class="py-2 px-2 text-right text-[hsl(var(--muted-foreground))]">{new Date(log.created_at).toLocaleString()}</td>
+                        </tr>
+                        {#if log.error_message}
+                          <tr><td colspan="4" class="px-2 pb-2 text-red-400 font-mono text-[10px]">{log.error_message}</td></tr>
+                        {/if}
+                      {/each}
+                    </tbody>
+                  </table>
+                </div>
+                {#if pluginLogsTotal > 20}
+                  <div class="flex justify-center gap-2 mt-3">
+                    <button
+                      class="px-3 py-1 bg-[hsl(var(--secondary))] rounded text-xs disabled:opacity-50"
+                      disabled={pluginLogsPage <= 1}
+                      onclick={() => loadPluginLogs(pluginLogsPage - 1)}
+                    >← {t('admin.reports.previous')}</button>
+                    <span class="text-xs text-[hsl(var(--muted-foreground))] py-1">{pluginLogsPage} / {Math.ceil(pluginLogsTotal / 20)}</span>
+                    <button
+                      class="px-3 py-1 bg-[hsl(var(--secondary))] rounded text-xs disabled:opacity-50"
+                      disabled={pluginLogsPage >= Math.ceil(pluginLogsTotal / 20)}
+                      onclick={() => loadPluginLogs(pluginLogsPage + 1)}
+                    >{t('admin.reports.next')} →</button>
+                  </div>
+                {/if}
+              {/if}
+            </div>
+          </div>
+        {/if}
+      </div>
+      {/if}
+
+      {#if activeTab === "themes"}
+      <div class="space-y-6">
+        <h2 class="text-xl font-semibold">{t("admin.themes.title")}</h2>
+
+        <!-- Success banner -->
+        {#if themeSuccess}
+          <div class="bg-green-500/10 border border-green-500/30 text-green-400 px-4 py-3 rounded-lg text-sm">
+            {themeSuccess}
+          </div>
+        {/if}
+
+        <!-- Install form -->
+        <div class="bg-[hsl(var(--card))] rounded-xl p-5 border border-[hsl(var(--border))]">
+          <h3 class="text-sm font-medium mb-1">{t("admin.themes.install")}</h3>
+          <p class="text-xs text-[hsl(var(--muted-foreground))] mb-3">{t("admin.themes.installDescription")}</p>
+          <div class="flex gap-2">
+            <input
+              type="text"
+              bind:value={themeInstallUrl}
+              placeholder={t("admin.themes.gitUrlPlaceholder")}
+              class="flex-1 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary))]"
+            />
+            <button
+              onclick={installTheme}
+              disabled={themeInstalling || !themeInstallUrl.trim()}
+              class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
+            >
+              {themeInstalling ? t("admin.themes.installing") : t("admin.themes.install")}
+            </button>
+          </div>
+        </div>
+
+        <!-- Theme list -->
+        {#if themes.length === 0}
+          <div class="text-center py-12 text-[hsl(var(--muted-foreground))]">
+            <Palette class="w-12 h-12 mx-auto mb-3 opacity-40" />
+            <p class="font-medium">{t("admin.themes.noThemes")}</p>
+            <p class="text-sm mt-1">{t("admin.themes.noThemesHint")}</p>
+          </div>
+        {:else}
+          <div class="space-y-3">
+            {#each themes as theme (theme.id)}
+              <div class="bg-[hsl(var(--card))] rounded-xl p-5 border border-[hsl(var(--border))]">
+                <div class="flex items-start justify-between gap-4">
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <h3 class="font-medium">{theme.name}</h3>
+                      <span class="text-xs text-[hsl(var(--muted-foreground))]">v{theme.version}</span>
+                      {#if theme.status === "enabled"}
+                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 font-medium">
+                          {t("admin.themes.activeIndicator")}
+                        </span>
+                      {:else}
+                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] font-medium">
+                          {t("admin.themes.status.disabled")}
+                        </span>
+                      {/if}
+                    </div>
+                    {#if theme.description}
+                      <p class="text-sm text-[hsl(var(--muted-foreground))] mt-1">{theme.description}</p>
+                    {/if}
+                    <div class="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-[hsl(var(--muted-foreground))]">
+                      {#if theme.author}
+                        <span>{t("admin.themes.author")}: {theme.author}</span>
+                      {/if}
+                      {#if theme.license}
+                        <span>{t("admin.themes.license")}: {theme.license}</span>
+                      {/if}
+                      {#if theme.homepage}
+                        <a href={theme.homepage} target="_blank" rel="noopener noreferrer" class="text-[hsl(var(--primary))] hover:underline">
+                          {t("admin.themes.homepage")}
+                        </a>
+                      {/if}
+                      <span>{t("admin.themes.installedAt")}: {new Date(theme.installed_at).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2 flex-shrink-0">
+                    {#if theme.status === "disabled"}
+                      <button
+                        onclick={() => enableTheme(theme.id)}
+                        class="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-medium hover:opacity-90 transition"
+                      >
+                        {t("admin.themes.enable")}
+                      </button>
+                    {:else}
+                      <button
+                        onclick={() => disableTheme(theme.id)}
+                        class="px-3 py-1.5 bg-[hsl(var(--secondary))] rounded-lg text-xs font-medium hover:opacity-80 transition"
+                      >
+                        {t("admin.themes.disable")}
+                      </button>
+                    {/if}
+                    <button
+                      onclick={() => updateTheme(theme.id)}
+                      disabled={themeUpdating === theme.id}
+                      class="px-3 py-1.5 bg-[hsl(var(--secondary))] rounded-lg text-xs font-medium hover:opacity-80 transition disabled:opacity-50"
+                    >
+                      {themeUpdating === theme.id ? t("admin.themes.updating") : t("admin.themes.update")}
+                    </button>
+                    <button
+                      onclick={() => uninstallTheme(theme.id)}
+                      class="px-3 py-1.5 bg-red-600/20 text-red-400 rounded-lg text-xs font-medium hover:bg-red-600/30 transition"
+                    >
+                      {t("admin.themes.uninstall")}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
       {/if}
 

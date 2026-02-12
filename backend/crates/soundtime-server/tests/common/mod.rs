@@ -1,6 +1,6 @@
 // Shared test utilities for integration tests
-use soundtime_db::AppState;
 use soundtime_audio::AudioStorage;
+use soundtime_db::AppState;
 use std::sync::Arc;
 
 /// Create a test AppState with a mock database and temporary storage
@@ -11,6 +11,7 @@ pub fn test_app_state(db: sea_orm::DatabaseConnection, tmp_dir: &std::path::Path
         domain: "test.soundtime.local".to_string(),
         storage: Arc::new(AudioStorage::new(tmp_dir)),
         p2p: None,
+        plugins: None,
     })
 }
 

@@ -253,3 +253,93 @@ async fn fetch_lyricscom_lyrics(
         source: Some("lyricscom".to_string()),
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serialize_lyrics_response_with_lyrics() {
+        let resp = LyricsResponse {
+            lyrics: Some("Hello, world!".to_string()),
+            source: Some("musixmatch".to_string()),
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["lyrics"], "Hello, world!");
+        assert_eq!(val["source"], "musixmatch");
+    }
+
+    #[test]
+    fn test_serialize_lyrics_response_empty() {
+        let resp = LyricsResponse {
+            lyrics: None,
+            source: None,
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert!(val["lyrics"].is_null());
+        assert!(val["source"].is_null());
+    }
+
+    #[test]
+    fn test_deserialize_musixmatch_response() {
+        let json = r#"{
+            "message": {
+                "header": {"status_code": 200},
+                "body": {
+                    "lyrics": {
+                        "lyrics_body": "Some lyrics here"
+                    }
+                }
+            }
+        }"#;
+        let resp: MusixmatchResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.message.header.status_code, 200);
+        assert_eq!(
+            resp.message
+                .body
+                .unwrap()
+                .lyrics
+                .unwrap()
+                .lyrics_body
+                .unwrap(),
+            "Some lyrics here"
+        );
+    }
+
+    #[test]
+    fn test_deserialize_musixmatch_response_no_lyrics() {
+        let json = r#"{
+            "message": {
+                "header": {"status_code": 404},
+                "body": null
+            }
+        }"#;
+        let resp: MusixmatchResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.message.header.status_code, 404);
+        assert!(resp.message.body.is_none());
+    }
+
+    #[test]
+    fn test_deserialize_lyricscom_response_with_lyrics() {
+        let json = r#"{"lyric": "Hello world", "err": null}"#;
+        let resp: LyricsComResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.lyric, Some("Hello world".to_string()));
+        assert!(resp.err.is_none());
+    }
+
+    #[test]
+    fn test_deserialize_lyricscom_response_with_error() {
+        let json = r#"{"lyric": null, "err": "not found"}"#;
+        let resp: LyricsComResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.lyric.is_none());
+        assert_eq!(resp.err, Some("not found".to_string()));
+    }
+
+    #[test]
+    fn test_deserialize_lyricscom_response_empty() {
+        let json = r#"{}"#;
+        let resp: LyricsComResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.lyric.is_none());
+        assert!(resp.err.is_none());
+    }
+}

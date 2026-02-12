@@ -115,3 +115,43 @@ pub async fn get_library(
         tracks,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serialize_library_response() {
+        let now = chrono::Utc::now().fixed_offset();
+        let resp = LibraryResponse {
+            id: Uuid::new_v4(),
+            name: "My Library".to_string(),
+            description: Some("A test library".to_string()),
+            user_id: Uuid::new_v4(),
+            is_public: true,
+            total_tracks: 42,
+            created_at: now,
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["name"], "My Library");
+        assert_eq!(val["total_tracks"], 42);
+        assert_eq!(val["is_public"], true);
+    }
+
+    #[test]
+    fn test_serialize_library_response_no_description() {
+        let now = chrono::Utc::now().fixed_offset();
+        let resp = LibraryResponse {
+            id: Uuid::new_v4(),
+            name: "Empty".to_string(),
+            description: None,
+            user_id: Uuid::new_v4(),
+            is_public: false,
+            total_tracks: 0,
+            created_at: now,
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert!(val["description"].is_null());
+        assert_eq!(val["is_public"], false);
+    }
+}

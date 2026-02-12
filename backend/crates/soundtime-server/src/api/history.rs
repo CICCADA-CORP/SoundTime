@@ -110,5 +110,36 @@ pub async fn log_listen(
         let _ = update.update(&state.db).await;
     }
 
+    // Dispatch plugin event (best-effort)
+    if let Some(registry) = super::get_plugin_registry(&state) {
+        let payload = soundtime_plugin::TrackPlayedPayload {
+            track_id: body.track_id.to_string(),
+            user_id: auth_user.0.sub.to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        };
+        let payload_val = serde_json::to_value(&payload).unwrap_or_default();
+        let registry = registry.clone();
+        tokio::spawn(async move {
+            registry.dispatch("on_track_played", &payload_val).await;
+        });
+    }
+
     Ok(StatusCode::CREATED)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_log_listen_request() {
+        let json =
+            r#"{"track_id":"550e8400-e29b-41d4-a716-446655440000","duration_listened":120.5}"#;
+        let req: LogListenRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            req.track_id.to_string(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+        assert!((req.duration_listened - 120.5).abs() < f32::EPSILON);
+    }
 }

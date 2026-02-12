@@ -650,3 +650,250 @@ pub async fn reset_tos(
         serde_json::json!({ "message": "Conditions d'utilisation réinitialisées au modèle par défaut." }),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 1. ReportRequest deserialization
+    #[test]
+    fn test_deserialize_report_request() {
+        let json = r#"{"reason":"copyright violation"}"#;
+        let req: ReportRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.reason, "copyright violation");
+    }
+
+    // 2. ReportResponse serialization
+    #[test]
+    fn test_serialize_report_response() {
+        let id = Uuid::new_v4();
+        let resp = ReportResponse {
+            id,
+            message: "ok".to_string(),
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["message"], "ok");
+        assert!(val["id"].is_string());
+    }
+
+    // 3. ResolveReportRequest deserialization
+    #[test]
+    fn test_deserialize_resolve_report_request() {
+        let json = r#"{"action":"resolved","track_action":"delete","admin_note":"spam"}"#;
+        let req: ResolveReportRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.action, "resolved");
+        assert_eq!(req.track_action, Some("delete".to_string()));
+        assert_eq!(req.admin_note, Some("spam".to_string()));
+    }
+
+    // 4. ResolveReportRequest with optional fields absent
+    #[test]
+    fn test_deserialize_resolve_report_request_minimal() {
+        let json = r#"{"action":"dismissed"}"#;
+        let req: ResolveReportRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.action, "dismissed");
+        assert_eq!(req.track_action, None);
+        assert_eq!(req.admin_note, None);
+    }
+
+    // 5. TosResponse serialization
+    #[test]
+    fn test_serialize_tos_response() {
+        let resp = TosResponse {
+            content: "# ToS".to_string(),
+            is_default: true,
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["content"], "# ToS");
+        assert_eq!(val["is_default"], true);
+    }
+
+    // 6. UpdateTosRequest deserialization
+    #[test]
+    fn test_deserialize_update_tos_request() {
+        let json = r#"{"content":"new terms"}"#;
+        let req: UpdateTosRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.content, "new terms");
+    }
+
+    // 7. AdminReportResponse serialization (complex struct)
+    #[test]
+    fn test_serialize_admin_report_response() {
+        let now = chrono::Utc::now().fixed_offset();
+        let resp = AdminReportResponse {
+            id: Uuid::new_v4(),
+            track_id: Uuid::new_v4(),
+            track_title: "Song".to_string(),
+            track_artist: "Artist".to_string(),
+            is_local: true,
+            reporter_username: "user1".to_string(),
+            reason: "spam".to_string(),
+            status: "pending".to_string(),
+            admin_note: None,
+            created_at: now,
+            resolved_at: None,
+        };
+        let val = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["track_title"], "Song");
+        assert_eq!(val["status"], "pending");
+        assert!(val["admin_note"].is_null());
+        assert!(val["resolved_at"].is_null());
+    }
+
+    // 8. DEFAULT_TOS constant is not empty
+    #[test]
+    fn test_default_tos_not_empty() {
+        assert!(!DEFAULT_TOS.is_empty());
+        assert!(DEFAULT_TOS.contains("SoundTime"));
+    }
+
+    // 9. TrackBrowseParams deserialization
+    #[test]
+    fn test_deserialize_track_browse_params() {
+        let json = r#"{"page":2,"per_page":50,"search":"rock"}"#;
+        let params: TrackBrowseParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.page, Some(2));
+        assert_eq!(params.per_page, Some(50));
+        assert_eq!(params.search, Some("rock".to_string()));
+    }
+
+    // 10. report_track reason validation — empty reason
+    #[tokio::test]
+    async fn test_report_track_empty_reason() {
+        use axum::{body::Body, http::Request, routing::post, Extension, Router};
+        use crate::auth::jwt::{Claims, TokenType};
+        use crate::auth::middleware::AuthUser;
+        use tower::ServiceExt;
+
+        fn test_state() -> Arc<AppState> {
+            Arc::new(AppState {
+                db: sea_orm::DatabaseConnection::Disconnected,
+                jwt_secret: "test-secret".to_string(),
+                domain: "localhost".to_string(),
+                storage: Arc::new(soundtime_audio::AudioStorage::new("/tmp/test")),
+                p2p: None,
+                plugins: None,
+            })
+        }
+
+        let state = test_state();
+        let claims = Claims {
+            sub: Uuid::new_v4(),
+            username: "testuser".to_string(),
+            role: "user".to_string(),
+            token_type: TokenType::Access,
+            iat: 0,
+            exp: 9999999999,
+        };
+
+        let app = Router::new()
+            .route("/report/{track_id}", post(report_track))
+            .layer(Extension(AuthUser(claims)))
+            .with_state(state);
+
+        let track_id = Uuid::new_v4();
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/report/{track_id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"reason":""}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // 11. report_track reason too long
+    #[tokio::test]
+    async fn test_report_track_reason_too_long() {
+        use axum::{body::Body, http::Request, routing::post, Extension, Router};
+        use crate::auth::jwt::{Claims, TokenType};
+        use crate::auth::middleware::AuthUser;
+        use tower::ServiceExt;
+
+        fn test_state() -> Arc<AppState> {
+            Arc::new(AppState {
+                db: sea_orm::DatabaseConnection::Disconnected,
+                jwt_secret: "test-secret".to_string(),
+                domain: "localhost".to_string(),
+                storage: Arc::new(soundtime_audio::AudioStorage::new("/tmp/test")),
+                p2p: None,
+                plugins: None,
+            })
+        }
+
+        let state = test_state();
+        let claims = Claims {
+            sub: Uuid::new_v4(),
+            username: "testuser".to_string(),
+            role: "user".to_string(),
+            token_type: TokenType::Access,
+            iat: 0,
+            exp: 9999999999,
+        };
+
+        let app = Router::new()
+            .route("/report/{track_id}", post(report_track))
+            .layer(Extension(AuthUser(claims)))
+            .with_state(state);
+
+        let track_id = Uuid::new_v4();
+        let long_reason = "x".repeat(501);
+        let body = serde_json::json!({"reason": long_reason}).to_string();
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/report/{track_id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // 12. report_track whitespace-only reason (trim → empty)
+    #[tokio::test]
+    async fn test_report_track_whitespace_reason() {
+        use axum::{body::Body, http::Request, routing::post, Extension, Router};
+        use crate::auth::jwt::{Claims, TokenType};
+        use crate::auth::middleware::AuthUser;
+        use tower::ServiceExt;
+
+        fn test_state() -> Arc<AppState> {
+            Arc::new(AppState {
+                db: sea_orm::DatabaseConnection::Disconnected,
+                jwt_secret: "test-secret".to_string(),
+                domain: "localhost".to_string(),
+                storage: Arc::new(soundtime_audio::AudioStorage::new("/tmp/test")),
+                p2p: None,
+                plugins: None,
+            })
+        }
+
+        let state = test_state();
+        let claims = Claims {
+            sub: Uuid::new_v4(),
+            username: "testuser".to_string(),
+            role: "user".to_string(),
+            token_type: TokenType::Access,
+            iat: 0,
+            exp: 9999999999,
+        };
+
+        let app = Router::new()
+            .route("/report/{track_id}", post(report_track))
+            .layer(Extension(AuthUser(claims)))
+            .with_state(state);
+
+        let track_id = Uuid::new_v4();
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/report/{track_id}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"reason":"   "}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}

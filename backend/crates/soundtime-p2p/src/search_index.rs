@@ -10,8 +10,11 @@
 //! query to every peer, we only query peers whose Bloom filter matches.
 
 use bloomfilter::Bloom;
+use sea_orm::{DatabaseConnection, EntityTrait, PaginatorTrait};
 use serde::{Deserialize, Serialize};
+use soundtime_db::entities::{album, artist, track};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
@@ -19,6 +22,8 @@ use tracing::{debug, info};
 const DEFAULT_BLOOM_CAPACITY: usize = 100_000;
 /// Target false positive rate (1%).
 const FALSE_POSITIVE_RATE: f64 = 0.01;
+/// Page size for paginated database queries during rebuild.
+const REBUILD_PAGE_SIZE: u64 = 1000;
 
 /// Compact serializable representation of a Bloom filter for network exchange.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -51,6 +56,9 @@ pub struct SearchIndex {
     local_item_count: RwLock<u64>,
     /// Bloom filters received from peers, keyed by NodeId
     peer_indexes: RwLock<HashMap<String, PeerSearchIndex>>,
+    /// Flag indicating the Bloom filter needs a full rebuild (e.g. after a track deletion).
+    /// Bloom filters don't support removal, so deletions require a complete rebuild.
+    dirty: AtomicBool,
 }
 
 impl SearchIndex {
@@ -63,6 +71,7 @@ impl SearchIndex {
             )),
             local_item_count: RwLock::new(0),
             peer_indexes: RwLock::new(HashMap::new()),
+            dirty: AtomicBool::new(false),
         }
     }
 
@@ -241,6 +250,137 @@ impl SearchIndex {
             terms = *count,
             "rebuilt local bloom filter"
         );
+    }
+
+    /// Rebuild the local Bloom filter from the database using paginated queries.
+    ///
+    /// Instead of loading all tracks into memory at once, this fetches pages of
+    /// `REBUILD_PAGE_SIZE` records at a time to avoid OOM on large instances.
+    /// Resets the dirty flag on success.
+    pub async fn rebuild_from_db(&self, db: &DatabaseConnection) -> Result<(), sea_orm::DbErr> {
+        // First, count total tracks to size the Bloom filter appropriately.
+        let total_tracks = track::Entity::find().count(db).await?;
+
+        let mut bloom = self.local_bloom.write().await;
+        let mut count = self.local_item_count.write().await;
+
+        // Reset the Bloom filter with capacity based on actual track count.
+        *bloom = Bloom::new_for_fp_rate(
+            (total_tracks as usize).max(DEFAULT_BLOOM_CAPACITY),
+            FALSE_POSITIVE_RATE,
+        );
+        *count = 0;
+
+        let num_pages = if total_tracks == 0 {
+            0
+        } else {
+            total_tracks.div_ceil(REBUILD_PAGE_SIZE)
+        };
+
+        for page_num in 0..num_pages {
+            let tracks_with_artists: Vec<(track::Model, Option<artist::Model>)> =
+                track::Entity::find()
+                    .find_also_related(artist::Entity)
+                    .paginate(db, REBUILD_PAGE_SIZE)
+                    .fetch_page(page_num)
+                    .await?;
+
+            for (t, artist_opt) in &tracks_with_artists {
+                let artist_name = artist_opt
+                    .as_ref()
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default();
+
+                // Fetch album title if available (individual query per track with album).
+                let album_title = if let Some(album_id) = t.album_id {
+                    album::Entity::find_by_id(album_id)
+                        .one(db)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|a| a.title)
+                } else {
+                    None
+                };
+
+                for term in Self::normalize_terms(&t.title) {
+                    bloom.set(&term);
+                    *count += 1;
+                }
+                for term in Self::normalize_terms(&artist_name) {
+                    bloom.set(&term);
+                    *count += 1;
+                }
+                if let Some(ref alb) = album_title {
+                    for term in Self::normalize_terms(alb) {
+                        bloom.set(&term);
+                        *count += 1;
+                    }
+                }
+            }
+
+            debug!(
+                page = page_num,
+                tracks_in_page = tracks_with_artists.len(),
+                "processed search index page"
+            );
+        }
+
+        // Clear the dirty flag after a successful full rebuild.
+        self.dirty.store(false, Ordering::Release);
+
+        info!(
+            tracks = total_tracks,
+            terms = *count,
+            "rebuilt local bloom filter from database (paginated)"
+        );
+
+        Ok(())
+    }
+
+    /// Add a single track's tokens to the search index without a full rebuild.
+    ///
+    /// Called immediately when a new track is added to the local catalog so it
+    /// becomes visible to peers without waiting for the next exchange cycle.
+    pub async fn add_track_tokens(&self, title: &str, artist: &str, album: Option<&str>) {
+        let mut bloom = self.local_bloom.write().await;
+        let mut count = self.local_item_count.write().await;
+
+        for term in Self::normalize_terms(title) {
+            bloom.set(&term);
+            *count += 1;
+        }
+        for term in Self::normalize_terms(artist) {
+            bloom.set(&term);
+            *count += 1;
+        }
+        if let Some(alb) = album {
+            for term in Self::normalize_terms(alb) {
+                bloom.set(&term);
+                *count += 1;
+            }
+        }
+
+        debug!(
+            title = title,
+            artist = artist,
+            "added track tokens to search index"
+        );
+    }
+
+    /// Mark the search index as dirty, requiring a full rebuild.
+    ///
+    /// Bloom filters don't support removal, so when a track is deleted this
+    /// flag is set. The next exchange cycle (or an explicit rebuild) should
+    /// call `rebuild_from_db` to create a clean Bloom filter.
+    pub async fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Release);
+        info!("search index marked dirty — full rebuild needed");
+    }
+
+    /// Check whether the index has been marked dirty and needs a full rebuild.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.load(Ordering::Acquire)
     }
 }
 
@@ -677,5 +817,80 @@ mod tests {
         let debug = format!("{:?}", psi);
         assert!(debug.contains("PeerSearchIndex"));
         assert!(debug.contains("test_node"));
+    }
+
+    // ── add_track_tokens ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_add_track_tokens_basic() {
+        let idx = SearchIndex::new();
+        idx.add_track_tokens("Bohemian Rhapsody", "Queen", Some("A Night at the Opera"))
+            .await;
+
+        assert!(idx.local_might_match("bohemian").await);
+        assert!(idx.local_might_match("queen").await);
+        assert!(idx.local_might_match("opera").await);
+    }
+
+    #[tokio::test]
+    async fn test_add_track_tokens_no_album() {
+        let idx = SearchIndex::new();
+        idx.add_track_tokens("Take Five", "Dave Brubeck", None)
+            .await;
+
+        assert!(idx.local_might_match("five").await);
+        assert!(idx.local_might_match("brubeck").await);
+    }
+
+    #[tokio::test]
+    async fn test_add_track_tokens_incremental() {
+        let idx = SearchIndex::new();
+        idx.add_track_tokens("Song A", "Artist X", None).await;
+        idx.add_track_tokens("Song B", "Artist Y", None).await;
+
+        // Both tracks should be searchable
+        assert!(idx.local_might_match("song").await);
+        assert!(idx.local_might_match("artist").await);
+    }
+
+    #[tokio::test]
+    async fn test_add_track_tokens_updates_count() {
+        let idx = SearchIndex::new();
+        let before = *idx.local_item_count.read().await;
+        idx.add_track_tokens("Hello World", "Test Artist", None)
+            .await;
+        let after = *idx.local_item_count.read().await;
+        assert!(after > before);
+    }
+
+    // ── mark_dirty / is_dirty ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_mark_dirty_and_is_dirty() {
+        let idx = SearchIndex::new();
+        // New index is not dirty
+        assert!(!idx.is_dirty());
+
+        idx.mark_dirty().await;
+        assert!(idx.is_dirty());
+    }
+
+    #[tokio::test]
+    async fn test_dirty_cleared_by_rebuild_from_tracks() {
+        let idx = SearchIndex::new();
+        idx.mark_dirty().await;
+        assert!(idx.is_dirty());
+
+        // rebuild_from_tracks does NOT clear the dirty flag (only rebuild_from_db does)
+        let tracks = vec![("Song".to_string(), "Artist".to_string(), None)];
+        idx.rebuild_from_tracks(&tracks).await;
+        // dirty flag is still set because rebuild_from_tracks doesn't clear it
+        assert!(idx.is_dirty());
+    }
+
+    #[test]
+    fn test_is_dirty_default_false() {
+        let idx = SearchIndex::new();
+        assert!(!idx.is_dirty());
     }
 }

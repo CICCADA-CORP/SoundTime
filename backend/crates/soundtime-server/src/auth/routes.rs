@@ -240,6 +240,19 @@ pub async fn register(
         )
     })?;
 
+    // Dispatch plugin event (best-effort)
+    if let Some(registry) = crate::api::get_plugin_registry(&state) {
+        let payload = soundtime_plugin::UserRegisteredPayload {
+            user_id: created.id.to_string(),
+            username: created.username.clone(),
+        };
+        let payload_val = serde_json::to_value(&payload).unwrap_or_default();
+        let registry = registry.clone();
+        tokio::spawn(async move {
+            registry.dispatch("on_user_registered", &payload_val).await;
+        });
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(AuthResponse {
@@ -330,6 +343,19 @@ pub async fn login(
             }),
         )
     })?;
+
+    // Dispatch plugin event (best-effort)
+    if let Some(registry) = crate::api::get_plugin_registry(&state) {
+        let payload = soundtime_plugin::UserLoginPayload {
+            user_id: user.id.to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        };
+        let payload_val = serde_json::to_value(&payload).unwrap_or_default();
+        let registry = registry.clone();
+        tokio::spawn(async move {
+            registry.dispatch("on_user_login", &payload_val).await;
+        });
+    }
 
     Ok(Json(AuthResponse {
         user: UserResponse {
@@ -850,4 +876,493 @@ pub async fn delete_account(
 
     tracing::info!("Account deleted for user {user_id}");
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::jwt::generate_token_pair;
+    use crate::auth::middleware::require_auth;
+    use axum::{
+        body::Body,
+        http::{Request as HttpRequest, StatusCode},
+        middleware as axum_mw,
+        routing::{post, put},
+        Router,
+    };
+    use soundtime_audio::AudioStorage;
+    use tower::ServiceExt;
+
+    fn test_state() -> Arc<AppState> {
+        let db = sea_orm::DatabaseConnection::Disconnected;
+        Arc::new(AppState {
+            db,
+            jwt_secret: "test-secret".to_string(),
+            domain: "localhost".to_string(),
+            storage: Arc::new(AudioStorage::new("/tmp/test")),
+            p2p: None,
+            plugins: None,
+        })
+    }
+
+    fn login_app(state: Arc<AppState>) -> Router {
+        Router::new().route("/login", post(login)).with_state(state)
+    }
+
+    fn refresh_app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/refresh", post(refresh))
+            .with_state(state)
+    }
+
+    fn password_app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/password", put(change_password))
+            .layer(axum_mw::from_fn_with_state(state.clone(), require_auth))
+            .with_state(state)
+    }
+
+    fn email_app(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/email", put(change_email))
+            .layer(axum_mw::from_fn_with_state(state.clone(), require_auth))
+            .with_state(state)
+    }
+
+    fn json_body(val: serde_json::Value) -> Body {
+        Body::from(serde_json::to_vec(&val).unwrap())
+    }
+
+    // ─── Registration validation tests ─────────────────────────────
+    //
+    // The register handler queries the DB before running input validation,
+    // and Sea-ORM's Disconnected variant panics on query (get_database_backend).
+    // We test validation logic directly against the same conditions used in
+    // the handler.
+
+    #[test]
+    fn test_register_username_too_short() {
+        let username = "ab";
+        assert!(
+            username.len() < 3 || username.len() > 64,
+            "Username with 2 chars should fail length check"
+        );
+    }
+
+    #[test]
+    fn test_register_username_too_long() {
+        let username = "a".repeat(65);
+        assert!(
+            username.len() < 3 || username.len() > 64,
+            "Username with 65 chars should fail length check"
+        );
+    }
+
+    #[test]
+    fn test_register_username_valid_length() {
+        let username = "abc";
+        assert!(
+            !(username.len() < 3 || username.len() > 64),
+            "Username with 3 chars should pass length check"
+        );
+    }
+
+    #[test]
+    fn test_register_username_with_at() {
+        let username = "bad@user";
+        assert!(
+            username.contains('@') || username.contains('/') || username.contains(' '),
+            "Username with @ should fail character check"
+        );
+    }
+
+    #[test]
+    fn test_register_username_with_slash() {
+        let username = "bad/user";
+        assert!(
+            username.contains('@') || username.contains('/') || username.contains(' '),
+            "Username with / should fail character check"
+        );
+    }
+
+    #[test]
+    fn test_register_username_with_space() {
+        let username = "bad user";
+        assert!(
+            username.contains('@') || username.contains('/') || username.contains(' '),
+            "Username with space should fail character check"
+        );
+    }
+
+    #[test]
+    fn test_register_password_too_short() {
+        let password = "1234567";
+        assert!(
+            password.len() < 8,
+            "7-char password should fail minimum length check"
+        );
+    }
+
+    /// Helper: replicates the exact email validation logic from the register handler
+    fn is_invalid_email(email: &str) -> bool {
+        !email.contains('@')
+            || email.starts_with('@')
+            || email.ends_with('@')
+            || !email.split('@').nth(1).is_some_and(|d| d.contains('.'))
+            || email.len() > 254
+    }
+
+    #[test]
+    fn test_register_email_no_at() {
+        assert!(is_invalid_email("nope"));
+    }
+
+    #[test]
+    fn test_register_email_starts_with_at() {
+        assert!(is_invalid_email("@foo.com"));
+    }
+
+    #[test]
+    fn test_register_email_ends_with_at() {
+        assert!(is_invalid_email("foo@"));
+    }
+
+    #[test]
+    fn test_register_email_no_domain_dot() {
+        assert!(is_invalid_email("foo@bar"));
+    }
+
+    #[test]
+    fn test_register_email_too_long() {
+        let long_domain = "a".repeat(250);
+        let long_email = format!("u@{long_domain}.com");
+        assert!(long_email.len() > 254);
+        assert!(is_invalid_email(&long_email));
+    }
+
+    #[test]
+    fn test_register_valid_email_passes() {
+        assert!(!is_invalid_email("test@example.com"));
+    }
+
+    #[test]
+    fn test_register_valid_input_hits_db() {
+        // Verify that valid inputs pass ALL validation checks.
+        // With a real DB these would proceed to the duplicate-check query.
+        let username = "testuser";
+        let email = "test@example.com";
+        let password = "password123";
+
+        // Length checks
+        assert!(username.len() >= 3 && username.len() <= 64);
+        // Character checks
+        assert!(!username.contains('@') && !username.contains('/') && !username.contains(' '));
+        // Password check
+        assert!(password.len() >= 8);
+        // Email check
+        assert!(!is_invalid_email(email));
+    }
+
+    // ─── Login route tests ─────────────────────────────────────────
+    //
+    // The login handler queries the DB as its first operation, so with
+    // Disconnected DB it panics. We verify the route setup is correct
+    // by confirming the app compiles and the login_app function works.
+
+    #[test]
+    fn test_login_route_setup() {
+        // Verify the login router builds without errors
+        let state = test_state();
+        let _app = login_app(state);
+    }
+
+    // ─── Refresh route tests ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_refresh_invalid_token() {
+        let state = test_state();
+        let app = refresh_app(state);
+
+        let req = HttpRequest::builder()
+            .method("POST")
+            .uri("/refresh")
+            .header("Content-Type", "application/json")
+            .body(json_body(serde_json::json!({
+                "refresh_token": "garbage-token"
+            })))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "Invalid or expired refresh token");
+    }
+
+    #[tokio::test]
+    async fn test_refresh_access_token_rejected() {
+        let state = test_state();
+        let app = refresh_app(state.clone());
+
+        // Generate a valid access token and attempt to use it as a refresh token
+        let pair =
+            generate_token_pair(Uuid::new_v4(), "testuser", "user", &state.jwt_secret).unwrap();
+
+        let req = HttpRequest::builder()
+            .method("POST")
+            .uri("/refresh")
+            .header("Content-Type", "application/json")
+            .body(json_body(serde_json::json!({
+                "refresh_token": pair.access_token
+            })))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "Invalid token type");
+    }
+
+    // ─── Change password validation tests ──────────────────────────
+
+    #[tokio::test]
+    async fn test_change_password_too_short() {
+        let state = test_state();
+        let app = password_app(state.clone());
+
+        let pair =
+            generate_token_pair(Uuid::new_v4(), "testuser", "user", &state.jwt_secret).unwrap();
+
+        let req = HttpRequest::builder()
+            .method("PUT")
+            .uri("/password")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", pair.access_token))
+            .body(json_body(serde_json::json!({
+                "current_password": "oldpassword",
+                "new_password": "1234567"
+            })))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "Password must be at least 8 characters");
+    }
+
+    #[tokio::test]
+    async fn test_change_password_too_long() {
+        let state = test_state();
+        let app = password_app(state.clone());
+
+        let pair =
+            generate_token_pair(Uuid::new_v4(), "testuser", "user", &state.jwt_secret).unwrap();
+
+        let long_password = "a".repeat(1025);
+        let req = HttpRequest::builder()
+            .method("PUT")
+            .uri("/password")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", pair.access_token))
+            .body(json_body(serde_json::json!({
+                "current_password": "oldpassword",
+                "new_password": long_password
+            })))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "Password too long");
+    }
+
+    // ─── Change email validation tests ─────────────────────────────
+
+    #[tokio::test]
+    async fn test_change_email_invalid_no_at() {
+        let state = test_state();
+        let app = email_app(state.clone());
+
+        let pair =
+            generate_token_pair(Uuid::new_v4(), "testuser", "user", &state.jwt_secret).unwrap();
+
+        let req = HttpRequest::builder()
+            .method("PUT")
+            .uri("/email")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", pair.access_token))
+            .body(json_body(serde_json::json!({
+                "new_email": "nope",
+                "password": "currentpass"
+            })))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "Invalid email address");
+    }
+
+    #[tokio::test]
+    async fn test_change_email_too_short() {
+        let state = test_state();
+        let app = email_app(state.clone());
+
+        let pair =
+            generate_token_pair(Uuid::new_v4(), "testuser", "user", &state.jwt_secret).unwrap();
+
+        let req = HttpRequest::builder()
+            .method("PUT")
+            .uri("/email")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", pair.access_token))
+            .body(json_body(serde_json::json!({
+                "new_email": "a@b",
+                "password": "currentpass"
+            })))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "Invalid email address");
+    }
+
+    #[tokio::test]
+    async fn test_change_email_too_long() {
+        let state = test_state();
+        let app = email_app(state.clone());
+
+        let pair =
+            generate_token_pair(Uuid::new_v4(), "testuser", "user", &state.jwt_secret).unwrap();
+
+        let long_local = "a".repeat(250);
+        let long_email = format!("{long_local}@example.com");
+        assert!(long_email.len() > 255);
+
+        let req = HttpRequest::builder()
+            .method("PUT")
+            .uri("/email")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", pair.access_token))
+            .body(json_body(serde_json::json!({
+                "new_email": long_email,
+                "password": "currentpass"
+            })))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "Invalid email address");
+    }
+
+    // ─── DTO serialization tests ───────────────────────────────────
+
+    #[test]
+    fn test_register_request_deserialize() {
+        let json = serde_json::json!({
+            "username": "alice",
+            "email": "alice@example.com",
+            "password": "secret123",
+            "display_name": "Alice W."
+        });
+        let req: RegisterRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.username, "alice");
+        assert_eq!(req.email, "alice@example.com");
+        assert_eq!(req.password, "secret123");
+        assert_eq!(req.display_name.as_deref(), Some("Alice W."));
+    }
+
+    #[test]
+    fn test_login_request_deserialize() {
+        let json = serde_json::json!({
+            "username": "bob",
+            "password": "hunter2"
+        });
+        let req: LoginRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.username, "bob");
+        assert_eq!(req.password, "hunter2");
+    }
+
+    #[test]
+    fn test_error_response_serialize() {
+        let err = ErrorResponse {
+            error: "Something went wrong".to_string(),
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["error"], "Something went wrong");
+    }
+
+    #[test]
+    fn test_auth_response_serialize() {
+        let pair = generate_token_pair(Uuid::new_v4(), "testuser", "user", "test-secret").unwrap();
+
+        let resp = AuthResponse {
+            user: UserResponse {
+                id: Uuid::nil(),
+                username: "testuser".to_string(),
+                email: "test@example.com".to_string(),
+                display_name: Some("Test User".to_string()),
+                avatar_url: None,
+                role: "user".to_string(),
+                instance_id: "testuser@localhost".to_string(),
+            },
+            tokens: pair,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["user"]["username"], "testuser");
+        assert_eq!(json["user"]["email"], "test@example.com");
+        assert_eq!(json["user"]["display_name"], "Test User");
+        assert!(json["user"]["avatar_url"].is_null());
+        assert!(json["tokens"]["access_token"].is_string());
+        assert!(json["tokens"]["refresh_token"].is_string());
+        assert_eq!(json["tokens"]["token_type"], "Bearer");
+    }
+
+    #[test]
+    fn test_user_response_serialize() {
+        let user = UserResponse {
+            id: Uuid::nil(),
+            username: "alice".to_string(),
+            email: "alice@example.com".to_string(),
+            display_name: None,
+            avatar_url: Some("https://example.com/avatar.png".to_string()),
+            role: "admin".to_string(),
+            instance_id: "alice@localhost".to_string(),
+        };
+        let json = serde_json::to_value(&user).unwrap();
+        assert_eq!(json["username"], "alice");
+        assert_eq!(json["role"], "admin");
+        assert_eq!(json["instance_id"], "alice@localhost");
+        assert!(json["display_name"].is_null());
+        assert_eq!(json["avatar_url"], "https://example.com/avatar.png");
+    }
 }

@@ -6,7 +6,9 @@
 //! bloom-filter search routing, and
 //! distributed search across the network.
 
+pub mod blob_cache;
 pub mod blocked;
+pub mod connection_pool;
 pub mod discovery;
 pub mod error;
 pub mod library_sync;
@@ -15,6 +17,8 @@ pub mod node;
 pub mod search_index;
 pub mod track_health;
 
+pub use blob_cache::BlobCache;
+pub use connection_pool::ConnectionPool;
 pub use discovery::{PeerInfo, PeerRegistry};
 pub use error::P2pError;
 pub use library_sync::{

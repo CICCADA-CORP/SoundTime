@@ -8,6 +8,8 @@
     node_type: "self" | "peer" | "relay";
     label: string;
     online: boolean;
+    track_count?: number;
+    version?: string;
   }
 
   interface GraphLink extends d3.SimulationLinkDatum<GraphNode> {
@@ -190,9 +192,24 @@
       .attr("stroke", "hsl(var(--card))")
       .attr("stroke-width", 1.5);
 
+    // Track count badge on peer/self nodes
+    node.filter(d => d.node_type !== "relay" && d.track_count !== undefined)
+      .append("text")
+      .attr("x", 0)
+      .attr("y", d => getNodeRadius(d.node_type) + 26)
+      .attr("text-anchor", "middle")
+      .attr("font-size", "9px")
+      .attr("fill", "hsl(var(--muted-foreground))")
+      .text(d => `${d.track_count} tracks`);
+
     // Tooltip on hover
     node.append("title")
-      .text(d => `${d.label}\n${d.node_type.toUpperCase()}${d.online ? "" : " (offline)"}\nID: ${d.id}`);
+      .text(d => {
+        let tip = `${d.label}\n${d.node_type.toUpperCase()}${d.online ? "" : " (offline)"}\nID: ${d.id}`;
+        if (d.track_count !== undefined) tip += `\nTracks: ${d.track_count}`;
+        if (d.version) tip += `\nVersion: ${d.version}`;
+        return tip;
+      });
 
     simulation.on("tick", () => {
       link

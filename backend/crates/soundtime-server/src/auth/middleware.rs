@@ -208,6 +208,7 @@ mod tests {
             domain: "localhost".to_string(),
             storage: Arc::new(AudioStorage::new("/tmp/test-middleware")),
             p2p: None,
+            plugins: None,
         })
     }
 

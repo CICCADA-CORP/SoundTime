@@ -127,6 +127,21 @@ pub fn new_sync_tracker() -> SyncTaskHandle {
     Arc::new(Mutex::new(LibrarySyncTaskStatus::Idle))
 }
 
+// ─── Helpers ─────────────────────────────────────────────────────────
+
+/// Normalize a node ID for comparison with the `instance_domain` column.
+///
+/// `instance_domain` stores values like `"p2p://node_id_here"`. This helper
+/// ensures a bare node ID is prefixed so that Sea-ORM equality filters match
+/// correctly, while already-prefixed values pass through unchanged.
+fn normalize_instance_domain(node_id: &str) -> String {
+    if node_id.starts_with("p2p://") {
+        node_id.to_string()
+    } else {
+        format!("p2p://{}", node_id)
+    }
+}
+
 // ─── Query functions ────────────────────────────────────────────────
 
 /// Get the library sync overview for all known peers.
@@ -176,16 +191,22 @@ async fn get_peer_sync_status(
     our_track_count: u64,
     db: &DatabaseConnection,
 ) -> PeerSyncStatus {
-    // Count remote tracks cataloged from this peer
-    // The instance_domain for P2P peers is stored as their node_id
+    // Count remote tracks cataloged from this peer.
+    // instance_domain is stored as "p2p://<node_id>" so we must normalize.
+    // TODO: For transitive tracks (originated on peer C, relayed via peer B),
+    // instance_domain reflects the *original* uploader, not the relay peer.
+    // A full fix would aggregate sync status across all relay paths; for now
+    // we match on the direct peer's normalized domain.
+    let domain = normalize_instance_domain(&peer.node_id);
+
     let local_remote_tracks = remote_track::Entity::find()
-        .filter(remote_track::Column::InstanceDomain.eq(&peer.node_id))
+        .filter(remote_track::Column::InstanceDomain.eq(&domain))
         .count(db)
         .await
         .unwrap_or(0);
 
     let available_tracks = remote_track::Entity::find()
-        .filter(remote_track::Column::InstanceDomain.eq(&peer.node_id))
+        .filter(remote_track::Column::InstanceDomain.eq(&domain))
         .filter(remote_track::Column::IsAvailable.eq(true))
         .count(db)
         .await
@@ -363,10 +384,11 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
         }
         node.incremental_sync_to_peer(nid, None).await;
 
-        // Count results
+        // Count results (instance_domain is stored with "p2p://" prefix)
         let db = node.db();
+        let domain = normalize_instance_domain(&peer_node_id);
         let tracks_synced = remote_track::Entity::find()
-            .filter(remote_track::Column::InstanceDomain.eq(&peer_node_id))
+            .filter(remote_track::Column::InstanceDomain.eq(&domain))
             .count(db)
             .await
             .unwrap_or(0);
@@ -393,4 +415,294 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
             };
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── normalize_instance_domain ───────────────────────────────────
+
+    #[test]
+    fn test_normalize_instance_domain_bare_id() {
+        assert_eq!(normalize_instance_domain("abc123"), "p2p://abc123");
+    }
+
+    #[test]
+    fn test_normalize_instance_domain_already_prefixed() {
+        assert_eq!(normalize_instance_domain("p2p://abc123"), "p2p://abc123");
+    }
+
+    #[test]
+    fn test_normalize_instance_domain_empty() {
+        assert_eq!(normalize_instance_domain(""), "p2p://");
+    }
+
+    #[test]
+    fn test_normalize_instance_domain_long_id() {
+        let long_id = "a".repeat(64);
+        assert_eq!(
+            normalize_instance_domain(&long_id),
+            format!("p2p://{long_id}")
+        );
+    }
+
+    // ─── SyncState serde ─────────────────────────────────────────────
+
+    #[test]
+    fn test_sync_state_serialize_synced() {
+        let val = serde_json::to_value(SyncState::Synced).unwrap();
+        assert_eq!(val, "synced");
+    }
+
+    #[test]
+    fn test_sync_state_serialize_partial() {
+        let val = serde_json::to_value(SyncState::Partial).unwrap();
+        assert_eq!(val, "partial");
+    }
+
+    #[test]
+    fn test_sync_state_serialize_not_synced() {
+        let val = serde_json::to_value(SyncState::NotSynced).unwrap();
+        assert_eq!(val, "not_synced");
+    }
+
+    #[test]
+    fn test_sync_state_serialize_offline() {
+        let val = serde_json::to_value(SyncState::Offline).unwrap();
+        assert_eq!(val, "offline");
+    }
+
+    #[test]
+    fn test_sync_state_serialize_empty() {
+        let val = serde_json::to_value(SyncState::Empty).unwrap();
+        assert_eq!(val, "empty");
+    }
+
+    // ─── SyncState equality ──────────────────────────────────────────
+
+    #[test]
+    fn test_sync_state_equality() {
+        assert_eq!(SyncState::Synced, SyncState::Synced);
+        assert_ne!(SyncState::Synced, SyncState::Partial);
+        assert_ne!(SyncState::Offline, SyncState::Empty);
+    }
+
+    // ─── LibrarySyncTaskStatus serde ─────────────────────────────────
+
+    #[test]
+    fn test_task_status_idle_serialize() {
+        let val = serde_json::to_value(LibrarySyncTaskStatus::Idle).unwrap();
+        assert_eq!(val["status"], "idle");
+    }
+
+    #[test]
+    fn test_task_status_running_serialize() {
+        let status = LibrarySyncTaskStatus::Running {
+            peer_id: "abc123".to_string(),
+            progress: SyncProgress {
+                processed: 10,
+                total: Some(100),
+                phase: "Syncing...".to_string(),
+            },
+        };
+        let val = serde_json::to_value(&status).unwrap();
+        assert_eq!(val["status"], "running");
+        assert_eq!(val["peer_id"], "abc123");
+        assert_eq!(val["progress"]["processed"], 10);
+        assert_eq!(val["progress"]["total"], 100);
+        assert_eq!(val["progress"]["phase"], "Syncing...");
+    }
+
+    #[test]
+    fn test_task_status_completed_serialize() {
+        let status = LibrarySyncTaskStatus::Completed {
+            result: SyncResult {
+                peer_id: "abc123".to_string(),
+                tracks_synced: 50,
+                tracks_already_known: 30,
+                errors: 2,
+                duration_secs: 12.34,
+            },
+        };
+        let val = serde_json::to_value(&status).unwrap();
+        assert_eq!(val["status"], "completed");
+        assert_eq!(val["result"]["tracks_synced"], 50);
+        assert_eq!(val["result"]["tracks_already_known"], 30);
+        assert_eq!(val["result"]["errors"], 2);
+    }
+
+    #[test]
+    fn test_task_status_error_serialize() {
+        let status = LibrarySyncTaskStatus::Error {
+            message: "Connection refused".to_string(),
+        };
+        let val = serde_json::to_value(&status).unwrap();
+        assert_eq!(val["status"], "error");
+        assert_eq!(val["message"], "Connection refused");
+    }
+
+    // ─── SyncProgress serde ──────────────────────────────────────────
+
+    #[test]
+    fn test_sync_progress_serialize() {
+        let progress = SyncProgress {
+            processed: 42,
+            total: Some(100),
+            phase: "Downloading".to_string(),
+        };
+        let val = serde_json::to_value(&progress).unwrap();
+        assert_eq!(val["processed"], 42);
+        assert_eq!(val["total"], 100);
+        assert_eq!(val["phase"], "Downloading");
+    }
+
+    #[test]
+    fn test_sync_progress_serialize_no_total() {
+        let progress = SyncProgress {
+            processed: 0,
+            total: None,
+            phase: "Starting".to_string(),
+        };
+        let val = serde_json::to_value(&progress).unwrap();
+        assert_eq!(val["processed"], 0);
+        assert!(val["total"].is_null());
+    }
+
+    // ─── SyncResult serde ────────────────────────────────────────────
+
+    #[test]
+    fn test_sync_result_serialize() {
+        let result = SyncResult {
+            peer_id: "xyz789".to_string(),
+            tracks_synced: 100,
+            tracks_already_known: 50,
+            errors: 0,
+            duration_secs: 5.67,
+        };
+        let val = serde_json::to_value(&result).unwrap();
+        assert_eq!(val["peer_id"], "xyz789");
+        assert_eq!(val["tracks_synced"], 100);
+        assert_eq!(val["duration_secs"], 5.67);
+    }
+
+    // ─── PeerSyncStatus serde ────────────────────────────────────────
+
+    #[test]
+    fn test_peer_sync_status_serialize() {
+        let status = PeerSyncStatus {
+            node_id: "abc".to_string(),
+            name: Some("TestPeer".to_string()),
+            version: Some("0.1.0".to_string()),
+            is_online: true,
+            peer_announced_tracks: 100,
+            local_remote_tracks: 80,
+            available_tracks: 75,
+            our_track_count: 50,
+            sync_ratio: 0.80,
+            sync_state: SyncState::Partial,
+            last_seen: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let val = serde_json::to_value(&status).unwrap();
+        assert_eq!(val["node_id"], "abc");
+        assert_eq!(val["name"], "TestPeer");
+        assert_eq!(val["sync_state"], "partial");
+        assert_eq!(val["peer_announced_tracks"], 100);
+    }
+
+    #[test]
+    fn test_peer_sync_status_serialize_offline() {
+        let status = PeerSyncStatus {
+            node_id: "xyz".to_string(),
+            name: None,
+            version: None,
+            is_online: false,
+            peer_announced_tracks: 0,
+            local_remote_tracks: 0,
+            available_tracks: 0,
+            our_track_count: 10,
+            sync_ratio: 0.0,
+            sync_state: SyncState::Offline,
+            last_seen: "2024-01-01T00:00:00Z".to_string(),
+        };
+        let val = serde_json::to_value(&status).unwrap();
+        assert!(val["name"].is_null());
+        assert_eq!(val["sync_state"], "offline");
+    }
+
+    // ─── LibrarySyncOverview serde ───────────────────────────────────
+
+    #[test]
+    fn test_library_sync_overview_serialize_empty() {
+        let overview = LibrarySyncOverview {
+            local_track_count: 0,
+            total_peers: 0,
+            synced_peers: 0,
+            partial_peers: 0,
+            not_synced_peers: 0,
+            peers: vec![],
+        };
+        let val = serde_json::to_value(&overview).unwrap();
+        assert_eq!(val["local_track_count"], 0);
+        assert_eq!(val["total_peers"], 0);
+        assert!(val["peers"].as_array().unwrap().is_empty());
+    }
+
+    // ─── new_sync_tracker ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_new_sync_tracker_starts_idle() {
+        let tracker = new_sync_tracker();
+        let status = tracker.lock().await;
+        match &*status {
+            LibrarySyncTaskStatus::Idle => {} // expected
+            other => panic!("expected Idle, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sync_tracker_can_be_mutated() {
+        let tracker = new_sync_tracker();
+
+        {
+            let mut status = tracker.lock().await;
+            *status = LibrarySyncTaskStatus::Running {
+                peer_id: "test".to_string(),
+                progress: SyncProgress {
+                    processed: 0,
+                    total: None,
+                    phase: "Testing".to_string(),
+                },
+            };
+        }
+
+        {
+            let status = tracker.lock().await;
+            match &*status {
+                LibrarySyncTaskStatus::Running { peer_id, .. } => {
+                    assert_eq!(peer_id, "test");
+                }
+                other => panic!("expected Running, got {:?}", other),
+            }
+        }
+    }
+
+    // ─── LibrarySyncTaskStatus clone ─────────────────────────────────
+
+    #[test]
+    fn test_task_status_clone() {
+        let status = LibrarySyncTaskStatus::Completed {
+            result: SyncResult {
+                peer_id: "abc".to_string(),
+                tracks_synced: 10,
+                tracks_already_known: 5,
+                errors: 0,
+                duration_secs: 1.0,
+            },
+        };
+        let cloned = status.clone();
+        let val = serde_json::to_value(&cloned).unwrap();
+        assert_eq!(val["status"], "completed");
+        assert_eq!(val["result"]["tracks_synced"], 10);
+    }
 }

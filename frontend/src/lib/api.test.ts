@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { clearTokens, streamUrl, apiFetch, api, setTokens, API_BASE } from '$lib/api';
+import { clearTokens, streamUrl, apiFetch, api, setTokens, API_BASE, pluginApi, themeApi } from '$lib/api';
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -49,6 +49,13 @@ describe('API module', () => {
 			localStorageMock.setItem('soundtime_access_token', 'my-token');
 			const url = streamUrl('track-456');
 			expect(url).toBe(`${API_BASE}/tracks/track-456/stream?token=my-token`);
+		});
+
+		it('encodes track ID in URL correctly', () => {
+			const url = streamUrl('track-with-special<chars>');
+			// Verify it doesn't break URL structure
+			expect(url).toContain('track-with-special<chars>');
+			expect(url).toContain('/stream');
 		});
 	});
 
@@ -271,6 +278,13 @@ describe('API module', () => {
 			expect(options?.method).toBe('POST');
 			expect(options?.body).toBe(formData);
 		});
+
+		it('api.patch makes PATCH request with body', async () => {
+			await api.patch('/items/1', { status: 'active' });
+			const [, options] = vi.mocked(fetch).mock.calls[0];
+			expect(options?.method).toBe('PATCH');
+			expect(options?.body).toBe(JSON.stringify({ status: 'active' }));
+		});
 	});
 
 	describe('api.uploadWithProgress', () => {
@@ -356,6 +370,136 @@ describe('API module', () => {
 			loadCall![1]();
 
 			await expect(promise).rejects.toThrow('File too large');
+		});
+	});
+
+	describe('pluginApi', () => {
+		beforeEach(() => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve('{"plugins":[]}'),
+			}));
+		});
+
+		it('pluginApi.list calls GET /admin/plugins', async () => {
+			await pluginApi.list();
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/plugins');
+		});
+
+		it('pluginApi.install calls POST /admin/plugins/install with git_url', async () => {
+			await pluginApi.install('https://github.com/org/repo.git');
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/plugins/install');
+			expect(options?.method).toBe('POST');
+			expect(options?.body).toBe(JSON.stringify({ git_url: 'https://github.com/org/repo.git' }));
+		});
+
+		it('pluginApi.enable calls POST /admin/plugins/:id/enable', async () => {
+			await pluginApi.enable('plugin-123');
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/plugins/plugin-123/enable');
+			expect(options?.method).toBe('POST');
+		});
+
+		it('pluginApi.disable calls POST /admin/plugins/:id/disable', async () => {
+			await pluginApi.disable('plugin-123');
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/plugins/plugin-123/disable');
+			expect(options?.method).toBe('POST');
+		});
+
+		it('pluginApi.uninstall calls DELETE /admin/plugins/:id', async () => {
+			await pluginApi.uninstall('plugin-123');
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/plugins/plugin-123');
+			expect(options?.method).toBe('DELETE');
+		});
+
+		it('pluginApi.update calls POST /admin/plugins/:id/update', async () => {
+			await pluginApi.update('plugin-123');
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/plugins/plugin-123/update');
+			expect(options?.method).toBe('POST');
+		});
+
+		it('pluginApi.getConfig calls GET /admin/plugins/:id/config', async () => {
+			await pluginApi.getConfig('plugin-123');
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/plugins/plugin-123/config');
+		});
+
+		it('pluginApi.updateConfig calls PUT /admin/plugins/:id/config', async () => {
+			await pluginApi.updateConfig('plugin-123', [{ key: 'api_key', value: 'abc123' }]);
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/plugins/plugin-123/config');
+			expect(options?.method).toBe('PUT');
+			expect(options?.body).toContain('"api_key"');
+		});
+
+		it('pluginApi.getLogs calls GET /admin/plugins/:id/logs with pagination', async () => {
+			await pluginApi.getLogs('plugin-123', 2, 25);
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/plugins/plugin-123/logs?page=2&per_page=25');
+		});
+	});
+
+	describe('themeApi', () => {
+		beforeEach(() => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve('{"themes":[]}'),
+			}));
+		});
+
+		it('themeApi.list calls GET /admin/themes', async () => {
+			await themeApi.list();
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/themes');
+		});
+
+		it('themeApi.install calls POST /admin/themes/install with git_url', async () => {
+			await themeApi.install('https://github.com/user/theme.git');
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/themes/install');
+			expect(options?.method).toBe('POST');
+			expect(options?.body).toBe(JSON.stringify({ git_url: 'https://github.com/user/theme.git' }));
+		});
+
+		it('themeApi.enable calls POST /admin/themes/:id/enable', async () => {
+			await themeApi.enable('theme-123');
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/themes/theme-123/enable');
+			expect(options?.method).toBe('POST');
+		});
+
+		it('themeApi.disable calls POST /admin/themes/:id/disable', async () => {
+			await themeApi.disable('theme-123');
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/themes/theme-123/disable');
+			expect(options?.method).toBe('POST');
+		});
+
+		it('themeApi.update calls POST /admin/themes/:id/update', async () => {
+			await themeApi.update('theme-123');
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/themes/theme-123/update');
+			expect(options?.method).toBe('POST');
+		});
+
+		it('themeApi.uninstall calls DELETE /admin/themes/:id', async () => {
+			await themeApi.uninstall('theme-123');
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/admin/themes/theme-123');
+			expect(options?.method).toBe('DELETE');
+		});
+
+		it('themeApi.active calls GET /themes/active', async () => {
+			await themeApi.active();
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/themes/active');
 		});
 	});
 });

@@ -26,14 +26,18 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 url = "2"
 urlencoding = "2"
 bytes = "1"
+toml = "0.8"
+regex = "1"
+git2 = "0.19"
+tempfile = "3"
 
 soundtime-audio = { path = "../soundtime-audio" }
 soundtime-db = { path = "../soundtime-db" }
 soundtime-migration = { path = "../soundtime-migration" }
 soundtime-p2p = { path = "../soundtime-p2p" }
+soundtime-plugin = { path = "../soundtime-plugin" }
 
 [dev-dependencies]
-tempfile = "3"
 axum-test = "16"
 wiremock = "0.6"
 tower = { version = "0.5", features = ["util"] }

@@ -1146,7 +1146,10 @@ mod tests {
 
         Mock::given(method("DELETE"))
             .and(path("/api/nodes/music.example.com"))
-            .and(wiremock::matchers::header("Authorization", "Bearer my-token"))
+            .and(wiremock::matchers::header(
+                "Authorization",
+                "Bearer my-token",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "status": "removed",
                 "domain": "music.example.com"

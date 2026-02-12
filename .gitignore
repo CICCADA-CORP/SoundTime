@@ -11,7 +11,7 @@
 # SvelteKit
 **/.svelte-kit/
 **/build/
-
+/landing/
 # Logs
 *.log
 
@@ -36,3 +36,5 @@
 **/build/
 AGENT.md
 AGENTS.md
+docs/p2p-audit-plan.md
+docs/test-audit-report.md

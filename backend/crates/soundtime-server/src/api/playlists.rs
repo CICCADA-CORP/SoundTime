@@ -205,6 +205,20 @@ pub async fn create_playlist(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
+    // Dispatch plugin event (best-effort)
+    if let Some(registry) = super::get_plugin_registry(&state) {
+        let payload = soundtime_plugin::PlaylistCreatedPayload {
+            playlist_id: created.id.to_string(),
+            user_id: auth_user.0.sub.to_string(),
+            name: created.name.clone(),
+        };
+        let payload_val = serde_json::to_value(&payload).unwrap_or_default();
+        let registry = registry.clone();
+        tokio::spawn(async move {
+            registry.dispatch("on_playlist_created", &payload_val).await;
+        });
+    }
+
     Ok((StatusCode::CREATED, Json(PlaylistResponse::from(created))))
 }
 

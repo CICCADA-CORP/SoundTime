@@ -55,6 +55,9 @@ pub struct AppState {
     /// P2P node handle (type-erased to avoid circular dependency).
     /// Downcast to `Arc<soundtime_p2p::P2pNode>` in handlers.
     pub p2p: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// Plugin registry handle (type-erased to avoid circular dependency).
+    /// Downcast to `Arc<soundtime_plugin::PluginRegistry>` in handlers.
+    pub plugins: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 /// Connect to the database and return a connection pool

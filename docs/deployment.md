@@ -87,9 +87,12 @@ P2P_BLOBS_DIR=/data/p2p/blobs
 P2P_SECRET_KEY_PATH=/data/p2p/secret_key
 P2P_LOCAL_DISCOVERY=false               # disable mDNS in production
 P2P_SEED_PEERS=                         # comma-separated NodeIds of peers to auto-connect
+P2P_CACHE_MAX_SIZE=2GB                  # max disk for cached P2P blobs (default: 2GB)
 ```
 
 > **Important**: Open UDP port **11204** in your firewall for P2P connectivity. If behind NAT, SoundTime will use n0.computer relay servers as fallback.
+
+> **P2P Cache**: Remote tracks are fetched on-demand when played and cached locally. The `P2P_CACHE_MAX_SIZE` setting controls the maximum disk space for cached blobs. When the limit is reached, least-recently-played tracks are evicted. Accepts values like `512MB`, `2GB`, `5GB`, `1TB`, or raw byte counts. Default is `2GB`.
 
 ### Public Instance Listing
 
