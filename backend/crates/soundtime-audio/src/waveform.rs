@@ -179,7 +179,7 @@ mod tests {
 
         // All values should be in range [0.0, 1.0]
         for &val in &waveform {
-            assert!(val >= 0.0 && val <= 1.0, "value out of range: {val}");
+            assert!((0.0..=1.0).contains(&val), "value out of range: {val}");
         }
     }
 
