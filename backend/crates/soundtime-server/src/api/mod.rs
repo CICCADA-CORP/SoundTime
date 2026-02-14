@@ -13,6 +13,7 @@ pub mod plugins;
 pub mod reports;
 pub mod search;
 pub mod setup;
+pub mod stats;
 pub mod themes;
 pub mod tracks;
 pub mod users;

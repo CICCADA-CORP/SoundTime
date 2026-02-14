@@ -261,14 +261,21 @@ async fn main() {
         .route("/tos", get(api::reports::get_tos))
         .route("/tracks", get(api::tracks::list_tracks))
         .route("/tracks/popular", get(api::tracks::list_popular_tracks))
+        .route("/tracks/random", get(api::tracks::list_random_tracks))
+        .route(
+            "/tracks/recently-added",
+            get(api::tracks::list_recently_added_tracks),
+        )
         .route("/tracks/{id}", get(api::tracks::get_track))
         .route("/tracks/{id}/credits", get(api::tracks::get_track_credits))
         .route("/tracks/{id}/stream", get(api::audio::stream_track))
         .route("/tracks/{id}/lyrics", get(api::lyrics::get_track_lyrics))
         .route("/media/{*path}", get(api::audio::serve_media))
         .route("/albums", get(api::albums::list_albums))
+        .route("/albums/recent", get(api::albums::list_recent_albums))
         .route("/albums/{id}", get(api::albums::get_album))
         .route("/artists", get(api::artists::list_artists))
+        .route("/artists/top", get(api::artists::list_top_artists))
         .route("/artists/{id}", get(api::artists::get_artist))
         .route("/playlists", get(api::playlists::list_playlists))
         .route("/playlists/{id}", get(api::playlists::get_playlist))
@@ -276,6 +283,12 @@ async fn main() {
         .route("/libraries/{id}", get(api::libraries::get_library))
         .route("/users/{id}", get(api::users::get_user_profile))
         .route("/search", get(api::search::search))
+        .route("/genres", get(api::tracks::list_genres))
+        .route(
+            "/genres/{genre}/tracks",
+            get(api::tracks::list_genre_tracks),
+        )
+        .route("/stats/overview", get(api::stats::stats_overview))
         .route(
             "/editorial-playlists",
             get(api::editorial::list_editorial_playlists),
@@ -330,6 +343,7 @@ async fn main() {
             "/history",
             get(api::history::list_history).post(api::history::log_listen),
         )
+        .route("/history/recent", get(api::history::list_recent_history))
         .route("/tracks/{id}/report", post(api::reports::report_track))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),

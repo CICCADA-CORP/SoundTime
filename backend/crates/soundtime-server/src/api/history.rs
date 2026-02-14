@@ -4,9 +4,11 @@ use axum::{
     Json,
 };
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, Set,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -125,6 +127,121 @@ pub async fn log_listen(
     }
 
     Ok(StatusCode::CREATED)
+}
+
+/// GET /api/history/recent — recent listens with batch-fetched track data (auth required)
+pub async fn list_recent_history(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(auth_user): axum::Extension<AuthUser>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Vec<HistoryEntry>>, (StatusCode, String)> {
+    let limit = params.per_page.unwrap_or(6).min(50);
+
+    let entries = listen_history::Entity::find()
+        .filter(listen_history::Column::UserId.eq(auth_user.0.sub))
+        .order_by_desc(listen_history::Column::ListenedAt)
+        .limit(limit)
+        .all(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    if entries.is_empty() {
+        return Ok(Json(vec![]));
+    }
+
+    // Batch-fetch all tracks
+    let track_ids: Vec<Uuid> = entries
+        .iter()
+        .map(|e| e.track_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let tracks_map: HashMap<Uuid, track::Model> = track::Entity::find()
+        .filter(track::Column::Id.is_in(track_ids))
+        .all(&state.db)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| (t.id, t))
+        .collect();
+
+    // Batch-fetch artists and albums for those tracks
+    let artist_ids: Vec<Uuid> = tracks_map
+        .values()
+        .map(|t| t.artist_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let album_ids: Vec<Uuid> = tracks_map
+        .values()
+        .filter_map(|t| t.album_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let artists: HashMap<Uuid, soundtime_db::entities::artist::Model> = if !artist_ids.is_empty() {
+        soundtime_db::entities::artist::Entity::find()
+            .filter(soundtime_db::entities::artist::Column::Id.is_in(artist_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let albums: HashMap<Uuid, soundtime_db::entities::album::Model> = if !album_ids.is_empty() {
+        soundtime_db::entities::album::Entity::find()
+            .filter(soundtime_db::entities::album::Column::Id.is_in(album_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let data = entries
+        .into_iter()
+        .filter_map(|entry| {
+            let t = tracks_map.get(&entry.track_id)?;
+            let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
+            let (album_title, cover_url) = t
+                .album_id
+                .and_then(|aid| albums.get(&aid))
+                .map(|a| {
+                    (
+                        Some(a.title.clone()),
+                        a.cover_url.clone().map(|url| {
+                            if url.starts_with("/api/media/") || url.starts_with("http") {
+                                url
+                            } else {
+                                format!("/api/media/{url}")
+                            }
+                        }),
+                    )
+                })
+                .unwrap_or((None, None));
+
+            let mut resp = super::tracks::TrackResponse::from(t.clone());
+            resp.artist_name = artist_name;
+            resp.album_title = album_title;
+            resp.cover_url = cover_url;
+
+            Some(HistoryEntry {
+                id: entry.id,
+                track: resp,
+                listened_at: entry.listened_at,
+                duration_listened: entry.duration_listened,
+            })
+        })
+        .collect();
+
+    Ok(Json(data))
 }
 
 #[cfg(test)]

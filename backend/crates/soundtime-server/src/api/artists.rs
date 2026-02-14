@@ -118,6 +118,65 @@ pub async fn get_artist(
     }))
 }
 
+/// GET /api/artists/top — top artists by total play_count across their tracks
+pub async fn list_top_artists(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<super::tracks::PaginatedResponse<ArtistResponse>>, (StatusCode, String)> {
+    use sea_orm::{FromQueryResult, QuerySelect};
+
+    let per_page = params.per_page.unwrap_or(10).min(50);
+
+    // Get artist IDs ordered by total play_count
+    #[derive(Debug, FromQueryResult)]
+    struct ArtistPlayCount {
+        artist_id: Uuid,
+    }
+
+    let top_ids = track::Entity::find()
+        .select_only()
+        .column(track::Column::ArtistId)
+        .group_by(track::Column::ArtistId)
+        .order_by_desc(sea_orm::sea_query::Expr::col(track::Column::PlayCount).sum())
+        .limit(per_page)
+        .into_model::<ArtistPlayCount>()
+        .all(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    let ids: Vec<Uuid> = top_ids.into_iter().map(|r| r.artist_id).collect();
+
+    let artists = if !ids.is_empty() {
+        artist::Entity::find()
+            .filter(artist::Column::Id.is_in(ids.clone()))
+            .all(&state.db)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
+    } else {
+        vec![]
+    };
+
+    // Preserve the order from the play_count query
+    let artist_map: std::collections::HashMap<Uuid, artist::Model> =
+        artists.into_iter().map(|a| (a.id, a)).collect();
+
+    let ordered: Vec<ArtistResponse> = ids
+        .into_iter()
+        .filter_map(|id| artist_map.get(&id).cloned())
+        .map(ArtistResponse::from)
+        .collect();
+
+    let total = ordered.len() as u64;
+
+    Ok(Json(super::tracks::PaginatedResponse {
+        data: ordered,
+        total,
+        page: 1,
+        per_page,
+        total_pages: 1,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -611,3 +611,21 @@ export interface Theme {
 export interface ThemeListResponse {
   themes: Theme[];
 }
+
+// ─── Stats Overview ─────────────────────────────────────────────────
+
+export interface StatsOverview {
+  total_tracks: number;
+  total_albums: number;
+  total_artists: number;
+  total_genres: number;
+  total_duration_secs: number;
+  peer_count: number;
+}
+
+export interface HistoryEntry {
+  id: string;
+  track_id: string;
+  listened_at: string;
+  track: Track;
+}

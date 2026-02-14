@@ -246,4 +246,49 @@ export const themeApi = {
   active: () => api.get<import("./types").Theme>("/themes/active"),
 };
 
+// ─── Home & Explore API ─────────────────────────────────────────────
+
+export const homeApi = {
+  /** Get random tracks, optionally filtered by genre */
+  randomTracks: (count = 10, genre?: string) => {
+    const params = new URLSearchParams({ count: String(count) });
+    if (genre) params.set("genre", genre);
+    return api.get<import("./types").Track[]>(`/tracks/random?${params}`);
+  },
+
+  /** Get recently added tracks */
+  recentlyAdded: (perPage = 10) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/tracks/recently-added?per_page=${perPage}`),
+
+  /** Get popular tracks (enriched with artist/album) */
+  popularTracks: (perPage = 10) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/tracks/popular?per_page=${perPage}`),
+
+  /** Get all genres as a string array */
+  genres: () => api.get<string[]>("/genres"),
+
+  /** Get tracks for a specific genre */
+  genreTracks: (genre: string, perPage = 10) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/genres/${encodeURIComponent(genre)}/tracks?per_page=${perPage}`),
+
+  /** Get recent listening history (requires auth) */
+  recentHistory: (perPage = 6) =>
+    api.get<import("./types").HistoryEntry[]>(`/history/recent?per_page=${perPage}`),
+
+  /** Get stats overview (total tracks, albums, artists, genres, duration, peers) */
+  statsOverview: () => api.get<import("./types").StatsOverview>("/stats/overview"),
+
+  /** Get recently added albums */
+  recentAlbums: (perPage = 10) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Album>>(`/albums/recent?per_page=${perPage}`),
+
+  /** Get top artists by play count */
+  topArtists: (perPage = 10) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Artist>>(`/artists/top?per_page=${perPage}`),
+
+  /** Get editorial playlists */
+  editorialPlaylists: () =>
+    api.get<import("./types").EditorialPlaylist[]>("/editorial-playlists").catch(() => [] as import("./types").EditorialPlaylist[]),
+};
+
 export { setTokens, API_BASE };

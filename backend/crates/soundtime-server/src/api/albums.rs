@@ -167,6 +167,64 @@ pub async fn get_album(
     }))
 }
 
+/// GET /api/albums/recent — albums sorted by created_at DESC
+pub async fn list_recent_albums(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<super::tracks::PaginatedResponse<AlbumResponse>>, (StatusCode, String)> {
+    let per_page = params.per_page.unwrap_or(10).min(50);
+
+    let albums = album::Entity::find()
+        .order_by_desc(album::Column::CreatedAt)
+        .paginate(&state.db, per_page);
+
+    let total = albums
+        .num_items()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    let album_list = albums
+        .fetch_page(0)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    let total_pages = total.div_ceil(per_page);
+
+    // Batch-fetch artist names
+    let artist_ids: Vec<Uuid> = album_list
+        .iter()
+        .map(|a| a.artist_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let artists: std::collections::HashMap<Uuid, String> = if !artist_ids.is_empty() {
+        artist::Entity::find()
+            .filter(artist::Column::Id.is_in(artist_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a.name))
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    Ok(Json(super::tracks::PaginatedResponse {
+        data: album_list
+            .into_iter()
+            .map(|a| {
+                let name = artists.get(&a.artist_id).cloned();
+                AlbumResponse::from_model(a, name)
+            })
+            .collect(),
+        total,
+        page: 1,
+        per_page,
+        total_pages,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

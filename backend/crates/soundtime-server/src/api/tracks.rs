@@ -688,8 +688,427 @@ pub async fn list_popular_tracks(
 
     let total_pages = total.div_ceil(per_page);
 
+    // Batch-fetch artist and album data
+    let artist_ids: Vec<Uuid> = tracks
+        .iter()
+        .map(|t| t.artist_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let album_ids: Vec<Uuid> = tracks
+        .iter()
+        .filter_map(|t| t.album_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
+        artist::Entity::find()
+            .filter(artist::Column::Id.is_in(artist_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let albums: HashMap<Uuid, album::Model> = if !album_ids.is_empty() {
+        album::Entity::find()
+            .filter(album::Column::Id.is_in(album_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let data = tracks
+        .into_iter()
+        .map(|t| {
+            let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
+            let (album_title, cover_url) = t
+                .album_id
+                .and_then(|aid| albums.get(&aid))
+                .map(|a| {
+                    (
+                        Some(a.title.clone()),
+                        a.cover_url.clone().map(|url| {
+                            if url.starts_with("/api/media/") || url.starts_with("http") {
+                                url
+                            } else {
+                                format!("/api/media/{url}")
+                            }
+                        }),
+                    )
+                })
+                .unwrap_or((None, None));
+
+            let mut resp = TrackResponse::from(t);
+            resp.artist_name = artist_name;
+            resp.album_title = album_title;
+            resp.cover_url = cover_url;
+            resp
+        })
+        .collect();
+
     Ok(Json(PaginatedResponse {
-        data: tracks.into_iter().map(TrackResponse::from).collect(),
+        data,
+        total,
+        page,
+        per_page,
+        total_pages,
+    }))
+}
+
+// ─── Explore: Random Tracks ─────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct RandomTracksParams {
+    pub count: Option<u64>,
+    pub genre: Option<String>,
+}
+
+/// GET /api/tracks/random — return random tracks, optionally filtered by genre
+pub async fn list_random_tracks(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RandomTracksParams>,
+) -> Result<Json<Vec<TrackResponse>>, (StatusCode, String)> {
+    use sea_orm::QuerySelect;
+
+    let count = params.count.unwrap_or(10).min(50);
+
+    let mut query = track::Entity::find();
+    if let Some(ref genre) = params.genre {
+        query = query.filter(track::Column::Genre.eq(genre.clone()));
+    }
+
+    // Fetch more than needed, then shuffle in memory (Sea-ORM doesn't support RANDOM() portably)
+    let pool_size = (count * 5).min(500);
+    let pool = query
+        .limit(pool_size)
+        .all(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    // Shuffle and take `count`
+    use rand::seq::SliceRandom;
+    let mut pool = pool;
+    {
+        let mut rng = rand::rng();
+        pool.shuffle(&mut rng);
+    }
+    let selected: Vec<track::Model> = pool.into_iter().take(count as usize).collect();
+
+    // Batch-fetch artist/album data
+    let artist_ids: Vec<Uuid> = selected
+        .iter()
+        .map(|t| t.artist_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let album_ids: Vec<Uuid> = selected
+        .iter()
+        .filter_map(|t| t.album_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
+        artist::Entity::find()
+            .filter(artist::Column::Id.is_in(artist_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let albums: HashMap<Uuid, album::Model> = if !album_ids.is_empty() {
+        album::Entity::find()
+            .filter(album::Column::Id.is_in(album_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let data = selected
+        .into_iter()
+        .map(|t| {
+            let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
+            let (album_title, cover_url) = t
+                .album_id
+                .and_then(|aid| albums.get(&aid))
+                .map(|a| {
+                    (
+                        Some(a.title.clone()),
+                        a.cover_url.clone().map(|url| {
+                            if url.starts_with("/api/media/") || url.starts_with("http") {
+                                url
+                            } else {
+                                format!("/api/media/{url}")
+                            }
+                        }),
+                    )
+                })
+                .unwrap_or((None, None));
+
+            let mut resp = TrackResponse::from(t);
+            resp.artist_name = artist_name;
+            resp.album_title = album_title;
+            resp.cover_url = cover_url;
+            resp
+        })
+        .collect();
+
+    Ok(Json(data))
+}
+
+// ─── Explore: Recently Added Tracks ─────────────────────────────────
+
+/// GET /api/tracks/recently-added — tracks sorted by created_at DESC
+pub async fn list_recently_added_tracks(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<PaginatedResponse<TrackResponse>>, (StatusCode, String)> {
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = params.per_page.unwrap_or(20).min(100);
+
+    let paginator = track::Entity::find()
+        .order_by_desc(track::Column::CreatedAt)
+        .paginate(&state.db, per_page);
+
+    let total = paginator
+        .num_items()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    let tracks = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    let total_pages = total.div_ceil(per_page);
+
+    // Batch-fetch artist and album data (same pattern as list_tracks)
+    let artist_ids: Vec<Uuid> = tracks
+        .iter()
+        .map(|t| t.artist_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let album_ids: Vec<Uuid> = tracks
+        .iter()
+        .filter_map(|t| t.album_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
+        artist::Entity::find()
+            .filter(artist::Column::Id.is_in(artist_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let albums: HashMap<Uuid, album::Model> = if !album_ids.is_empty() {
+        album::Entity::find()
+            .filter(album::Column::Id.is_in(album_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let data = tracks
+        .into_iter()
+        .map(|t| {
+            let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
+            let (album_title, cover_url) = t
+                .album_id
+                .and_then(|aid| albums.get(&aid))
+                .map(|a| {
+                    (
+                        Some(a.title.clone()),
+                        a.cover_url.clone().map(|url| {
+                            if url.starts_with("/api/media/") || url.starts_with("http") {
+                                url
+                            } else {
+                                format!("/api/media/{url}")
+                            }
+                        }),
+                    )
+                })
+                .unwrap_or((None, None));
+
+            let mut resp = TrackResponse::from(t);
+            resp.artist_name = artist_name;
+            resp.album_title = album_title;
+            resp.cover_url = cover_url;
+            resp
+        })
+        .collect();
+
+    Ok(Json(PaginatedResponse {
+        data,
+        total,
+        page,
+        per_page,
+        total_pages,
+    }))
+}
+
+// ─── Genres ─────────────────────────────────────────────────────────
+
+/// GET /api/genres — list distinct genres
+pub async fn list_genres(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+    use sea_orm::{FromQueryResult, QuerySelect};
+
+    #[derive(Debug, FromQueryResult)]
+    struct GenreRow {
+        genre: Option<String>,
+    }
+
+    let rows = track::Entity::find()
+        .select_only()
+        .column(track::Column::Genre)
+        .distinct()
+        .into_model::<GenreRow>()
+        .all(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    let genres: Vec<String> = rows
+        .into_iter()
+        .filter_map(|r| r.genre)
+        .filter(|g| !g.is_empty())
+        .collect();
+
+    Ok(Json(genres))
+}
+
+/// GET /api/genres/:genre/tracks — tracks filtered by genre
+pub async fn list_genre_tracks(
+    State(state): State<Arc<AppState>>,
+    Path(genre): Path<String>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<PaginatedResponse<TrackResponse>>, (StatusCode, String)> {
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = params.per_page.unwrap_or(20).min(100);
+
+    let paginator = track::Entity::find()
+        .filter(track::Column::Genre.eq(genre))
+        .order_by_desc(track::Column::PlayCount)
+        .paginate(&state.db, per_page);
+
+    let total = paginator
+        .num_items()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    let tracks = paginator
+        .fetch_page(page - 1)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    let total_pages = total.div_ceil(per_page);
+
+    // Batch-fetch artist and album data
+    let artist_ids: Vec<Uuid> = tracks
+        .iter()
+        .map(|t| t.artist_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let album_ids: Vec<Uuid> = tracks
+        .iter()
+        .filter_map(|t| t.album_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
+        artist::Entity::find()
+            .filter(artist::Column::Id.is_in(artist_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let albums: HashMap<Uuid, album::Model> = if !album_ids.is_empty() {
+        album::Entity::find()
+            .filter(album::Column::Id.is_in(album_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let data = tracks
+        .into_iter()
+        .map(|t| {
+            let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
+            let (album_title, cover_url) = t
+                .album_id
+                .and_then(|aid| albums.get(&aid))
+                .map(|a| {
+                    (
+                        Some(a.title.clone()),
+                        a.cover_url.clone().map(|url| {
+                            if url.starts_with("/api/media/") || url.starts_with("http") {
+                                url
+                            } else {
+                                format!("/api/media/{url}")
+                            }
+                        }),
+                    )
+                })
+                .unwrap_or((None, None));
+
+            let mut resp = TrackResponse::from(t);
+            resp.artist_name = artist_name;
+            resp.album_title = album_title;
+            resp.cover_url = cover_url;
+            resp
+        })
+        .collect();
+
+    Ok(Json(PaginatedResponse {
+        data,
         total,
         page,
         per_page,
