@@ -57,23 +57,45 @@ pub trait StorageBackend: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct AudioStorage {
     base_path: PathBuf,
+    /// Optional separate directory for metadata files (covers, etc.).
+    /// When set, `store_cover` writes here instead of `base_path`.
+    metadata_path: Option<PathBuf>,
 }
 
 impl AudioStorage {
     pub fn new(base_path: impl Into<PathBuf>) -> Self {
         Self {
             base_path: base_path.into(),
+            metadata_path: None,
         }
     }
 
     pub fn from_env() -> Self {
         let base =
             std::env::var("AUDIO_STORAGE_PATH").unwrap_or_else(|_| "./data/music".to_string());
-        Self::new(base)
+        let metadata = std::env::var("METADATA_STORAGE_PATH")
+            .ok()
+            .map(PathBuf::from);
+        Self {
+            base_path: base.into(),
+            metadata_path: metadata,
+        }
     }
 
     pub fn base(&self) -> &Path {
         &self.base_path
+    }
+
+    /// Returns the path for storing metadata files (covers).
+    /// Falls back to `base_path` if no separate metadata path is configured.
+    pub fn metadata_base(&self) -> &Path {
+        self.metadata_path.as_deref().unwrap_or(&self.base_path)
+    }
+
+    /// Resolve a relative path against the metadata directory.
+    /// Used by `serve_media` to find cover files when METADATA_STORAGE_PATH is set.
+    pub fn metadata_full_path(&self, relative_path: &str) -> PathBuf {
+        self.metadata_base().join(relative_path)
     }
 }
 
@@ -150,10 +172,8 @@ impl StorageBackend for AudioStorage {
         let album_dir = album_name.unwrap_or("singles");
         let sanitized_album = sanitize_filename(album_dir);
 
-        let dir = self
-            .base_path
-            .join(user_id.to_string())
-            .join(&sanitized_album);
+        let meta_base = self.metadata_base();
+        let dir = meta_base.join(user_id.to_string()).join(&sanitized_album);
 
         fs::create_dir_all(&dir).await?;
 
@@ -161,7 +181,7 @@ impl StorageBackend for AudioStorage {
         fs::write(&cover_path, data).await?;
 
         let relative = cover_path
-            .strip_prefix(&self.base_path)
+            .strip_prefix(meta_base)
             .unwrap_or(&cover_path)
             .to_string_lossy()
             .to_string();
@@ -735,5 +755,26 @@ mod tests {
         assert_ne!(rel1, rel2);
         assert!(storage.file_exists(&rel1).await);
         assert!(storage.file_exists(&rel2).await);
+    }
+
+    #[tokio::test]
+    async fn test_store_cover_separate_metadata_path() {
+        let tmp_audio = TempDir::new().unwrap();
+        let tmp_meta = TempDir::new().unwrap();
+        let storage = AudioStorage {
+            base_path: tmp_audio.path().to_path_buf(),
+            metadata_path: Some(tmp_meta.path().to_path_buf()),
+        };
+        let user_id = Uuid::new_v4();
+
+        let relative = storage
+            .store_cover(user_id, Some("album1"), b"cover data")
+            .await
+            .unwrap();
+
+        // Cover should be stored in metadata dir, not audio dir
+        assert!(tmp_meta.path().join(&relative).exists());
+        assert!(!tmp_audio.path().join(&relative).exists());
+        assert!(relative.contains("cover.jpg"));
     }
 }

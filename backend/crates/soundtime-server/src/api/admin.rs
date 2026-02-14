@@ -644,7 +644,7 @@ pub async fn enrich_track_metadata(
     State(state): State<Arc<AppState>>,
     Path(track_id): Path<Uuid>,
 ) -> Result<Json<metadata_lookup::MetadataResult>, (StatusCode, Json<serde_json::Value>)> {
-    let result = metadata_lookup::enrich_track(&state.db, track_id).await;
+    let result = metadata_lookup::enrich_track(&state.db, &*state.storage, track_id).await;
     Ok(Json(result))
 }
 
@@ -652,7 +652,7 @@ pub async fn enrich_track_metadata(
 pub async fn enrich_all_metadata(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<metadata_lookup::MetadataResult>>, StatusCode> {
-    let results = metadata_lookup::enrich_all_tracks(&state.db).await;
+    let results = metadata_lookup::enrich_all_tracks(&state.db, &*state.storage).await;
     Ok(Json(results))
 }
 

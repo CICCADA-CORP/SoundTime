@@ -25,6 +25,7 @@ mod m20240101_000022_remove_ap_add_p2p;
 mod m20240101_000023_create_p2p_peers;
 mod m20240101_000024_create_plugins;
 mod m20240101_000025_create_themes;
+mod m20240101_000026_fix_album_dedup;
 
 pub struct Migrator;
 
@@ -57,6 +58,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000023_create_p2p_peers::Migration),
             Box::new(m20240101_000024_create_plugins::Migration),
             Box::new(m20240101_000025_create_themes::Migration),
+            Box::new(m20240101_000026_fix_album_dedup::Migration),
         ]
     }
 }

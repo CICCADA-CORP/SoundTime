@@ -199,6 +199,7 @@ pub async fn upload_track(
 
     // Resolve or create artist
     let artist_name = meta_artist
+        .clone()
         .or(audio_meta.artist.clone())
         .unwrap_or_else(|| "Unknown Artist".to_string());
 
@@ -233,6 +234,52 @@ pub async fn upload_track(
         result.id
     };
 
+    // Resolve album artist: prefer album_artist tag, fall back to track artist
+    let album_artist_name = audio_meta
+        .album_artist
+        .clone()
+        .or(meta_artist.clone())
+        .or(audio_meta.artist.clone())
+        .unwrap_or_else(|| "Unknown Artist".to_string());
+
+    let album_artist_id = if album_artist_name == artist_name {
+        // Same as track artist — reuse the ID
+        artist_id
+    } else {
+        let existing = artist::Entity::find()
+            .filter(artist::Column::Name.eq(&album_artist_name))
+            .one(&state.db)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("DB error: {e}") })),
+                )
+            })?;
+        if let Some(a) = existing {
+            a.id
+        } else {
+            let new_artist = artist::ActiveModel {
+                id: Set(Uuid::new_v4()),
+                name: Set(album_artist_name.clone()),
+                bio: Set(None),
+                image_url: Set(None),
+                musicbrainz_id: Set(None),
+                created_at: Set(chrono::Utc::now().into()),
+            };
+            new_artist
+                .insert(&state.db)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": format!("DB error: {e}") })),
+                    )
+                })?
+                .id
+        }
+    };
+
     // Resolve or create album
     let album_title = meta_album
         .or(audio_meta.album.clone())
@@ -240,7 +287,7 @@ pub async fn upload_track(
 
     let existing_album = album::Entity::find()
         .filter(album::Column::Title.eq(&album_title))
-        .filter(album::Column::ArtistId.eq(artist_id))
+        .filter(album::Column::ArtistId.eq(album_artist_id))
         .one(&state.db)
         .await
         .map_err(|e| {
@@ -256,7 +303,7 @@ pub async fn upload_track(
         let new_album = album::ActiveModel {
             id: Set(Uuid::new_v4()),
             title: Set(album_title.clone()),
-            artist_id: Set(artist_id),
+            artist_id: Set(album_artist_id),
             release_date: Set(None),
             cover_url: Set(None),
             musicbrainz_id: Set(None),
@@ -620,29 +667,31 @@ pub async fn serve_media(
     State(state): State<Arc<AppState>>,
     Path(path): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    // Try the primary storage path first
     let base_path = state.storage.full_path("");
     let file_path = state.storage.full_path(&path);
 
-    // Prevent path traversal
-    let canonical = file_path
-        .canonicalize()
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    let base_canonical = base_path
-        .canonicalize()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !canonical.starts_with(&base_canonical) {
-        return Err(StatusCode::FORBIDDEN);
-    }
+    let resolved = try_resolve_media(&base_path, &file_path);
 
-    if !canonical.is_file() {
-        return Err(StatusCode::NOT_FOUND);
-    }
+    // If not found and METADATA_STORAGE_PATH is set, try there
+    let resolved = match resolved {
+        Some(r) => r,
+        None => {
+            if let Ok(meta_base) = std::env::var("METADATA_STORAGE_PATH") {
+                let meta_base_path = std::path::PathBuf::from(&meta_base);
+                let meta_file_path = meta_base_path.join(&path);
+                try_resolve_media(&meta_base_path, &meta_file_path).ok_or(StatusCode::NOT_FOUND)?
+            } else {
+                return Err(StatusCode::NOT_FOUND);
+            }
+        }
+    };
 
-    let data = tokio::fs::read(&canonical)
+    let data = tokio::fs::read(&resolved)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
-    let content_type = match canonical.extension().and_then(|e| e.to_str()).unwrap_or("") {
+    let content_type = match resolved.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
         "webp" => "image/webp",
@@ -658,6 +707,23 @@ pub async fn serve_media(
     );
 
     Ok((headers, data))
+}
+
+/// SECURITY: Resolve a media file path, ensuring it stays within the base directory.
+/// Returns `None` if the file doesn't exist or would escape the base.
+fn try_resolve_media(
+    base_path: &std::path::Path,
+    file_path: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let canonical = file_path.canonicalize().ok()?;
+    let base_canonical = base_path.canonicalize().ok()?;
+    if !canonical.starts_with(&base_canonical) {
+        return None; // path traversal attempt
+    }
+    if !canonical.is_file() {
+        return None;
+    }
+    Some(canonical)
 }
 
 // ─── Multi-file batch upload ───────────────────────────────────────
@@ -834,6 +900,39 @@ async fn process_single_upload(
             .id
     };
 
+    // Resolve album artist: prefer album_artist tag, fall back to track artist
+    let album_artist_name = audio_meta
+        .album_artist
+        .clone()
+        .unwrap_or_else(|| artist_name.clone());
+
+    let album_artist_id = if album_artist_name == artist_name {
+        artist_id
+    } else {
+        let existing = artist::Entity::find()
+            .filter(artist::Column::Name.eq(&album_artist_name))
+            .one(&state.db)
+            .await
+            .map_err(|e| format!("DB: {e}"))?;
+        if let Some(a) = existing {
+            a.id
+        } else {
+            let new_artist = artist::ActiveModel {
+                id: Set(Uuid::new_v4()),
+                name: Set(album_artist_name.clone()),
+                bio: Set(None),
+                image_url: Set(None),
+                musicbrainz_id: Set(None),
+                created_at: Set(chrono::Utc::now().into()),
+            };
+            new_artist
+                .insert(&state.db)
+                .await
+                .map_err(|e| format!("DB: {e}"))?
+                .id
+        }
+    };
+
     let album_title = audio_meta
         .album
         .clone()
@@ -841,7 +940,7 @@ async fn process_single_upload(
 
     let existing_album = album::Entity::find()
         .filter(album::Column::Title.eq(&album_title))
-        .filter(album::Column::ArtistId.eq(artist_id))
+        .filter(album::Column::ArtistId.eq(album_artist_id))
         .one(&state.db)
         .await
         .map_err(|e| format!("DB: {e}"))?;
@@ -852,7 +951,7 @@ async fn process_single_upload(
         let new_album = album::ActiveModel {
             id: Set(Uuid::new_v4()),
             title: Set(album_title.clone()),
-            artist_id: Set(artist_id),
+            artist_id: Set(album_artist_id),
             release_date: Set(None),
             cover_url: Set(None),
             musicbrainz_id: Set(None),
@@ -1010,6 +1109,7 @@ async fn publish_track_to_p2p(
                 hash: hash.to_string(),
                 title: track_title.to_string(),
                 artist_name: artist_name.to_string(),
+                album_artist_name: audio_meta.album_artist.clone(),
                 album_title: Some(album_title.to_string()),
                 duration_secs: audio_meta.duration_secs as f32,
                 format: audio_meta.format.clone(),

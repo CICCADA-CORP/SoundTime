@@ -7,7 +7,7 @@ use reqwest::Client;
 use sea_orm::DatabaseConnection;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
-use soundtime_audio::{AudioStorage, StorageBackend};
+use soundtime_audio::StorageBackend;
 use soundtime_db::entities::{album, artist, instance_setting, track};
 use uuid::Uuid;
 
@@ -489,7 +489,11 @@ fn parse_wikipedia_url(url: &str) -> Option<(String, String)> {
 
 /// Enrich a single track with MusicBrainz metadata.
 /// Returns a `MetadataResult` describing what was found/updated.
-pub async fn enrich_track(db: &DatabaseConnection, track_id: Uuid) -> MetadataResult {
+pub async fn enrich_track(
+    db: &DatabaseConnection,
+    storage: &dyn StorageBackend,
+    track_id: Uuid,
+) -> MetadataResult {
     let base_result = MetadataResult {
         track_id,
         status: MetadataStatus::Error,
@@ -693,22 +697,17 @@ pub async fn enrich_track(db: &DatabaseConnection, track_id: Uuid) -> MetadataRe
                     {
                         // Download and store locally
                         if let Some(cover_bytes) = download_cover(&client, &cover_url).await {
-                            let storage = AudioStorage::from_env();
-                            // Use a deterministic path for the cover
-                            let cover_dir = format!("covers/{}", album_id);
-                            let cover_filename = "cover.jpg";
-                            let cover_path = format!("{cover_dir}/{cover_filename}");
-                            let full_cover_path = storage.full_path(&cover_path);
-
-                            // Ensure directory exists
-                            if let Some(parent) = full_cover_path.parent() {
-                                let _ = tokio::fs::create_dir_all(parent).await;
-                            }
-                            if (tokio::fs::write(&full_cover_path, &cover_bytes).await
-                                as Result<(), std::io::Error>)
-                                .is_ok()
+                            // Use the track uploader as owner; fall back to a nil UUID for system-enriched tracks
+                            let owner_id = track_model.uploaded_by.unwrap_or_else(Uuid::nil);
+                            if let Ok(relative) = storage
+                                .store_cover(
+                                    owner_id,
+                                    Some(album_model.title.as_str()),
+                                    &cover_bytes,
+                                )
+                                .await
                             {
-                                let media_url = format!("/api/media/{cover_path}");
+                                let media_url = format!("/api/media/{relative}");
                                 album_update.cover_url = Set(Some(media_url.clone()));
                                 result_cover_url = Some(media_url);
                             }
@@ -1008,7 +1007,10 @@ Respond ONLY with valid JSON, no markdown, no explanation."#,
 /// Enrich all tracks that don't have a MusicBrainz ID yet.
 /// Returns results for each track processed.
 /// Respects MusicBrainz rate limit (1 req/sec).
-pub async fn enrich_all_tracks(db: &DatabaseConnection) -> Vec<MetadataResult> {
+pub async fn enrich_all_tracks(
+    db: &DatabaseConnection,
+    storage: &dyn StorageBackend,
+) -> Vec<MetadataResult> {
     let tracks = track::Entity::find()
         .filter(track::Column::MusicbrainzId.is_null())
         .all(db)
@@ -1018,7 +1020,7 @@ pub async fn enrich_all_tracks(db: &DatabaseConnection) -> Vec<MetadataResult> {
     let mut results = Vec::with_capacity(tracks.len());
 
     for t in tracks {
-        let result = enrich_track(db, t.id).await;
+        let result = enrich_track(db, storage, t.id).await;
         results.push(result);
 
         // Extra rate limit between tracks to stay well under MusicBrainz limits

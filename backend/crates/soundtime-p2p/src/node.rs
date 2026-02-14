@@ -70,6 +70,10 @@ pub struct TrackAnnouncement {
     pub title: String,
     /// Artist name
     pub artist_name: String,
+    /// Album artist name — used for album grouping on compilations.
+    /// Falls back to `artist_name` when absent (backward compat with older peers).
+    #[serde(default)]
+    pub album_artist_name: Option<String>,
     /// Album title (if any)
     pub album_title: Option<String>,
     /// Duration in seconds
@@ -191,6 +195,8 @@ pub struct P2pConfig {
     pub seed_peers: Vec<String>,
     /// Path to the audio file storage (for cover art sync)
     pub audio_storage_path: PathBuf,
+    /// Optional separate directory for metadata files (covers, etc.)
+    pub metadata_storage_path: Option<PathBuf>,
 }
 
 impl Default for P2pConfig {
@@ -202,6 +208,7 @@ impl Default for P2pConfig {
             enable_local_discovery: true,
             seed_peers: Vec::new(),
             audio_storage_path: PathBuf::from("data/music"),
+            metadata_storage_path: None,
         }
     }
 }
@@ -237,6 +244,10 @@ impl P2pConfig {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("data/music"));
 
+        let metadata_storage_path = std::env::var("METADATA_STORAGE_PATH")
+            .ok()
+            .map(PathBuf::from);
+
         Self {
             blobs_dir,
             secret_key_path,
@@ -244,6 +255,7 @@ impl P2pConfig {
             enable_local_discovery,
             seed_peers,
             audio_storage_path,
+            metadata_storage_path,
         }
     }
 }
@@ -268,6 +280,8 @@ pub struct P2pNode {
     _config: P2pConfig,
     /// Path to audio file storage (for writing cover art from peers)
     audio_storage_path: PathBuf,
+    /// Optional separate path for metadata (covers). Falls back to audio_storage_path.
+    metadata_storage_path: Option<PathBuf>,
     /// LRU cache for P2P track blobs.
     blob_cache: Arc<BlobCache>,
     /// Track health manager for failure tracking and auto-repair.
@@ -379,6 +393,7 @@ impl P2pNode {
         let mb_client = Arc::new(MusicBrainzClient::new());
 
         let audio_storage_path = config.audio_storage_path.clone();
+        let metadata_storage_path = config.metadata_storage_path.clone();
 
         let blob_cache = Arc::new(BlobCache::from_env());
 
@@ -396,6 +411,7 @@ impl P2pNode {
             shutdown_tx,
             _config: config,
             audio_storage_path,
+            metadata_storage_path,
             blob_cache,
             health_manager,
             conn_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_P2P_CONNECTIONS)),
@@ -570,6 +586,14 @@ impl P2pNode {
 
         info!("P2P node started successfully");
         Ok(node)
+    }
+
+    /// Returns the base directory for cover art storage.
+    /// Uses `metadata_storage_path` if set, otherwise falls back to `audio_storage_path`.
+    fn cover_base_path(&self) -> &std::path::Path {
+        self.metadata_storage_path
+            .as_deref()
+            .unwrap_or(&self.audio_storage_path)
     }
 
     /// Get this node's unique identifier (public key).
@@ -1141,8 +1165,18 @@ impl P2pNode {
                                     // cover_url is like "/api/media/<relative_path>"
                                     let rel = url.strip_prefix("/api/media/").unwrap_or(url);
                                     let full = self.audio_storage_path.join(rel);
-                                    match tokio::fs::read(&full).await {
-                                        Ok(data) => {
+                                    let cover_data = match tokio::fs::read(&full).await {
+                                        Ok(data) => Some(data),
+                                        Err(_) => {
+                                            if let Some(ref meta) = self.metadata_storage_path {
+                                                tokio::fs::read(meta.join(rel)).await.ok()
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                    };
+                                    match cover_data {
+                                        Some(data) => {
                                             match self.publish_cover(Bytes::from(data)).await {
                                                 Ok(h) => Some(h.to_string()),
                                                 Err(e) => {
@@ -1151,7 +1185,7 @@ impl P2pNode {
                                                 }
                                             }
                                         }
-                                        Err(_) => None,
+                                        None => None,
                                     }
                                 } else {
                                     None
@@ -1168,6 +1202,7 @@ impl P2pNode {
                     hash,
                     title: t.title.clone(),
                     artist_name,
+                    album_artist_name: None, // Not available from DB query; artist_id on album suffices
                     album_title,
                     duration_secs: t.duration_secs,
                     format: t.format.clone(),
@@ -1674,12 +1709,23 @@ impl P2pNode {
                             let ch = if let Some(ref url) = a.cover_url {
                                 let rel = url.strip_prefix("/api/media/").unwrap_or(url);
                                 let full = self.audio_storage_path.join(rel);
-                                match tokio::fs::read(&full).await {
-                                    Ok(data) => match self.publish_cover(Bytes::from(data)).await {
+                                let cover_data = match tokio::fs::read(&full).await {
+                                    Ok(data) => Some(data),
+                                    Err(_) => {
+                                        if let Some(ref meta) = self.metadata_storage_path {
+                                            tokio::fs::read(meta.join(rel)).await.ok()
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                };
+                                match cover_data {
+                                    Some(data) => match self.publish_cover(Bytes::from(data)).await
+                                    {
                                         Ok(h) => Some(h.to_string()),
                                         Err(_) => None,
                                     },
-                                    Err(_) => None,
+                                    None => None,
                                 }
                             } else {
                                 None
@@ -1696,6 +1742,7 @@ impl P2pNode {
                 hash,
                 title: t.title.clone(),
                 artist_name,
+                album_artist_name: None,
                 album_title,
                 duration_secs: t.duration_secs,
                 format: t.format.clone(),
@@ -1900,11 +1947,53 @@ impl P2pNode {
             }
         };
 
+        // Resolve album artist for proper album grouping (compilations)
+        let album_artist_name = ann
+            .album_artist_name
+            .clone()
+            .unwrap_or_else(|| ann.artist_name.clone());
+
+        let album_artist_id = if album_artist_name == ann.artist_name {
+            artist_id
+        } else {
+            let existing = artist::Entity::find()
+                .filter(artist::Column::Name.eq(&album_artist_name))
+                .one(&self.db)
+                .await;
+            match existing {
+                Ok(Some(a)) => a.id,
+                _ => {
+                    let new_id = Uuid::new_v4();
+                    let new_artist = artist::ActiveModel {
+                        id: Set(new_id),
+                        name: Set(album_artist_name.clone()),
+                        musicbrainz_id: Set(None),
+                        bio: Set(None),
+                        image_url: Set(None),
+                        created_at: Set(chrono::Utc::now().into()),
+                    };
+                    if let Err(e) = new_artist.insert(&self.db).await {
+                        warn!(artist = %album_artist_name, "failed to create album artist: {e}");
+                        match artist::Entity::find()
+                            .filter(artist::Column::Name.eq(&album_artist_name))
+                            .one(&self.db)
+                            .await
+                        {
+                            Ok(Some(a)) => a.id,
+                            _ => artist_id, // fallback to track artist
+                        }
+                    } else {
+                        new_id
+                    }
+                }
+            }
+        };
+
         // Create album (find or create) if present
         let album_id = if let Some(ref album_title) = ann.album_title {
             match album::Entity::find()
                 .filter(album::Column::Title.eq(album_title))
-                .filter(album::Column::ArtistId.eq(artist_id))
+                .filter(album::Column::ArtistId.eq(album_artist_id))
                 .one(&self.db)
                 .await
             {
@@ -1920,7 +2009,7 @@ impl P2pNode {
                     let new_album = album::ActiveModel {
                         id: Set(new_id),
                         title: Set(album_title.clone()),
-                        artist_id: Set(artist_id),
+                        artist_id: Set(album_artist_id),
                         release_date: Set(None),
                         cover_url: Set(None),
                         musicbrainz_id: Set(None),
@@ -1938,7 +2027,7 @@ impl P2pNode {
                             warn!(album = %album_title, "failed to create album: {e}");
                             album::Entity::find()
                                 .filter(album::Column::Title.eq(album_title))
-                                .filter(album::Column::ArtistId.eq(artist_id))
+                                .filter(album::Column::ArtistId.eq(album_artist_id))
                                 .one(&self.db)
                                 .await
                                 .ok()
@@ -2402,7 +2491,7 @@ impl P2pNode {
             .unwrap_or_else(|| "singles".to_string());
 
         let cover_dir = self
-            .audio_storage_path
+            .cover_base_path()
             .join("p2p-covers")
             .join(&artist_dir)
             .join(&album_dir);
@@ -2420,7 +2509,7 @@ impl P2pNode {
 
         // Build the relative path for the cover_url
         let relative = cover_file
-            .strip_prefix(&self.audio_storage_path)
+            .strip_prefix(self.cover_base_path())
             .unwrap_or(&cover_file)
             .to_string_lossy()
             .to_string();
@@ -2679,6 +2768,7 @@ mod tests {
             hash: "abc".into(),
             title: "Song".into(),
             artist_name: "Artist".into(),
+            album_artist_name: None,
             album_title: Some("Album".into()),
             duration_secs: 240.5,
             format: "MP3".into(),
@@ -2793,6 +2883,7 @@ mod tests {
             hash: "h1".into(),
             title: "T".into(),
             artist_name: "A".into(),
+            album_artist_name: None,
             album_title: None,
             duration_secs: 60.0,
             format: "MP3".into(),
@@ -2870,6 +2961,7 @@ mod tests {
             hash: "delta1".into(),
             title: "Delta Track".into(),
             artist_name: "Delta Artist".into(),
+            album_artist_name: None,
             album_title: None,
             duration_secs: 120.0,
             format: "OPUS".into(),
@@ -2909,6 +3001,7 @@ mod tests {
             hash: "ann1".into(),
             title: "Announced".into(),
             artist_name: "Announcer".into(),
+            album_artist_name: None,
             album_title: Some("Album Ann".into()),
             duration_secs: 200.0,
             format: "FLAC".into(),
@@ -3011,6 +3104,7 @@ mod tests {
             hash: "h".into(),
             title: "T".into(),
             artist_name: "A".into(),
+            album_artist_name: None,
             album_title: None,
             duration_secs: 0.0,
             format: "WAV".into(),
@@ -3042,6 +3136,7 @@ mod tests {
             hash: "h".into(),
             title: "T".into(),
             artist_name: "A".into(),
+            album_artist_name: None,
             album_title: None,
             duration_secs: 1.0,
             format: "MP3".into(),
@@ -3066,6 +3161,7 @@ mod tests {
             hash: "h".into(),
             title: "T".into(),
             artist_name: "A".into(),
+            album_artist_name: None,
             album_title: None,
             duration_secs: 1.0,
             format: "MP3".into(),
@@ -3172,6 +3268,7 @@ mod tests {
         std::env::remove_var("P2P_LOCAL_DISCOVERY");
         std::env::remove_var("P2P_SEED_PEERS");
         std::env::remove_var("AUDIO_STORAGE_PATH");
+        std::env::remove_var("METADATA_STORAGE_PATH");
 
         let cfg = P2pConfig::from_env();
         assert_eq!(cfg.blobs_dir, PathBuf::from("data/p2p/blobs"));
@@ -3180,6 +3277,7 @@ mod tests {
         assert!(cfg.enable_local_discovery);
         assert!(cfg.seed_peers.is_empty());
         assert_eq!(cfg.audio_storage_path, PathBuf::from("data/music"));
+        assert!(cfg.metadata_storage_path.is_none());
     }
 
     #[test]
@@ -3257,6 +3355,17 @@ mod tests {
         std::env::remove_var("AUDIO_STORAGE_PATH");
     }
 
+    #[test]
+    fn test_config_from_env_metadata_storage() {
+        std::env::set_var("METADATA_STORAGE_PATH", "/metadata/covers");
+        let cfg = P2pConfig::from_env();
+        assert_eq!(
+            cfg.metadata_storage_path,
+            Some(PathBuf::from("/metadata/covers"))
+        );
+        std::env::remove_var("METADATA_STORAGE_PATH");
+    }
+
     // ── P2pConfig Clone + Debug ──────────────────────────────────────
 
     #[test]
@@ -3330,6 +3439,7 @@ mod tests {
             hash: hash.into(),
             title: title.into(),
             artist_name: "A".into(),
+            album_artist_name: None,
             album_title: None,
             duration_secs: 60.0,
             format: "MP3".into(),

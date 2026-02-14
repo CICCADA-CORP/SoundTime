@@ -320,12 +320,46 @@ async fn import_file(state: &AppState, relative_path: &str) -> Result<Uuid, Stri
         }
     };
 
+    // Resolve album artist: prefer album_artist tag, fall back to track artist
+    let album_artist_name = meta
+        .album_artist
+        .clone()
+        .unwrap_or_else(|| artist_name.clone());
+
+    let album_artist_id = if album_artist_name == artist_name {
+        artist_id
+    } else {
+        use sea_orm::QueryFilter;
+        let existing = soundtime_db::entities::artist::Entity::find()
+            .filter(soundtime_db::entities::artist::Column::Name.eq(&album_artist_name))
+            .one(&state.db)
+            .await
+            .map_err(|e| format!("DB: {e}"))?;
+
+        if let Some(a) = existing {
+            a.id
+        } else {
+            let a = soundtime_db::entities::artist::ActiveModel {
+                id: Set(Uuid::new_v4()),
+                name: Set(album_artist_name.clone()),
+                bio: Set(None),
+                image_url: Set(None),
+                musicbrainz_id: Set(None),
+                created_at: Set(chrono::Utc::now().into()),
+            };
+            a.insert(&state.db)
+                .await
+                .map_err(|e| format!("Insert album artist: {e}"))?
+                .id
+        }
+    };
+
     // Find or create album
     let album_title = meta.album.clone().unwrap_or_else(|| "Singles".to_string());
     let album_id = {
         let existing = soundtime_db::entities::album::Entity::find()
             .filter(soundtime_db::entities::album::Column::Title.eq(&album_title))
-            .filter(soundtime_db::entities::album::Column::ArtistId.eq(artist_id))
+            .filter(soundtime_db::entities::album::Column::ArtistId.eq(album_artist_id))
             .one(&state.db)
             .await
             .map_err(|e| format!("DB: {e}"))?;
@@ -336,7 +370,7 @@ async fn import_file(state: &AppState, relative_path: &str) -> Result<Uuid, Stri
             let new_album = soundtime_db::entities::album::ActiveModel {
                 id: Set(Uuid::new_v4()),
                 title: Set(album_title.clone()),
-                artist_id: Set(artist_id),
+                artist_id: Set(album_artist_id),
                 release_date: Set(None),
                 cover_url: Set(None),
                 musicbrainz_id: Set(None),

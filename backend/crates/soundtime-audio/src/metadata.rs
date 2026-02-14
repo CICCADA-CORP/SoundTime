@@ -1,5 +1,6 @@
 use lofty::prelude::*;
 use lofty::probe::Probe;
+use lofty::tag::ItemKey;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
@@ -19,6 +20,10 @@ pub struct AudioMetadata {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    /// Album artist (TPE2 / `AlbumArtist` tag). Used to group tracks into albums
+    /// independently of the per-track artist. Compilations typically set this to
+    /// "Various Artists" so all tracks land under a single album entry.
+    pub album_artist: Option<String>,
     pub genre: Option<String>,
     pub year: Option<u32>,
     pub track_number: Option<u32>,
@@ -69,7 +74,7 @@ pub fn extract_metadata_from_file(path: &Path) -> Result<AudioMetadata, Metadata
         .primary_tag()
         .or_else(|| tagged_file.first_tag());
 
-    let (title, artist, album, genre, year, track_number, disc_number, cover_art) =
+    let (title, artist, album, album_artist, genre, year, track_number, disc_number, cover_art) =
         if let Some(tag) = tag {
             let cover = tag.pictures().first().map(|p| p.data().to_vec());
 
@@ -77,6 +82,7 @@ pub fn extract_metadata_from_file(path: &Path) -> Result<AudioMetadata, Metadata
                 tag.title().map(|t| t.to_string()),
                 tag.artist().map(|a| a.to_string()),
                 tag.album().map(|a| a.to_string()),
+                tag.get_string(&ItemKey::AlbumArtist).map(|s| s.to_string()),
                 tag.genre().map(|g| g.to_string()),
                 tag.year(),
                 tag.track(),
@@ -84,7 +90,7 @@ pub fn extract_metadata_from_file(path: &Path) -> Result<AudioMetadata, Metadata
                 cover,
             )
         } else {
-            (None, None, None, None, None, None, None, None)
+            (None, None, None, None, None, None, None, None, None)
         };
 
     let format = match extension.as_str() {
@@ -102,6 +108,7 @@ pub fn extract_metadata_from_file(path: &Path) -> Result<AudioMetadata, Metadata
         title,
         artist,
         album,
+        album_artist,
         genre,
         year,
         track_number,
@@ -198,6 +205,7 @@ mod tests {
             title: Some("Test Song".into()),
             artist: Some("Test Artist".into()),
             album: Some("Test Album".into()),
+            album_artist: Some("Test Album Artist".into()),
             genre: Some("Rock".into()),
             year: Some(2024),
             track_number: Some(1),
@@ -221,6 +229,7 @@ mod tests {
             "title": "My Track",
             "artist": null,
             "album": null,
+            "album_artist": null,
             "genre": null,
             "year": null,
             "track_number": null,
@@ -235,6 +244,7 @@ mod tests {
         }"#;
         let meta: AudioMetadata = serde_json::from_str(json).unwrap();
         assert_eq!(meta.title.as_deref(), Some("My Track"));
+        assert_eq!(meta.album_artist, None);
         assert_eq!(meta.format, "flac");
         assert_eq!(meta.file_size, 1_000_000);
     }
