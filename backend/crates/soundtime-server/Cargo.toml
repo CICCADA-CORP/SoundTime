@@ -17,7 +17,7 @@ dotenvy = "0.15"
 sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
 sea-orm-migration = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
 argon2 = "0.5"
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 rand = "0.8"
 tower_governor = "0.8"
 password-hash = { version = "0.5", features = ["std"] }
@@ -28,7 +28,7 @@ urlencoding = "2"
 bytes = "1"
 toml = "0.8"
 regex = "1"
-git2 = "0.19"
+git2 = "0.20"
 tempfile = "3"
 
 soundtime-audio = { path = "../soundtime-audio" }

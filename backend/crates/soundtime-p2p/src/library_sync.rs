@@ -249,7 +249,18 @@ async fn get_peer_sync_status(
 // ─── Force re-sync ──────────────────────────────────────────────────
 
 /// Trigger a full library re-sync with a specific peer in the background.
-/// This sends a CatalogSync request and also requests the peer's full catalog.
+///
+/// Runs through five phases:
+/// 1. **Ping** — verify peer connectivity and learn its track count.
+/// 2. **Send catalog** — push our local tracks to the peer via `announce_all_tracks_to_peer`.
+/// 3. **Request catalog** — send `RequestCatalog` to the peer, then poll the
+///    `remote_track` table until all expected tracks arrive (or a 5-minute
+///    timeout / 20-second stall is reached).
+/// 4. **Bloom exchange** — broadcast updated search indexes.
+/// 5. **Incremental sync** — send any remaining tracks the peer may have missed.
+///
+/// Progress is tracked via the shared `tracker` handle so the API can report
+/// real-time status to the frontend.
 pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: SyncTaskHandle) {
     tokio::spawn(async move {
         let start = std::time::Instant::now();
@@ -292,6 +303,7 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
         }
 
         let peer_addr = iroh::EndpointAddr::new(nid);
+        let expected_tracks: u64;
         match node.ping_peer(peer_addr).await {
             Ok(crate::node::P2pMessage::Pong {
                 node_id: ref nid_str,
@@ -302,6 +314,7 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
                     .upsert_peer_versioned(nid_str, None, track_count, version)
                     .await;
                 info!(peer = %peer_node_id, %track_count, "peer responded to ping — starting sync");
+                expected_tracks = track_count;
 
                 // Update total
                 let mut status = tracker.lock().await;
@@ -316,6 +329,11 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
             }
             Ok(_) => {
                 warn!(peer = %peer_node_id, "unexpected response from peer");
+                let mut status = tracker.lock().await;
+                *status = LibrarySyncTaskStatus::Error {
+                    message: "Unexpected response from peer".to_string(),
+                };
+                return;
             }
             Err(e) => {
                 let mut status = tracker.lock().await;
@@ -340,21 +358,102 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
         }
         node.announce_all_tracks_to_peer(nid).await;
 
-        // Phase 3: Request peer's full catalog (peer exchange + catalog sync)
+        // Phase 3: Request peer's full catalog and wait for tracks to arrive
         {
             let mut status = tracker.lock().await;
             *status = LibrarySyncTaskStatus::Running {
                 peer_id: peer_node_id.clone(),
                 progress: SyncProgress {
-                    processed: 1,
-                    total: Some(3),
+                    processed: 0,
+                    total: Some(expected_tracks),
                     phase: "Requesting peer's catalog...".to_string(),
                 },
             };
         }
 
-        // Discover via peer (PEX + catalog)
+        // Also run PEX for peer discovery (non-blocking, just fire and forget)
         node.discover_via_peer(nid).await;
+
+        // Send explicit RequestCatalog to the peer
+        if let Err(e) = node.request_catalog_from_peer(nid).await {
+            warn!(peer = %peer_node_id, "failed to request catalog from peer: {e}");
+            // Don't abort — the Ping handler may have already triggered a catalog send
+        }
+
+        // Wait for incoming tracks from the peer (they arrive asynchronously via
+        // the CatalogSync handler). Poll the remote_track table until we reach the
+        // expected count or timeout.
+        if expected_tracks > 0 {
+            let db = node.db();
+            let domain = normalize_instance_domain(&peer_node_id);
+            let poll_interval = std::time::Duration::from_secs(2);
+            let timeout = std::time::Duration::from_secs(300); // 5 minutes max
+            let deadline = std::time::Instant::now() + timeout;
+            let mut last_count = 0u64;
+            let mut stall_count = 0u32;
+
+            loop {
+                tokio::time::sleep(poll_interval).await;
+
+                let current_count = remote_track::Entity::find()
+                    .filter(remote_track::Column::InstanceDomain.eq(&domain))
+                    .count(db)
+                    .await
+                    .unwrap_or(0);
+
+                // Update progress
+                {
+                    let mut status = tracker.lock().await;
+                    *status = LibrarySyncTaskStatus::Running {
+                        peer_id: peer_node_id.clone(),
+                        progress: SyncProgress {
+                            processed: current_count,
+                            total: Some(expected_tracks),
+                            phase: format!(
+                                "Receiving catalog... ({}/{})",
+                                current_count, expected_tracks
+                            ),
+                        },
+                    };
+                }
+
+                if current_count >= expected_tracks {
+                    info!(
+                        peer = %peer_node_id,
+                        tracks = current_count,
+                        "all expected tracks received from peer"
+                    );
+                    break;
+                }
+
+                // Detect stall: if count hasn't changed for 10 consecutive polls (20s)
+                if current_count == last_count {
+                    stall_count += 1;
+                    if stall_count >= 10 {
+                        info!(
+                            peer = %peer_node_id,
+                            received = current_count,
+                            expected = expected_tracks,
+                            "catalog reception stalled — continuing with received tracks"
+                        );
+                        break;
+                    }
+                } else {
+                    stall_count = 0;
+                }
+                last_count = current_count;
+
+                if std::time::Instant::now() >= deadline {
+                    warn!(
+                        peer = %peer_node_id,
+                        received = current_count,
+                        expected = expected_tracks,
+                        "catalog reception timed out after 5 minutes"
+                    );
+                    break;
+                }
+            }
+        }
 
         // Phase 4: Exchange bloom filters for search
         {
@@ -370,7 +469,7 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
         }
         node.broadcast_bloom_filter().await;
 
-        // Phase 5: Done — incremental sync to pull any missing data
+        // Phase 5: Incremental sync to send any missing data
         {
             let mut status = tracker.lock().await;
             *status = LibrarySyncTaskStatus::Running {
@@ -384,7 +483,7 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
         }
         node.incremental_sync_to_peer(nid, None).await;
 
-        // Count results (instance_domain is stored with "p2p://" prefix)
+        // Count final results
         let db = node.db();
         let domain = normalize_instance_domain(&peer_node_id);
         let tracks_synced = remote_track::Entity::find()
@@ -408,7 +507,7 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
                 result: SyncResult {
                     peer_id: peer_node_id,
                     tracks_synced,
-                    tracks_already_known: 0, // We don't track this granularity yet
+                    tracks_already_known: 0,
                     errors: 0,
                     duration_secs: (elapsed * 100.0).round() / 100.0,
                 },

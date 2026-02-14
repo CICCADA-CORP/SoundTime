@@ -128,6 +128,9 @@ pub enum P2pMessage {
         since: chrono::DateTime<chrono::Utc>,
         tracks: Vec<TrackAnnouncement>,
     },
+    /// Request a peer's full catalog — triggers the remote side to call
+    /// `announce_all_tracks_to_peer` back to us.
+    RequestCatalog,
     /// Exchange Bloom filters for search routing
     BloomExchange { bloom: BloomFilterData },
     /// Search query sent to peers whose Bloom filter matches
@@ -293,8 +296,14 @@ pub struct P2pNode {
     published_hashes: tokio::sync::RwLock<std::collections::HashSet<String>>,
     /// Round-robin index for PEX peer rotation.
     pex_index: AtomicUsize,
-    /// Set of peer IDs currently being processed for CatalogSync (prevents duplicates).
-    catalog_sync_in_progress: tokio::sync::Mutex<std::collections::HashSet<String>>,
+    /// Per-peer mutexes that serialize concurrent `CatalogSync` page processing.
+    ///
+    /// Keyed by peer EndpointId string. Each entry holds an `Arc<Mutex<()>>` so
+    /// that multiple CatalogSync pages from the same peer are processed one at a
+    /// time (preventing duplicate track insertions), while syncs from different
+    /// peers proceed in parallel.
+    catalog_sync_in_progress:
+        tokio::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Pool of reusable QUIC connections to peers (FIX-30).
     conn_pool: Arc<ConnectionPool>,
 }
@@ -417,7 +426,7 @@ impl P2pNode {
             conn_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_P2P_CONNECTIONS)),
             published_hashes: tokio::sync::RwLock::new(std::collections::HashSet::new()),
             pex_index: AtomicUsize::new(0),
-            catalog_sync_in_progress: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+            catalog_sync_in_progress: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             conn_pool,
         });
 
@@ -1232,6 +1241,14 @@ impl P2pNode {
                 }
             }
         }
+    }
+
+    /// Send a `RequestCatalog` message to a peer, asking them to send us their
+    /// full catalog via paginated `CatalogSync` messages.
+    pub async fn request_catalog_from_peer(&self, peer_id: EndpointId) -> Result<(), P2pError> {
+        info!(peer = %peer_id, "requesting full catalog from peer");
+        self.send_message_to_peer(peer_id, &P2pMessage::RequestCatalog)
+            .await
     }
 
     /// Discover peers by exchanging peer lists with a known peer (Peer Exchange / PEX).
@@ -2181,7 +2198,12 @@ impl P2pNode {
             }
             P2pMessage::Ping => {
                 // Get actual track count from DB
-                let track_count = track::Entity::find().count(&self.db).await.unwrap_or(0);
+                let track_count = track::Entity::find()
+                    .filter(track::Column::ContentHash.is_not_null())
+                    .filter(track::Column::FilePath.not_like("p2p://%"))
+                    .count(&self.db)
+                    .await
+                    .unwrap_or(0);
 
                 let pong = P2pMessage::Pong {
                     node_id: node_id.to_string(),
@@ -2216,15 +2238,14 @@ impl P2pNode {
                 let _ = send.finish();
             }
             P2pMessage::CatalogSync(announcements) => {
-                // Dedup guard: skip if already processing a CatalogSync from this peer
-                {
-                    let mut in_progress = self.catalog_sync_in_progress.lock().await;
-                    if !in_progress.insert(peer_id.to_string()) {
-                        warn!(%peer_id, count = announcements.len(), "duplicate CatalogSync rejected (already in progress)");
-                        let _ = send.finish();
-                        return Ok(());
-                    }
-                }
+                // Acquire per-peer lock to serialize (not reject) concurrent CatalogSync pages
+                let peer_lock = {
+                    let mut map = self.catalog_sync_in_progress.lock().await;
+                    map.entry(peer_id.to_string())
+                        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                        .clone()
+                };
+                let _guard = peer_lock.lock().await;
 
                 info!(count = announcements.len(), %peer_id, "received catalog sync");
 
@@ -2237,8 +2258,6 @@ impl P2pNode {
                     }
                 }
 
-                // Remove from in-progress
-                self.catalog_sync_in_progress.lock().await.remove(peer_id);
                 // Properly close our side of the stream
                 let _ = send.finish();
             }
@@ -2326,6 +2345,17 @@ impl P2pNode {
                     self.process_track_announcement(ann, peer_id).await;
                 }
                 let _ = send.finish();
+            }
+            P2pMessage::RequestCatalog => {
+                info!(%peer_id, "received catalog request — sending full catalog");
+                let _ = send.finish();
+                // Spawn so we don't block this connection handler
+                if let Ok(remote_nid) = peer_id.parse::<EndpointId>() {
+                    let node = Arc::clone(self);
+                    tokio::spawn(async move {
+                        node.announce_all_tracks_to_peer(remote_nid).await;
+                    });
+                }
             }
             P2pMessage::BloomExchange { bloom } => {
                 info!(%peer_id, items = bloom.item_count, "received bloom filter from peer");
@@ -2990,6 +3020,31 @@ mod tests {
                 assert!((s - since).num_seconds().abs() < 1);
             }
             _ => panic!("expected CatalogDelta"),
+        }
+    }
+
+    // ── P2pMessage serde: RequestCatalog ─────────────────────────────
+
+    #[test]
+    fn test_message_serde_request_catalog() {
+        let msg = P2pMessage::RequestCatalog;
+        let bytes = serde_json::to_vec(&msg).unwrap();
+        let decoded: P2pMessage = serde_json::from_slice(&bytes).unwrap();
+        match decoded {
+            P2pMessage::RequestCatalog => {} // expected
+            _ => panic!("expected RequestCatalog"),
+        }
+    }
+
+    #[test]
+    fn test_message_serde_request_catalog_roundtrip_json() {
+        let msg = P2pMessage::RequestCatalog;
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("RequestCatalog"));
+        let decoded: P2pMessage = serde_json::from_str(&json).unwrap();
+        match decoded {
+            P2pMessage::RequestCatalog => {}
+            _ => panic!("expected RequestCatalog"),
         }
     }
 

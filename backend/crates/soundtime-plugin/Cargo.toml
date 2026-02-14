@@ -15,7 +15,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls", "with-uuid", "with-chrono", "with-json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-git2 = "0.19"
+git2 = "0.20"
 semver = "1"
 url = "2"
 wasmparser = "0.227"
