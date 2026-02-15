@@ -71,6 +71,12 @@ pub struct MusicBrainzClient {
 
 impl MusicBrainzClient {
     /// Create a new MusicBrainz client with the proper User-Agent.
+    ///
+    /// # Panics
+    /// Panics if the HTTP client cannot be built. This is acceptable because
+    /// `reqwest::Client::builder()` with default settings virtually never fails,
+    /// and `new()` returns `Self` (not `Result`), so changing the signature
+    /// would be a breaking API change.
     pub fn new() -> Self {
         let http = reqwest::Client::builder()
             .user_agent(MB_USER_AGENT)

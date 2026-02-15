@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/CICCADA-CORP/SoundTime/actions/workflows/ci.yml"><img src="https://github.com/CICCADA-CORP/SoundTime/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License" /></a>
-  <img src="https://img.shields.io/badge/version-1.0.0-green.svg" alt="Version" />
+  <img src="https://img.shields.io/badge/version-0.1.0-green.svg" alt="Version" />
   <img src="https://img.shields.io/badge/rust-1.93%2B-orange.svg" alt="Rust" />
   <img src="https://img.shields.io/badge/node-20%2B-339933.svg" alt="Node" />
 </p>
@@ -93,24 +93,9 @@ Unlike centralized platforms, SoundTime gives you full control over your music. 
 
 ## Screenshots
 
-<!-- TODO: Replace with actual screenshots of the SoundTime UI -->
-<!-- Recommended: dashboard, player with waveform, admin panel, network graph -->
-
 <p align="center">
   <em>Screenshots coming soon — see <a href="#quick-start">Quick Start</a> to try it yourself!</em>
 </p>
-
-<!--
-<p align="center">
-  <img src="docs/assets/screenshot-player.png" alt="Audio Player" width="800" />
-</p>
-<p align="center">
-  <img src="docs/assets/screenshot-admin.png" alt="Admin Dashboard" width="800" />
-</p>
-<p align="center">
-  <img src="docs/assets/screenshot-network.png" alt="P2P Network Graph" width="800" />
-</p>
--->
 
 ## Tech Stack
 
@@ -205,7 +190,7 @@ See the [Deployment Guide](docs/deployment.md) for production setup with SSL, cu
 
 ## Architecture
 
-SoundTime follows a modular monorepo architecture with a Rust backend organized into 5 specialized crates:
+SoundTime follows a modular monorepo architecture with a Rust backend organized into 6 specialized crates:
 
 ```
 soundtime/
@@ -215,7 +200,8 @@ soundtime/
 │       ├── soundtime-db         # Sea-ORM entities & database connection pool
 │       ├── soundtime-migration  # 22 database migrations (PostgreSQL)
 │       ├── soundtime-audio      # Audio metadata, storage, waveform generation
-│       └── soundtime-p2p        # P2P networking via iroh (discovery, health, search)
+│       ├── soundtime-p2p        # P2P networking via iroh (discovery, health, search)
+│       └── soundtime-plugin     # Plugin system (WASM/extism-based extensions)
 ├── frontend/
 │   └── src/
 │       ├── lib/

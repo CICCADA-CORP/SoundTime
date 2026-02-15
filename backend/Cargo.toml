@@ -9,6 +9,9 @@ members = [
   "crates/soundtime-plugin",
 ]
 
+[workspace.package]
+license = "AGPL-3.0-or-later"
+
 # ── Build profiles ───────────────────────────────────────────────────
 
 # CI profile: fast compilation, minimal optimization (used by CI checks)

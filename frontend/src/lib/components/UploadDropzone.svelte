@@ -2,6 +2,7 @@
   import { api } from "$lib/api";
   import type { UploadResponse } from "$lib/types";
   import { Upload, X, CheckCircle, AlertCircle, Music } from "lucide-svelte";
+  import { t } from "$lib/i18n/index.svelte";
 
   let { onuploaded }: { onuploaded?: (result: UploadResponse) => void } = $props();
 
@@ -108,9 +109,9 @@
   }
 
   function formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} o`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
+    if (bytes < 1024) return t('upload.sizeB', { n: bytes });
+    if (bytes < 1024 * 1024) return t('upload.sizeKB', { n: (bytes / 1024).toFixed(1) });
+    return t('upload.sizeMB', { n: (bytes / (1024 * 1024)).toFixed(1) });
   }
 
   let uploading = $derived(queue.some((q) => q.status === "uploading"));
@@ -144,8 +145,8 @@
 
   <div class="flex flex-col items-center gap-3">
     <Upload class="w-12 h-12 text-[hsl(var(--muted-foreground))]" />
-    <p class="text-sm font-medium">Déposez vos fichiers audio ici ou cliquez pour parcourir</p>
-    <p class="text-xs text-[hsl(var(--muted-foreground))]">MP3, FLAC, OGG, WAV, AAC, OPUS, AIFF — Upload multiple supporté</p>
+    <p class="text-sm font-medium">{t('upload.dropHint')}</p>
+    <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('upload.supportedFormats')}</p>
   </div>
 </div>
 
@@ -153,13 +154,13 @@
 {#if queue.length > 0}
   <div class="mt-4 space-y-2">
     <div class="flex items-center justify-between text-xs text-[hsl(var(--muted-foreground))]">
-      <span>{doneCount}/{queue.length} terminé{doneCount > 1 ? 's' : ''}{pendingCount > 0 ? ` · ${pendingCount} en attente` : ''}</span>
+      <span>{t('upload.queueProgress', { done: doneCount, total: queue.length })}{pendingCount > 0 ? ` · ${t('upload.queuePending', { count: pendingCount })}` : ''}</span>
       {#if !uploading && queue.length > 0}
         <button
           class="text-xs underline hover:text-[hsl(var(--foreground))]"
           onclick={(e) => { e.stopPropagation(); queue = []; }}
         >
-          Tout effacer
+           {t('upload.clearAll')}
         </button>
       {/if}
     </div>
@@ -198,7 +199,7 @@
           {:else if item.status === "error"}
             <p class="text-xs text-red-400 mt-0.5">{item.error}</p>
           {:else}
-            <p class="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">En attente...</p>
+            <p class="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{t('upload.pending')}</p>
           {/if}
         </div>
 
@@ -206,7 +207,7 @@
         <button
           class="shrink-0 p-1 rounded-md hover:bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
           onclick={(e) => { e.stopPropagation(); removeFromQueue(i); }}
-          title="Retirer"
+           title={t('upload.remove')}
         >
           <X class="w-4 h-4" />
         </button>

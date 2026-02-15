@@ -2,6 +2,7 @@
   import { Play } from "lucide-svelte";
   import type { Album } from "$lib/types";
   import { getQueueStore } from "$lib/stores/queue.svelte";
+  import { t } from "$lib/i18n/index.svelte";
 
   let { album }: { album: Album } = $props();
   const queue = getQueueStore();
@@ -29,7 +30,7 @@
         <div class="w-full h-full flex items-center justify-center text-4xl">💿</div>
       {/if}
       <button
-        aria-label="Play album"
+        aria-label={t('a11y.playAlbum')}
         onclick={handlePlay}
         class="absolute bottom-2 right-2 w-10 h-10 rounded-full bg-[hsl(var(--primary))] text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0 shadow-lg"
       >

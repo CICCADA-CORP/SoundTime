@@ -38,6 +38,8 @@
   let passwordSuccess = $state("");
   let passwordLoading = $state(false);
 
+  const deleteWarningParts = $derived(t('settings.deleteModalWarning').split(/\{\/?\s*strong\s*\}/));
+
   function saveQuality(val: string) {
     audioQuality = val;
     if (typeof window !== "undefined") localStorage.setItem("soundtime_audio_quality", val);
@@ -121,8 +123,8 @@
           emailSuccess = t('settings.emailChanged');
           newEmail = "";
           emailPassword = "";
-        } catch (err: any) {
-          emailError = err?.message ?? t('common.error');
+        } catch (err: unknown) {
+          emailError = (err instanceof Error ? err.message : String(err)) ?? t('common.error');
         } finally { emailLoading = false; }
       }}>
         <div>
@@ -162,8 +164,8 @@
           currentPassword = "";
           newPassword = "";
           confirmNewPassword = "";
-        } catch (err: any) {
-          passwordError = err?.message ?? t('common.error');
+        } catch (err: unknown) {
+          passwordError = (err instanceof Error ? err.message : String(err)) ?? t('common.error');
         } finally { passwordLoading = false; }
       }}>
         <div>
@@ -285,7 +287,7 @@
         <div class="bg-[hsl(var(--card))] rounded-xl p-6 w-full max-w-md shadow-2xl space-y-4" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
           <h3 class="text-lg font-semibold text-red-400">{t('settings.deleteConfirm')}</h3>
           <p class="text-sm text-[hsl(var(--muted-foreground))]">
-            {@html t('settings.deleteModalWarning').replace('{strong}', '<strong class="text-red-400">').replace('{/strong}', '</strong>')}
+            {deleteWarningParts[0]}<strong class="text-red-400">{deleteWarningParts[1] ?? ''}</strong>{deleteWarningParts[2] ?? ''}
           </p>
           {#if deleteError}
             <p class="text-sm text-red-400">{deleteError}</p>
@@ -299,8 +301,8 @@
               await auth.deleteAccount(deletePassword);
               showDeleteConfirm = false;
               goto("/");
-            } catch (err: any) {
-              deleteError = err?.message ?? t('settings.deleteError');
+            } catch (err: unknown) {
+              deleteError = (err instanceof Error ? err.message : String(err)) ?? t('settings.deleteError');
             } finally {
               deleteLoading = false;
             }

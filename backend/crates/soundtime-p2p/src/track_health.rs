@@ -303,6 +303,11 @@ impl TrackHealthManager {
 
     /// Acquire a permit from the recovery semaphore.
     /// Used to limit concurrent recovery operations for backpressure.
+    ///
+    /// # Panics
+    /// Panics if the semaphore is closed. This is acceptable because the
+    /// semaphore is created in the constructor and never explicitly closed
+    /// during normal operation.
     pub async fn acquire_recovery_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
         Arc::clone(&self.recovery_semaphore)
             .acquire_owned()

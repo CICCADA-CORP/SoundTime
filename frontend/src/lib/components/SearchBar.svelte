@@ -2,7 +2,7 @@
   import { goto } from "$app/navigation";
   import { t } from "$lib/i18n/index.svelte";
 
-  let query = "";
+  let query = $state("");
 
   function handleSubmit() {
     if (query.trim()) {

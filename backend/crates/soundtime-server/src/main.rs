@@ -1,6 +1,9 @@
 use axum::{
     extract::DefaultBodyLimit,
-    http::HeaderValue,
+    http::{
+        header::{ACCEPT, AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE},
+        HeaderValue,
+    },
     middleware as axum_middleware,
     routing::{get, post},
     Extension, Json, Router,
@@ -550,8 +553,8 @@ async fn main() {
                     axum::http::Method::DELETE,
                     axum::http::Method::OPTIONS,
                 ])
-                .allow_headers(tower_http::cors::Any)
-                .expose_headers(tower_http::cors::Any)
+                .allow_headers([AUTHORIZATION, CONTENT_TYPE, ACCEPT])
+                .expose_headers([CONTENT_DISPOSITION, CONTENT_LENGTH])
         } else {
             let origins: Vec<HeaderValue> = allowed_origins_str
                 .split(',')
@@ -567,8 +570,8 @@ async fn main() {
                     axum::http::Method::DELETE,
                     axum::http::Method::OPTIONS,
                 ])
-                .allow_headers(tower_http::cors::Any)
-                .expose_headers(tower_http::cors::Any)
+                .allow_headers([AUTHORIZATION, CONTENT_TYPE, ACCEPT])
+                .expose_headers([CONTENT_DISPOSITION, CONTENT_LENGTH])
         }
     };
 
@@ -621,7 +624,11 @@ async fn main() {
         ))
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8080);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!(%addr, "server started");
 
     axum::serve(

@@ -49,7 +49,7 @@ pub async fn report_track(
     if reason.is_empty() || reason.len() > 500 {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "La raison doit faire entre 1 et 500 caractères." })),
+            Json(serde_json::json!({ "error": "Reason must be between 1 and 500 characters." })),
         ));
     }
 
@@ -66,7 +66,7 @@ pub async fn report_track(
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "Piste introuvable." })),
+                Json(serde_json::json!({ "error": "Track not found." })),
             )
         })?;
 
@@ -82,7 +82,7 @@ pub async fn report_track(
     if existing.is_some() {
         return Err((
             StatusCode::CONFLICT,
-            Json(serde_json::json!({ "error": "Vous avez déjà signalé cette piste." })),
+            Json(serde_json::json!({ "error": "You have already reported this track." })),
         ));
     }
 
@@ -112,7 +112,7 @@ pub async fn report_track(
 
     Ok(Json(ReportResponse {
         id: report_id,
-        message: "Signalement enregistré. L'administrateur examinera votre demande.".to_string(),
+        message: "Report submitted. The administrator will review your request.".to_string(),
     }))
 }
 
@@ -162,11 +162,11 @@ pub async fn list_reports(
                     .ok()
                     .flatten()
                     .map(|a| a.name)
-                    .unwrap_or_else(|| "Inconnu".to_string());
+                    .unwrap_or_else(|| "Unknown".to_string());
                 let is_local = true;
                 (trk.title.clone(), artist_name, is_local)
             }
-            None => ("[Supprimé]".to_string(), "".to_string(), true),
+            None => ("[Deleted]".to_string(), "".to_string(), true),
         };
 
         let reporter = user::Entity::find_by_id(r.user_id)
@@ -175,7 +175,7 @@ pub async fn list_reports(
             .ok()
             .flatten()
             .map(|u| u.username)
-            .unwrap_or_else(|| "inconnu".to_string());
+            .unwrap_or_else(|| "unknown".to_string());
 
         results.push(AdminReportResponse {
             id: r.id,
@@ -223,7 +223,7 @@ pub async fn resolve_report(
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "Signalement introuvable." })),
+                Json(serde_json::json!({ "error": "Report not found." })),
             )
         })?;
 
@@ -234,7 +234,7 @@ pub async fn resolve_report(
         _ => {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "Action invalide (resolved ou dismissed)." })),
+                Json(serde_json::json!({ "error": "Invalid action (resolved or dismissed)." })),
             ));
         }
     };
@@ -255,58 +255,67 @@ pub async fn resolve_report(
             match track_action {
                 "delete" if is_local => {
                     // Delete local track: remove from playlists first, then delete
-                    playlist_track::Entity::delete_many()
+                    if let Err(e) = playlist_track::Entity::delete_many()
                         .filter(playlist_track::Column::TrackId.eq(trk.id))
                         .exec(&state.db)
                         .await
-                        .ok();
-                    track::Entity::delete_by_id(trk.id)
-                        .exec(&state.db)
-                        .await
-                        .ok();
+                    {
+                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete playlist tracks for reported track");
+                    }
+                    if let Err(e) = track::Entity::delete_by_id(trk.id).exec(&state.db).await {
+                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete reported track");
+                    }
                     // Delete file
-                    tokio::fs::remove_file(&trk.file_path).await.ok();
-                    track_action_msg = "Piste locale supprimée.".to_string();
+                    if let Err(e) = tokio::fs::remove_file(&trk.file_path).await {
+                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete track file");
+                    }
+                    track_action_msg = "Local track deleted.".to_string();
                     tracing::info!(track_id = %trk.id, "Local track deleted via report");
                 }
                 "unlist" if !is_local => {
                     // Unlist remote track: remove from remote_tracks table
-                    remote_track::Entity::delete_many()
+                    if let Err(e) = remote_track::Entity::delete_many()
                         .filter(remote_track::Column::LocalTrackId.eq(Some(trk.id)))
                         .exec(&state.db)
                         .await
-                        .ok();
+                    {
+                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete remote track reference");
+                    }
                     // Delete the track entry (unlist it from this instance)
-                    playlist_track::Entity::delete_many()
+                    if let Err(e) = playlist_track::Entity::delete_many()
                         .filter(playlist_track::Column::TrackId.eq(trk.id))
                         .exec(&state.db)
                         .await
-                        .ok();
-                    track::Entity::delete_by_id(trk.id)
-                        .exec(&state.db)
-                        .await
-                        .ok();
-                    track_action_msg = "Piste distante déréférencée.".to_string();
+                    {
+                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete playlist tracks for unlisted track");
+                    }
+                    if let Err(e) = track::Entity::delete_by_id(trk.id).exec(&state.db).await {
+                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete unlisted track");
+                    }
+                    track_action_msg = "Remote track dereferenced.".to_string();
                     tracing::info!(track_id = %trk.id, "Remote track unlisted via report");
                 }
                 "delete" if !is_local => {
                     // Can't delete remote — unlist instead
-                    remote_track::Entity::delete_many()
+                    if let Err(e) = remote_track::Entity::delete_many()
                         .filter(remote_track::Column::LocalTrackId.eq(Some(trk.id)))
                         .exec(&state.db)
                         .await
-                        .ok();
-                    playlist_track::Entity::delete_many()
+                    {
+                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete remote track reference");
+                    }
+                    if let Err(e) = playlist_track::Entity::delete_many()
                         .filter(playlist_track::Column::TrackId.eq(trk.id))
                         .exec(&state.db)
                         .await
-                        .ok();
-                    track::Entity::delete_by_id(trk.id)
-                        .exec(&state.db)
-                        .await
-                        .ok();
+                    {
+                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete playlist tracks for remote track");
+                    }
+                    if let Err(e) = track::Entity::delete_by_id(trk.id).exec(&state.db).await {
+                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete remote track");
+                    }
                     track_action_msg =
-                        "Piste distante déréférencée (suppression impossible).".to_string();
+                        "Remote track dereferenced (deletion not possible).".to_string();
                 }
                 _ => {}
             }
@@ -327,7 +336,7 @@ pub async fn resolve_report(
     })?;
 
     Ok(Json(serde_json::json!({
-        "message": format!("Signalement {}. {}", status, track_action_msg),
+        "message": format!("Report {}. {}", status, track_action_msg),
     })))
 }
 
@@ -417,7 +426,7 @@ pub async fn browse_tracks(
             .ok()
             .flatten()
             .map(|a| a.name)
-            .unwrap_or_else(|| "Inconnu".to_string());
+            .unwrap_or_else(|| "Unknown".to_string());
 
         let report_count = track_report::Entity::find()
             .filter(track_report::Column::TrackId.eq(t.id))
@@ -466,37 +475,42 @@ pub async fn moderate_track(
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "Piste introuvable." })),
+                Json(serde_json::json!({ "error": "Track not found." })),
             )
         })?;
 
     let is_local = true;
 
     // Remove from playlists
-    playlist_track::Entity::delete_many()
+    if let Err(e) = playlist_track::Entity::delete_many()
         .filter(playlist_track::Column::TrackId.eq(trk.id))
         .exec(&state.db)
         .await
-        .ok();
+    {
+        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete playlist tracks during moderation");
+    }
 
     if !is_local {
         // Unlist remote
-        remote_track::Entity::delete_many()
+        if let Err(e) = remote_track::Entity::delete_many()
             .filter(remote_track::Column::LocalTrackId.eq(Some(trk.id)))
             .exec(&state.db)
             .await
-            .ok();
+        {
+            tracing::warn!(error = %e, track_id = %trk.id, "failed to delete remote track reference during moderation");
+        }
     }
 
     // Delete track entry
-    track::Entity::delete_by_id(trk.id)
-        .exec(&state.db)
-        .await
-        .ok();
+    if let Err(e) = track::Entity::delete_by_id(trk.id).exec(&state.db).await {
+        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete track during moderation");
+    }
 
     // Delete file if local
     if is_local {
-        tokio::fs::remove_file(&trk.file_path).await.ok();
+        if let Err(e) = tokio::fs::remove_file(&trk.file_path).await {
+            tracing::warn!(error = %e, track_id = %trk.id, "failed to delete track file during moderation");
+        }
     }
 
     // Auto-resolve any pending reports for this track
@@ -512,16 +526,18 @@ pub async fn moderate_track(
         let mut active: track_report::ActiveModel = r.into();
         active.status = Set("resolved".to_string());
         active.admin_note = Set(Some(
-            "Piste supprimée/déréférencée par l'administrateur.".to_string(),
+            "Track deleted/dereferenced by the administrator.".to_string(),
         ));
         active.resolved_at = Set(Some(now));
-        active.update(&state.db).await.ok();
+        if let Err(e) = active.update(&state.db).await {
+            tracing::warn!(error = %e, "failed to auto-resolve pending report during moderation");
+        }
     }
 
     let msg = if is_local {
-        "Piste locale supprimée."
+        "Local track deleted."
     } else {
-        "Piste distante déréférencée."
+        "Remote track dereferenced."
     };
 
     tracing::info!(track_id = %track_id, is_local, "Track moderated by admin");
@@ -533,37 +549,37 @@ pub async fn moderate_track(
 // Terms of Service
 // ═══════════════════════════════════════════════════════════════════
 
-const DEFAULT_TOS: &str = r#"# Conditions d'utilisation — SoundTime
+const DEFAULT_TOS: &str = r#"# Terms of Service — SoundTime
 
-Bienvenue sur cette instance SoundTime. En utilisant ce service, vous acceptez les conditions suivantes :
+Welcome to this SoundTime instance. By using this service, you agree to the following terms:
 
-## 1. Utilisation du service
-- Ce service est une plateforme de streaming musical fédérée.
-- Vous êtes responsable du contenu que vous uploadez.
-- Tout contenu enfreignant les droits d'auteur peut être supprimé sans préavis.
+## 1. Use of the service
+- This service is a federated music streaming platform.
+- You are responsible for the content you upload.
+- Any content infringing copyright may be removed without notice.
 
-## 2. Contenu interdit
-- Contenu violant les droits de propriété intellectuelle.
-- Contenu illégal, haineux, ou diffamatoire.
-- Spam ou contenu non musical.
+## 2. Prohibited content
+- Content violating intellectual property rights.
+- Illegal, hateful, or defamatory content.
+- Spam or non-musical content.
 
-## 3. Signalements
-- Les utilisateurs peuvent signaler du contenu qu'ils estiment problématique.
-- L'administrateur se réserve le droit de supprimer tout contenu signalé.
+## 3. Reports
+- Users can report content they consider problematic.
+- The administrator reserves the right to remove any reported content.
 
-## 4. Responsabilité
-- L'administrateur de cette instance n'est pas responsable du contenu uploadé par les utilisateurs.
-- Nous faisons nos meilleurs efforts pour modérer le contenu de manière réactive.
+## 4. Liability
+- The administrator of this instance is not responsible for content uploaded by users.
+- We make our best efforts to moderate content in a timely manner.
 
-## 5. Données personnelles
-- Seules les données nécessaires au fonctionnement du service sont collectées.
-- Aucune donnée n'est revendue à des tiers.
+## 5. Personal data
+- Only data necessary for the operation of the service is collected.
+- No data is sold to third parties.
 
 ## 6. Modifications
-- Ces conditions peuvent être modifiées à tout moment par l'administrateur de l'instance.
+- These terms may be modified at any time by the instance administrator.
 
 ---
-*Dernière mise à jour : généré automatiquement par SoundTime.*
+*Last updated: automatically generated by SoundTime.*
 "#;
 
 #[derive(Debug, Serialize)]
@@ -632,7 +648,7 @@ pub async fn update_tos(
     }
 
     Ok(Json(
-        serde_json::json!({ "message": "Conditions d'utilisation mises à jour." }),
+        serde_json::json!({ "message": "Terms of Service updated." }),
     ))
 }
 
@@ -647,7 +663,7 @@ pub async fn reset_tos(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     Ok(Json(
-        serde_json::json!({ "message": "Conditions d'utilisation réinitialisées au modèle par défaut." }),
+        serde_json::json!({ "message": "Terms of Service reset to default." }),
     ))
 }
 

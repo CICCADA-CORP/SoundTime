@@ -144,7 +144,8 @@ function initAudio() {
     registerMediaSessionHandlers();
 
     audio.addEventListener("timeupdate", () => {
-      progress = audio!.currentTime;
+      if (!audio) return;
+      progress = audio.currentTime;
       // Update Media Session position every ~5s so iOS lock screen stays in sync
       const now = Date.now();
       if (now - lastPositionUpdate > 5000) {
@@ -154,7 +155,8 @@ function initAudio() {
     });
 
     audio.addEventListener("loadedmetadata", () => {
-      duration = audio!.duration;
+      if (!audio) return;
+      duration = audio.duration;
       updatePositionState();
     });
 
@@ -168,8 +170,9 @@ function initAudio() {
       }
 
       if (repeat === "one") {
-        audio!.currentTime = 0;
-        audio!.play().catch(console.error);
+        if (!audio) return;
+        audio.currentTime = 0;
+        audio.play().catch(console.error);
         updatePositionState();
       } else {
         isPlaying = false;

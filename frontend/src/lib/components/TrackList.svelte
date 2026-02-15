@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Track, Playlist } from "$lib/types";
+  import type { Track, Playlist, TrackCredits } from "$lib/types";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
@@ -38,7 +38,7 @@
 
   // Credits modal state
   let creditsTrackId = $state<string | null>(null);
-  let creditsData = $state<any>(null);
+  let creditsData = $state<TrackCredits | null>(null);
   let creditsLoading = $state(false);
 
   // Share modal
@@ -164,8 +164,8 @@
       await api.post(`/tracks/${reportingTrackId}/report`, { reason: reportReason.trim() });
       reportSuccess = t('track.reportSent');
       setTimeout(() => { reportingTrackId = null; reportSuccess = ""; }, 2000);
-    } catch (e: any) {
-      reportError = e?.message ?? t('track.reportError');
+    } catch (e: unknown) {
+      reportError = (e instanceof Error ? e.message : String(e)) ?? t('track.reportError');
     }
   }
 

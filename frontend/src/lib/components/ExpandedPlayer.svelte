@@ -68,11 +68,12 @@
       const res = await api.get<{ lyrics: string | null; source: string | null }>(`/tracks/${trackId}/lyrics`);
       lyrics = res.lyrics;
       lyricsSource = res.source;
-    } catch (e: any) {
-      if (e?.status === 503 || e?.status === 404) {
+    } catch (e: unknown) {
+      const err = e as { status?: number };
+      if (err?.status === 503 || err?.status === 404) {
         lyrics = null;
       } else {
-        lyricsError = "Impossible de récupérer les paroles";
+        lyricsError = t('player.lyricsError');
       }
     } finally {
       lyricsLoading = false;
@@ -122,7 +123,7 @@
       <button
         onclick={onclose}
         class="text-[hsl(var(--muted-foreground))] hover:text-white transition p-2 rounded-full hover:bg-white/10"
-        aria-label="Fermer"
+        aria-label={t('a11y.close')}
       >
         <ChevronDown class="w-6 h-6" />
       </button>
@@ -182,7 +183,7 @@
         <div class="w-full max-w-[380px] flex items-start justify-between gap-3">
           <div class="min-w-0 flex-1">
             <h2 class="text-xl font-bold truncate">{player.currentTrack.title}</h2>
-            <p class="text-sm text-[hsl(var(--muted-foreground))] truncate">{player.currentTrack.artist_name ?? "Unknown Artist"}</p>
+            <p class="text-sm text-[hsl(var(--muted-foreground))] truncate">{player.currentTrack.artist_name ?? t('track.unknownArtist')}</p>
             {#if player.currentTrack.album_title}
               <p class="text-xs text-[hsl(var(--muted-foreground))]/60 truncate mt-0.5">{player.currentTrack.album_title}</p>
             {/if}
@@ -212,10 +213,10 @@
 
         <!-- Controls -->
         <div class="flex items-center gap-6 mt-4">
-          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" class:text-[hsl(var(--primary))]={player.shuffle} onclick={player.toggleShuffle} title="Shuffle">
+          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" class:text-[hsl(var(--primary))]={player.shuffle} onclick={player.toggleShuffle} title={t('player.shuffle')}>
             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
           </button>
-          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" onclick={queue.previous} title="Précédent">
+          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" onclick={queue.previous} title={t('player.previous')}>
             <svg class="w-7 h-7" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
           </button>
           <button class="w-14 h-14 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 transition" onclick={player.togglePlay}>
@@ -225,10 +226,10 @@
               <svg class="w-6 h-6 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
             {/if}
           </button>
-          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" onclick={queue.next} title="Suivant">
+          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" onclick={queue.next} title={t('player.next')}>
             <svg class="w-7 h-7" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
           </button>
-          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" class:text-[hsl(var(--primary))]={player.repeat !== 'none'} onclick={player.cycleRepeat} title="Repeat: {player.repeat}">
+          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" class:text-[hsl(var(--primary))]={player.repeat !== 'none'} onclick={player.cycleRepeat} title="{t('player.repeat')}: {player.repeat}">
             <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
             {#if player.repeat === 'one'}
               <span class="absolute text-[8px] font-bold">1</span>
@@ -271,7 +272,7 @@
             </div>
             {#if lyricsSource}
               <p class="text-[10px] text-[hsl(var(--muted-foreground))]/40 mt-4 uppercase tracking-wider">
-                Source : {lyricsSource}
+                {t('player.source')} : {lyricsSource}
               </p>
             {/if}
           {:else}
@@ -318,7 +319,7 @@
                   </div>
                   <div class="min-w-0 flex-1">
                     <p class="text-sm font-medium truncate">{track.title}</p>
-                    <p class="text-xs text-[hsl(var(--muted-foreground))] truncate">{track.artist_name ?? "Unknown"}</p>
+                    <p class="text-xs text-[hsl(var(--muted-foreground))] truncate">{track.artist_name ?? t('track.unknownArtist')}</p>
                   </div>
                   <span class="text-xs text-[hsl(var(--muted-foreground))] flex-shrink-0">{formatDuration(track.duration_secs)}</span>
                 </button>

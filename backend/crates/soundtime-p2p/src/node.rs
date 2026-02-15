@@ -2235,7 +2235,9 @@ impl P2pNode {
             P2pMessage::AnnounceTrack(ann) => {
                 self.process_track_announcement(ann, peer_id).await;
                 // Properly close our side of the stream
-                let _ = send.finish();
+                if let Err(e) = send.finish() {
+                    tracing::warn!(error = %e, "failed to finish send stream");
+                }
             }
             P2pMessage::CatalogSync(announcements) => {
                 // Acquire per-peer lock to serialize (not reject) concurrent CatalogSync pages
@@ -2259,7 +2261,9 @@ impl P2pNode {
                 }
 
                 // Properly close our side of the stream
-                let _ = send.finish();
+                if let Err(e) = send.finish() {
+                    tracing::warn!(error = %e, "failed to finish send stream");
+                }
             }
             P2pMessage::PeerExchange { peers } => {
                 info!(count = peers.len(), %peer_id, "received peer exchange request");
@@ -2344,11 +2348,15 @@ impl P2pNode {
                 for ann in tracks {
                     self.process_track_announcement(ann, peer_id).await;
                 }
-                let _ = send.finish();
+                if let Err(e) = send.finish() {
+                    tracing::warn!(error = %e, "failed to finish send stream");
+                }
             }
             P2pMessage::RequestCatalog => {
                 info!(%peer_id, "received catalog request — sending full catalog");
-                let _ = send.finish();
+                if let Err(e) = send.finish() {
+                    tracing::warn!(error = %e, "failed to finish send stream");
+                }
                 // Spawn so we don't block this connection handler
                 if let Ok(remote_nid) = peer_id.parse::<EndpointId>() {
                     let node = Arc::clone(self);
@@ -2360,7 +2368,9 @@ impl P2pNode {
             P2pMessage::BloomExchange { bloom } => {
                 info!(%peer_id, items = bloom.item_count, "received bloom filter from peer");
                 self.search_index.import_peer_bloom(peer_id, bloom).await;
-                let _ = send.finish();
+                if let Err(e) = send.finish() {
+                    tracing::warn!(error = %e, "failed to finish send stream");
+                }
             }
             P2pMessage::SearchQuery {
                 request_id,

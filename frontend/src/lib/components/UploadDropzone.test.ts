@@ -86,7 +86,7 @@ describe('UploadDropzone', () => {
 
   it('shows dropzone text', () => {
     const { container } = render(UploadDropzone);
-    expect(container.textContent).toContain('Déposez vos fichiers audio');
+    expect(container.textContent).toContain('Drop your audio files here or click to browse');
     expect(container.textContent).toContain('MP3, FLAC, OGG');
   });
 
@@ -225,7 +225,7 @@ describe('UploadDropzone', () => {
     await fireEvent.change(fileInput);
 
     await waitFor(() => {
-      expect(container.textContent).toMatch(/terminé/);
+      expect(container.textContent).toMatch(/completed/);
     });
   });
 
@@ -238,17 +238,17 @@ describe('UploadDropzone', () => {
     await fireEvent.change(fileInput);
 
     await waitFor(() => {
-      const removeBtn = container.querySelector('button[title="Retirer"]');
+      const removeBtn = container.querySelector('button[title="Remove"]');
       expect(removeBtn).toBeInTheDocument();
     });
 
-    const removeBtn = container.querySelector('button[title="Retirer"]')!;
+    const removeBtn = container.querySelector('button[title="Remove"]')!;
     await fireEvent.click(removeBtn);
     await tick();
 
     // After removal, the file should no longer appear
     await waitFor(() => {
-      expect(container.querySelector('button[title="Retirer"]')).not.toBeInTheDocument();
+      expect(container.querySelector('button[title="Remove"]')).not.toBeInTheDocument();
     });
   });
 
@@ -308,7 +308,7 @@ describe('UploadDropzone', () => {
     await fireEvent.change(fileInput);
 
     await waitFor(() => {
-      expect(container.textContent).toContain('Tout effacer');
+      expect(container.textContent).toContain('Clear all');
     });
   });
 
@@ -322,7 +322,7 @@ describe('UploadDropzone', () => {
     await fireEvent.change(fileInput);
 
     await waitFor(() => {
-      expect(container.textContent).toMatch(/Mo/);
+      expect(container.textContent).toMatch(/MB/);
     });
   });
 
@@ -334,7 +334,7 @@ describe('UploadDropzone', () => {
     await fireEvent.change(fileInput);
 
     await waitFor(() => {
-      expect(container.textContent).toContain('500 o');
+      expect(container.textContent).toContain('500 B');
     });
   });
 
@@ -346,7 +346,7 @@ describe('UploadDropzone', () => {
     await fireEvent.change(fileInput);
 
     await waitFor(() => {
-      expect(container.textContent).toMatch(/Ko/);
+      expect(container.textContent).toMatch(/KB/);
     });
   });
 });

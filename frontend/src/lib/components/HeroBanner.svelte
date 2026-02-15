@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Play } from "lucide-svelte";
   import type { EditorialPlaylist, Album } from "$lib/types";
+  import { t } from "$lib/i18n/index.svelte";
 
   let { item, type = "editorial", onclick }: {
     item: EditorialPlaylist | Album;
@@ -8,12 +9,12 @@
     onclick?: () => void;
   } = $props();
 
-  const title = type === "editorial" ? (item as EditorialPlaylist).name : (item as Album).title;
-  const description = type === "editorial"
+  let title = $derived(type === "editorial" ? (item as EditorialPlaylist).name : (item as Album).title);
+  let description = $derived(type === "editorial"
     ? (item as EditorialPlaylist).description
-    : (item as Album).artist_name ?? null;
-  const coverUrl = item.cover_url;
-  const trackCount = type === "editorial" ? (item as EditorialPlaylist).track_count : undefined;
+    : (item as Album).artist_name ?? null);
+  let coverUrl = $derived(item.cover_url);
+  let trackCount = $derived(type === "editorial" ? (item as EditorialPlaylist).track_count : undefined);
 </script>
 
 <button
@@ -32,7 +33,7 @@
   <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent"></div>
   <div class="absolute bottom-0 left-0 right-0 p-6 md:p-8">
     <p class="text-xs uppercase tracking-wider text-white/70 mb-1">
-      {type === "editorial" ? "Featured Playlist" : "Featured Album"}
+      {type === "editorial" ? t('explore.featuredPlaylist') : t('explore.featuredAlbum')}
     </p>
     <h2 class="text-2xl md:text-3xl font-bold text-white mb-1">{title}</h2>
     {#if description}
@@ -43,7 +44,7 @@
         <Play class="w-5 h-5 ml-0.5" fill="currentColor" />
       </div>
       {#if trackCount}
-        <span class="text-sm text-white/70">{trackCount} tracks</span>
+        <span class="text-sm text-white/70">{trackCount} {t('playlists.tracks')}</span>
       {/if}
     </div>
   </div>

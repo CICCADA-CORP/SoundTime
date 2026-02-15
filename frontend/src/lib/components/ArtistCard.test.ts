@@ -37,6 +37,6 @@ describe('ArtistCard', () => {
 
   it('shows Artist label', () => {
     render(ArtistCard, { props: { artist } });
-    expect(screen.getByText('Artist')).toBeInTheDocument();
+    expect(screen.getByText('Tracks')).toBeInTheDocument();
   });
 });

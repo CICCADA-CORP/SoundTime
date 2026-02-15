@@ -5,6 +5,7 @@
   import { formatDuration, formatDate } from "$lib/utils";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { t } from "$lib/i18n/index.svelte";
+  import type { Track } from "$lib/types";
 
   interface HistoryEntry {
     id: string;
@@ -20,8 +21,8 @@
 
   const auth = getAuthStore();
   const player = getPlayerStore();
-  let history: HistoryEntry[] = [];
-  let loading = true;
+  let history: HistoryEntry[] = $state([]);
+  let loading = $state(true);
 
   onMount(async () => {
     if (!auth.isAuthenticated) { loading = false; return; }
@@ -46,7 +47,7 @@
   {:else if history.length > 0}
     <div class="space-y-1">
       {#each history as entry}
-        <button class="w-full flex items-center gap-4 px-4 py-3 rounded-lg hover:bg-[hsl(var(--secondary))] transition text-left" onclick={() => entry.track && player.play(entry.track as any)}>
+        <button class="w-full flex items-center gap-4 px-4 py-3 rounded-lg hover:bg-[hsl(var(--secondary))] transition text-left" onclick={() => entry.track && player.play(entry.track as Track)}>
           <div class="flex-1 min-w-0">
             <p class="text-sm font-medium truncate">{entry.track?.title ?? "Unknown"}</p>
             <p class="text-xs text-[hsl(var(--muted-foreground))]">{entry.track?.artist_name ?? ""}</p>

@@ -6,8 +6,8 @@
   import AlbumCard from "$lib/components/AlbumCard.svelte";
   import TrackList from "$lib/components/TrackList.svelte";
 
-  let artist: Artist | null = null;
-  let loading = true;
+  let artist: Artist | null = $state(null);
+  let loading = $state(true);
 
   onMount(async () => {
     try {

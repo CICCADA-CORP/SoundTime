@@ -17,6 +17,12 @@ COPY --from=builder /app/build ./build
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/node_modules ./node_modules
 
+RUN npm prune --omit=dev
+
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 sveltekit
+USER sveltekit
+
 EXPOSE 3000
 
 ENV PORT=3000

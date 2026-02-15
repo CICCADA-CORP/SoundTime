@@ -629,7 +629,9 @@ pub async fn enrich_track(
     if year.is_some() && track_model.year.is_none() {
         track_update.year = Set(year);
     }
-    let _ = track_update.update(db).await;
+    if let Err(e) = track_update.update(db).await {
+        tracing::warn!(error = %e, track_id = %track_id, "failed to update track metadata");
+    }
 
     // 6. Update artist with MusicBrainz ID, bio, and image (only if not already set)
     if artist_model.musicbrainz_id.is_none() {
@@ -661,7 +663,9 @@ pub async fn enrich_track(
                 artist_update.name = Set(name.clone());
             }
         }
-        let _ = artist_update.update(db).await;
+        if let Err(e) = artist_update.update(db).await {
+            tracing::warn!(error = %e, "failed to update artist metadata");
+        }
     }
 
     // 7. Update album with MusicBrainz ID and cover art
@@ -718,7 +722,9 @@ pub async fn enrich_track(
                 result_cover_url = album_model.cover_url.clone();
             }
 
-            let _ = album_update.update(db).await;
+            if let Err(e) = album_update.update(db).await {
+                tracing::warn!(error = %e, "failed to update album metadata");
+            }
         }
     }
 
@@ -964,7 +970,9 @@ Respond ONLY with valid JSON, no markdown, no explanation."#,
     }
 
     if any_update {
-        let _ = track_update.update(db).await;
+        if let Err(e) = track_update.update(db).await {
+            tracing::warn!(error = %e, track_id = %track_id, "failed to update track with AI metadata");
+        }
     }
 
     // Update artist name only if it looks generic
@@ -972,7 +980,9 @@ Respond ONLY with valid JSON, no markdown, no explanation."#,
         if artist_model.name == "Unknown Artist" || artist_model.name == "Inconnu" {
             let mut artist_update: artist::ActiveModel = artist_model.clone().into();
             artist_update.name = Set(corrected_artist.clone());
-            let _ = artist_update.update(db).await;
+            if let Err(e) = artist_update.update(db).await {
+                tracing::warn!(error = %e, "failed to update artist name with AI metadata");
+            }
         }
     }
 
@@ -983,7 +993,9 @@ Respond ONLY with valid JSON, no markdown, no explanation."#,
                 if album_model.title == "Unknown Album" || album_model.title == "Inconnu" {
                     let mut album_update: album::ActiveModel = album_model.into();
                     album_update.title = Set(album_name.clone());
-                    let _ = album_update.update(db).await;
+                    if let Err(e) = album_update.update(db).await {
+                        tracing::warn!(error = %e, "failed to update album title with AI metadata");
+                    }
                 }
             }
         }
@@ -1102,7 +1114,9 @@ pub async fn refresh_instance_availability(db: &DatabaseConnection) {
             let mut update: remote_track::ActiveModel = rt.into();
             update.is_available = Set(is_available);
             update.last_checked_at = Set(Some(chrono::Utc::now().into()));
-            let _ = update.update(db).await;
+            if let Err(e) = update.update(db).await {
+                tracing::warn!(error = %e, "failed to update remote track availability");
+            }
         }
     }
 }
@@ -1235,7 +1249,9 @@ pub async fn register_remote_track(
             update.format = Set(format.map(|f| f.to_string()));
             update.is_available = Set(true);
             update.last_checked_at = Set(Some(chrono::Utc::now().into()));
-            let _ = update.update(db).await;
+            if let Err(e) = update.update(db).await {
+                tracing::warn!(error = %e, "failed to update remote track bitrate");
+            }
         }
         return Ok(existing.id);
     }

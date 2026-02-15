@@ -397,7 +397,9 @@ async fn import_file(state: &AppState, relative_path: &str) -> Result<Uuid, Stri
                     let mut update: soundtime_db::entities::album::ActiveModel =
                         result.clone().into();
                     update.cover_url = Set(Some(format!("/api/media/{cover_path}")));
-                    let _ = update.update(&state.db).await;
+                    if let Err(e) = update.update(&state.db).await {
+                        tracing::warn!(error = %e, "failed to update album cover URL during scan");
+                    }
                 }
             }
 

@@ -29,6 +29,7 @@
     TosResponse,
     PaginatedResponse,
     StorageStatus,
+    StorageTaskStatus,
     IntegrityReport,
     SyncReport,
     P2pLogEntry,
@@ -146,7 +147,7 @@
     while (true) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL));
       try {
-        const status = await api.get<any>("/admin/storage/task-status");
+        const status = await api.get<StorageTaskStatus>("/admin/storage/task-status");
         if (status.status === "running") {
           taskProgress = status.progress ?? null;
           continue;
@@ -359,8 +360,8 @@
           }
           break;
       }
-    } catch (e: any) {
-      error = e.message || t("admin.unknownError");
+    } catch (e: unknown) {
+      error = (e instanceof Error ? e.message : String(e)) || t("admin.unknownError");
     } finally {
       loading = false;
     }
@@ -375,8 +376,8 @@
       } else {
         settings = [...settings, { key, value }];
       }
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -390,8 +391,8 @@
       blockedDomains = [result, ...blockedDomains];
       blockDomainInput = "";
       blockReasonInput = "";
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -399,8 +400,8 @@
     try {
       await api.delete(`/admin/blocked-domains/${id}`);
       blockedDomains = blockedDomains.filter((d) => d.id !== id);
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -415,8 +416,8 @@
       a.download = `blocklist-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -432,8 +433,8 @@
       blockedDomains = await api.get<BlockedDomain[]>("/admin/blocked-domains");
       error = "";
       alert(t("admin.blocked.importDone", { imported: result.imported, skipped: result.skipped }));
-    } catch (e: any) {
-      error = e.message ?? t("admin.importError");
+    } catch (e: unknown) {
+      error = (e instanceof Error ? e.message : String(e)) ?? t("admin.importError");
     }
     if (importFileInput) importFileInput.value = "";
   }
@@ -442,8 +443,8 @@
     try {
       await api.put(`/admin/users/${userId}/role`, { role });
       users = users.map((u) => (u.id === userId ? { ...u, role } : u));
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -455,8 +456,8 @@
       users = users.map((u) =>
         u.id === userId ? { ...u, is_banned: true, ban_reason: reason || null, banned_at: new Date().toISOString() } : u
       );
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -467,8 +468,8 @@
       users = users.map((u) =>
         u.id === userId ? { ...u, is_banned: false, ban_reason: null, banned_at: null } : u
       );
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -479,8 +480,8 @@
       metadataResults = await api.post<MetadataResult[]>("/admin/metadata/enrich-all");
       // Reload status after enrichment
       metadataStatus = await api.get<MetadataStatus>("/admin/metadata/status");
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     } finally {
       enriching = false;
     }
@@ -491,8 +492,8 @@
       const result = await api.post<MetadataResult>(`/admin/metadata/enrich/${trackId}`);
       metadataResults = [result, ...metadataResults];
       metadataStatus = await api.get<MetadataStatus>("/admin/metadata/status");
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -506,8 +507,8 @@
       if (activeTab === "remote-tracks") {
         remoteTracks = await api.get<RemoteTrack[]>("/admin/remote-tracks");
       }
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     } finally {
       healthChecking = false;
     }
@@ -519,8 +520,8 @@
       await api.put("/admin/settings/ai_base_url", { value: editorialBaseUrl || "https://api.openai.com/v1" });
       await api.put("/admin/settings/ai_model", { value: editorialModel || "gpt-4o-mini" });
       editorialStatus = await api.get<EditorialStatus>("/admin/editorial/status");
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -531,8 +532,8 @@
       const result = await api.post<EditorialGenerateResult>("/admin/editorial/generate");
       editorialStatus = await api.get<EditorialStatus>("/admin/editorial/status");
       alert(result.message);
-    } catch (e: any) {
-      error = e.message || t("admin.editorial.generationError");
+    } catch (e: unknown) {
+      error = (e instanceof Error ? e.message : String(e)) || t("admin.editorial.generationError");
     } finally {
       editorialGenerating = false;
     }
@@ -545,8 +546,8 @@
       await api.put("/admin/settings/lyrics_provider", { value: lyricsProvider });
       await api.put("/admin/settings/lyrics_musixmatch_key", { value: lyricsMusixmatchKey });
       await api.put("/admin/settings/lyrics_lyricscom_key", { value: lyricsLyricscomKey });
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     } finally {
       lyricsSaving = false;
     }
@@ -560,7 +561,7 @@
       await api.put(`/admin/reports/${id}`, { action, track_action: trackAction, admin_note: note ?? undefined });
       reports = await api.get<TrackReport[]>("/admin/reports");
       reportStats = await api.get<ReportStats>("/admin/reports/stats");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
   }
 
   async function loadBrowseTracks() {
@@ -571,7 +572,7 @@
       adminTracks = res.data;
       adminTrackTotal = res.total;
       adminTrackTotalPages = res.total_pages;
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
   }
 
   async function moderateTrack(trackId: string, title: string) {
@@ -583,7 +584,7 @@
       // Refresh reports stats
       reports = await api.get<TrackReport[]>("/admin/reports");
       reportStats = await api.get<ReportStats>("/admin/reports/stats");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
     finally { moderating = false; }
   }
 
@@ -601,7 +602,7 @@
       await api.put("/admin/tos", { content: tosContent });
       tosIsDefault = false;
       tosSuccess = t("admin.tos.saved");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
     finally { tosSaving = false; }
   }
 
@@ -614,7 +615,7 @@
       tosContent = tosData.content;
       tosIsDefault = true;
       tosSuccess = t("admin.tos.reset");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
     finally { tosSaving = false; }
   }
 
@@ -637,8 +638,8 @@
       plugins = [newPlugin, ...plugins];
       pluginInstallUrl = "";
       pluginSuccess = t("admin.plugins.installSuccess");
-    } catch (e: any) {
-      error = e.message || t("admin.plugins.installError");
+    } catch (e: unknown) {
+      error = (e instanceof Error ? e.message : String(e)) || t("admin.plugins.installError");
     } finally {
       pluginInstalling = false;
     }
@@ -649,7 +650,7 @@
       await pluginApi.enable(id);
       plugins = plugins.map(p => p.id === id ? { ...p, status: "enabled" as const } : p);
       pluginSuccess = t("admin.plugins.enableSuccess");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
   }
 
   async function disablePlugin(id: string) {
@@ -658,7 +659,7 @@
       await pluginApi.disable(id);
       plugins = plugins.map(p => p.id === id ? { ...p, status: "disabled" as const } : p);
       pluginSuccess = t("admin.plugins.disableSuccess");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
   }
 
   async function uninstallPlugin(id: string) {
@@ -668,7 +669,7 @@
       plugins = plugins.filter(p => p.id !== id);
       if (selectedPlugin?.id === id) selectedPlugin = null;
       pluginSuccess = t("admin.plugins.uninstallSuccess");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
   }
 
   async function updatePlugin(id: string) {
@@ -678,7 +679,7 @@
       plugins = plugins.map(p => p.id === id ? updated : p);
       if (selectedPlugin?.id === id) selectedPlugin = updated;
       pluginSuccess = t("admin.plugins.updateSuccess");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
     finally { pluginUpdating = null; }
   }
 
@@ -703,7 +704,7 @@
     try {
       await pluginApi.updateConfig(selectedPlugin.id, pluginConfig);
       pluginSuccess = t("admin.plugins.configSaved");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
   }
 
   function addPluginConfigEntry() {
@@ -739,8 +740,8 @@
       themes = [newTheme, ...themes];
       themeInstallUrl = "";
       themeSuccess = t("admin.themes.installSuccess");
-    } catch (e: any) {
-      error = e.message || t("admin.themes.installError");
+    } catch (e: unknown) {
+      error = (e instanceof Error ? e.message : String(e)) || t("admin.themes.installError");
     } finally {
       themeInstalling = false;
     }
@@ -751,7 +752,7 @@
       const updated = await themeApi.enable(id);
       themes = themes.map(th => th.id === id ? updated : { ...th, status: "disabled" as const });
       themeSuccess = t("admin.themes.enableSuccess");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
   }
 
   async function disableTheme(id: string) {
@@ -760,7 +761,7 @@
       const updated = await themeApi.disable(id);
       themes = themes.map(th => th.id === id ? updated : th);
       themeSuccess = t("admin.themes.disableSuccess");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
   }
 
   async function uninstallTheme(id: string) {
@@ -769,7 +770,7 @@
       await themeApi.uninstall(id);
       themes = themes.filter(th => th.id !== id);
       themeSuccess = t("admin.themes.uninstallSuccess");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
   }
 
   async function updateTheme(id: string) {
@@ -778,7 +779,7 @@
       const updated = await themeApi.update(id);
       themes = themes.map(th => th.id === id ? updated : th);
       themeSuccess = t("admin.themes.updateSuccess");
-    } catch (e: any) { error = e.message; }
+    } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
     finally { themeUpdating = null; }
   }
 
@@ -1215,8 +1216,8 @@
                                 await api.post(`/admin/p2p/library-sync/${peer.node_id}`);
                                 // Start polling for task status
                                 pollLibrarySyncTask();
-                              } catch (e: any) {
-                                error = e.message;
+                              } catch (e: unknown) {
+                                error = e instanceof Error ? e.message : String(e);
                               } finally {
                                 librarySyncResyncingPeer = null;
                               }
@@ -1464,9 +1465,9 @@
                   try {
                     await api.post('/admin/listing/trigger', {});
                     listingStatus = await api.get<ListingStatus>('/admin/listing/status').catch(() => listingStatus);
-                  } catch (e: any) {
-                    const body = e?.body;
-                    listingTriggerError = body?.message || e?.message || 'Unknown error';
+                  } catch (e: unknown) {
+                    const body = (e as { body?: { message?: string } })?.body;
+                    listingTriggerError = body?.message || (e instanceof Error ? e.message : 'Unknown error');
                     listingStatus = await api.get<ListingStatus>('/admin/listing/status').catch(() => listingStatus);
                   } finally {
                     listingTriggering = false;
@@ -1733,8 +1734,8 @@
                     await api.post("/admin/p2p/peers", { node_id: addPeerInput.trim() });
                     addPeerInput = "";
                     await loadData();
-                  } catch (e: any) {
-                    error = e.message;
+                  } catch (e: unknown) {
+                    error = e instanceof Error ? e.message : String(e);
                   }
                 }}
               >
@@ -1780,7 +1781,7 @@
                             try {
                               await api.post(`/admin/p2p/peers/${peer.node_id}/ping`);
                               await loadData();
-                            } catch (e: any) { error = e.message; }
+                            } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
                           }}
                         >
                           {t('admin.p2p.ping')}
@@ -1791,7 +1792,7 @@
                             try {
                               await api.delete(`/admin/p2p/peers/${peer.node_id}`);
                               p2pPeers = p2pPeers.filter(p => p.node_id !== peer.node_id);
-                            } catch (e: any) { error = e.message; }
+                            } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
                           }}
                         >
                           {t('admin.p2p.remove')}
@@ -1905,7 +1906,7 @@
                     await api.delete("/admin/p2p/logs");
                     p2pLogs = [];
                     p2pLogsTotalInBuffer = 0;
-                  } catch (e: any) { error = e.message; }
+                  } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
                 }}
               >
                 {t('admin.p2pLogs.clear')}
@@ -2524,7 +2525,7 @@
                 try {
                   await api.post("/admin/storage/integrity-check");
                   await pollTaskStatus("integrity");
-                } catch (e: any) { error = e.message; }
+                } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
                 finally { storageChecking = false; taskProgress = null; }
               }}
             >
@@ -2613,7 +2614,7 @@
                 try {
                   await api.post("/admin/storage/sync");
                   await pollTaskStatus("sync");
-                } catch (e: any) { error = e.message; }
+                } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
                 finally { storageSyncing = false; taskProgress = null; }
               }}
             >

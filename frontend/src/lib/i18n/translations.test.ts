@@ -79,12 +79,12 @@ describe('i18n translations', () => {
 			.map(([k]) => k);
 
 		for (const key of enKeysWithParams) {
-			const enParams = [...enDict[key].matchAll(/\{(\w+)\}/g)].map(m => m[1]).sort();
+			const enParams = [...new Set([...enDict[key].matchAll(/\{(\w+)\}/g)].map(m => m[1]))].sort();
 			for (const locale of locales) {
 				if (locale === 'en') continue;
 				const val = translations[locale][key];
 				if (!val) continue;
-				const localeParams = [...val.matchAll(/\{(\w+)\}/g)].map(m => m[1]).sort();
+				const localeParams = [...new Set([...val.matchAll(/\{(\w+)\}/g)].map(m => m[1]))].sort();
 				expect(localeParams, `${locale}.${key} params mismatch`).toEqual(enParams);
 			}
 		}

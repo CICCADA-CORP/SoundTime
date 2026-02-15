@@ -28,7 +28,7 @@
         class="p-1.5 rounded-full bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] hover:bg-[hsl(var(--border))] transition disabled:opacity-30"
         disabled={!canScrollLeft}
         onclick={() => scrollBy(-1)}
-        aria-label="Scroll left"
+        aria-label={t('a11y.scrollLeft')}
       >
         <ChevronLeft class="w-4 h-4" />
       </button>
@@ -36,7 +36,7 @@
         class="p-1.5 rounded-full bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] hover:bg-[hsl(var(--border))] transition disabled:opacity-30"
         disabled={!canScrollRight}
         onclick={() => scrollBy(1)}
-        aria-label="Scroll right"
+        aria-label={t('a11y.scrollRight')}
       >
         <ChevronRight class="w-4 h-4" />
       </button>

@@ -9,28 +9,29 @@
     SetupInstanceRequest,
     SetupCompleteRequest,
   } from "$lib/types";
+  import { t } from "$lib/i18n/index.svelte";
 
   const auth = getAuthStore();
 
-  let currentStep = 1;
-  let loading = true;
-  let submitting = false;
-  let error = "";
+  let currentStep = $state(1);
+  let loading = $state(true);
+  let submitting = $state(false);
+  let error = $state("");
 
   // Step 1: Admin
-  let adminUsername = "";
-  let adminEmail = "";
-  let adminPassword = "";
-  let adminPasswordConfirm = "";
+  let adminUsername = $state("");
+  let adminEmail = $state("");
+  let adminPassword = $state("");
+  let adminPasswordConfirm = $state("");
 
   // Step 2: Instance
-  let instanceName = "SoundTime";
-  let instanceDescription = "A P2P music streaming instance";
+  let instanceName = $state("SoundTime");
+  let instanceDescription = $state("A P2P music streaming instance");
 
   // Step 3: P2P & Registrations
-  let p2pEnabled = true;
-  let openRegistrations = true;
-  let maxUploadSizeMb = 500;
+  let p2pEnabled = $state(true);
+  let openRegistrations = $state(true);
+  let maxUploadSizeMb = $state(500);
 
   onMount(async () => {
     try {
@@ -59,15 +60,15 @@
   async function handleCreateAdmin() {
     error = "";
     if (adminUsername.length < 3) {
-      error = "Le nom d'utilisateur doit contenir au moins 3 caractères";
+      error = t('setup.usernameMinLength');
       return;
     }
     if (adminPassword.length < 8) {
-      error = "Le mot de passe doit contenir au moins 8 caractères";
+      error = t('setup.passwordMinLength');
       return;
     }
     if (adminPassword !== adminPasswordConfirm) {
-      error = "Les mots de passe ne correspondent pas";
+      error = t('setup.passwordMismatch');
       return;
     }
 
@@ -81,8 +82,8 @@
       setTokens(data.tokens.access_token, data.tokens.refresh_token);
       await auth.init();
       currentStep = 2;
-    } catch (e: any) {
-      error = e.message || "Erreur lors de la création du compte admin";
+    } catch (e: unknown) {
+      error = (e instanceof Error ? e.message : String(e)) || t('setup.adminCreateError');
     }
     submitting = false;
   }
@@ -90,7 +91,7 @@
   async function handleConfigureInstance() {
     error = "";
     if (!instanceName.trim()) {
-      error = "Le nom de l'instance est requis";
+      error = t('setup.instanceNameRequired');
       return;
     }
     submitting = true;
@@ -100,8 +101,8 @@
         instance_description: instanceDescription,
       } satisfies SetupInstanceRequest);
       currentStep = 3;
-    } catch (e: any) {
-      error = e.message || "Erreur lors de la configuration";
+    } catch (e: unknown) {
+      error = (e instanceof Error ? e.message : String(e)) || t('setup.configureError');
     }
     submitting = false;
   }
@@ -118,17 +119,17 @@
       currentStep = 4;
       // Short delay then redirect
       setTimeout(() => goto("/"), 2000);
-    } catch (e: any) {
-      error = e.message || "Erreur lors de la finalisation";
+    } catch (e: unknown) {
+      error = (e instanceof Error ? e.message : String(e)) || t('setup.finalizingError');
     }
     submitting = false;
   }
 
   const steps = [
-    { num: 1, label: "Compte admin" },
-    { num: 2, label: "Instance" },
-    { num: 3, label: "Réseau P2P" },
-    { num: 4, label: "Terminé" },
+    { num: 1, label: t('setup.stepAdmin') },
+    { num: 2, label: t('setup.stepInstance') },
+    { num: 3, label: t('setup.stepP2P') },
+    { num: 4, label: t('setup.stepDone') },
   ];
 </script>
 
@@ -142,7 +143,7 @@
     <div class="text-center mb-8">
       <div class="text-5xl mb-3">🎵</div>
       <h1 class="text-3xl font-bold">SoundTime</h1>
-      <p class="text-[hsl(var(--muted-foreground))] mt-1">Configuration de votre instance</p>
+      <p class="text-[hsl(var(--muted-foreground))] mt-1">{t('setup.subtitle')}</p>
     </div>
 
     <!-- Progress bar -->
@@ -180,15 +181,15 @@
     {#if currentStep === 1}
       <div class="space-y-6">
         <div>
-          <h2 class="text-xl font-semibold mb-1">Créer le compte administrateur</h2>
+          <h2 class="text-xl font-semibold mb-1">{t('setup.createAdmin')}</h2>
           <p class="text-sm text-[hsl(var(--muted-foreground))]">
-            Ce compte aura un accès complet à la gestion de l'instance.
+            {t('setup.adminDescription')}
           </p>
         </div>
 
         <form onsubmit={(e) => { e.preventDefault(); handleCreateAdmin(); }} class="space-y-4">
           <div>
-            <label for="username" class="block text-sm font-medium mb-1.5">Nom d'utilisateur</label>
+            <label for="username" class="block text-sm font-medium mb-1.5">{t('setup.usernameLabel')}</label>
             <input
               id="username"
               type="text"
@@ -202,7 +203,7 @@
           </div>
 
           <div>
-            <label for="email" class="block text-sm font-medium mb-1.5">Adresse email</label>
+            <label for="email" class="block text-sm font-medium mb-1.5">{t('setup.emailLabel')}</label>
             <input
               id="email"
               type="email"
@@ -214,7 +215,7 @@
           </div>
 
           <div>
-            <label for="password" class="block text-sm font-medium mb-1.5">Mot de passe</label>
+            <label for="password" class="block text-sm font-medium mb-1.5">{t('setup.passwordLabel')}</label>
             <input
               id="password"
               type="password"
@@ -227,7 +228,7 @@
           </div>
 
           <div>
-            <label for="password-confirm" class="block text-sm font-medium mb-1.5">Confirmer le mot de passe</label>
+            <label for="password-confirm" class="block text-sm font-medium mb-1.5">{t('setup.confirmPasswordLabel')}</label>
             <input
               id="password-confirm"
               type="password"
@@ -245,9 +246,9 @@
             class="w-full py-2.5 bg-[hsl(var(--primary))] text-white rounded-md font-medium hover:opacity-90 transition disabled:opacity-50"
           >
             {#if submitting}
-              Création en cours...
+              {t('setup.creating')}
             {:else}
-              Créer le compte admin
+              {t('setup.createAdminButton')}
             {/if}
           </button>
         </form>
@@ -258,15 +259,15 @@
     {#if currentStep === 2}
       <div class="space-y-6">
         <div>
-          <h2 class="text-xl font-semibold mb-1">Configurer votre instance</h2>
+          <h2 class="text-xl font-semibold mb-1">{t('setup.configureInstance')}</h2>
           <p class="text-sm text-[hsl(var(--muted-foreground))]">
-            Donnez un nom et une description à votre instance.
+            {t('setup.configureInstanceDesc')}
           </p>
         </div>
 
         <form onsubmit={(e) => { e.preventDefault(); handleConfigureInstance(); }} class="space-y-4">
           <div>
-            <label for="instance-name" class="block text-sm font-medium mb-1.5">Nom de l'instance</label>
+            <label for="instance-name" class="block text-sm font-medium mb-1.5">{t('setup.instanceNameLabel')}</label>
             <input
               id="instance-name"
               type="text"
@@ -278,13 +279,13 @@
           </div>
 
           <div>
-            <label for="instance-desc" class="block text-sm font-medium mb-1.5">Description</label>
+            <label for="instance-desc" class="block text-sm font-medium mb-1.5">{t('setup.instanceDescLabel')}</label>
             <textarea
               id="instance-desc"
               bind:value={instanceDescription}
               rows="3"
               class="w-full px-3 py-2.5 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))] resize-none"
-              placeholder="Une instance de streaming musical fédérée..."
+              placeholder={t('setup.instanceDescPlaceholder')}
             ></textarea>
           </div>
 
@@ -294,7 +295,7 @@
               onclick={() => { currentStep = 1; error = ''; }}
               class="flex-1 py-2.5 bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-md font-medium hover:opacity-90 transition"
             >
-              Retour
+              {t('setup.back')}
             </button>
             <button
               type="submit"
@@ -302,9 +303,9 @@
               class="flex-1 py-2.5 bg-[hsl(var(--primary))] text-white rounded-md font-medium hover:opacity-90 transition disabled:opacity-50"
             >
               {#if submitting}
-                Enregistrement...
+                {t('setup.saving')}
               {:else}
-                Suivant
+                {t('setup.next')}
               {/if}
             </button>
           </div>
@@ -316,9 +317,9 @@
     {#if currentStep === 3}
       <div class="space-y-6">
         <div>
-          <h2 class="text-xl font-semibold mb-1">Réseau P2P & inscriptions</h2>
+          <h2 class="text-xl font-semibold mb-1">{t('setup.p2pTitle')}</h2>
           <p class="text-sm text-[hsl(var(--muted-foreground))]">
-            Configurez comment votre instance interagit avec le réseau pair-à-pair.
+            {t('setup.p2pDescription')}
           </p>
         </div>
 
@@ -326,9 +327,9 @@
           <!-- P2P toggle -->
           <div class="flex items-center justify-between p-4 bg-[hsl(var(--secondary))] rounded-lg border border-[hsl(var(--border))]">
             <div>
-              <p class="text-sm font-medium">Réseau P2P (iroh)</p>
+              <p class="text-sm font-medium">{t('setup.p2pLabel')}</p>
               <p class="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
-                Permet de partager et découvrir de la musique avec d'autres pairs.
+                {t('setup.p2pHint')}
               </p>
             </div>
             <label class="relative inline-flex items-center cursor-pointer" for="p2p-toggle">
@@ -345,9 +346,9 @@
           <!-- Open registrations toggle -->
           <div class="flex items-center justify-between p-4 bg-[hsl(var(--secondary))] rounded-lg border border-[hsl(var(--border))]">
             <div>
-              <p class="text-sm font-medium">Inscriptions ouvertes</p>
+              <p class="text-sm font-medium">{t('setup.openRegistrations')}</p>
               <p class="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
-                Permet à n'importe qui de créer un compte sur votre instance.
+                {t('setup.openRegistrationsHint')}
               </p>
             </div>
             <label class="relative inline-flex items-center cursor-pointer" for="registrations-toggle">
@@ -365,9 +366,9 @@
           <div class="p-4 bg-[hsl(var(--secondary))] rounded-lg border border-[hsl(var(--border))]">
             <div class="flex items-center justify-between mb-2">
               <div>
-                <p class="text-sm font-medium">Taille maximale d'upload</p>
+                <p class="text-sm font-medium">{t('setup.maxUploadSize')}</p>
                 <p class="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
-                  Taille maximale autorisée pour un fichier audio.
+                  {t('setup.maxUploadSizeHint')}
                 </p>
               </div>
               <span class="text-sm font-mono text-[hsl(var(--primary))]">{maxUploadSizeMb} Mo</span>
@@ -393,7 +394,7 @@
             onclick={() => { currentStep = 2; error = ''; }}
             class="flex-1 py-2.5 bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-md font-medium hover:opacity-90 transition"
           >
-            Retour
+            {t('setup.back')}
           </button>
           <button
             type="button"
@@ -402,9 +403,9 @@
             class="flex-1 py-2.5 bg-[hsl(var(--primary))] text-white rounded-md font-medium hover:opacity-90 transition disabled:opacity-50"
           >
             {#if submitting}
-              Finalisation...
+              {t('setup.finalizing')}
             {:else}
-              Suivant
+              {t('setup.next')}
             {/if}
           </button>
         </div>
@@ -416,34 +417,34 @@
       <div class="text-center space-y-6">
         <div class="text-6xl">🎉</div>
         <div>
-          <h2 class="text-2xl font-bold">Votre instance est prête !</h2>
+          <h2 class="text-2xl font-bold">{t('setup.readyTitle')}</h2>
           <p class="text-[hsl(var(--muted-foreground))] mt-2">
-            La configuration est terminée. Vous allez être redirigé vers l'accueil.
+            {t('setup.readyDescription')}
           </p>
         </div>
 
         <div class="bg-[hsl(var(--secondary))] rounded-lg p-5 text-left space-y-3 border border-[hsl(var(--border))]">
-          <h3 class="text-sm font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wide">Récapitulatif</h3>
+          <h3 class="text-sm font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wide">{t('setup.summary')}</h3>
           <div class="grid grid-cols-2 gap-y-2 text-sm">
-            <span class="text-[hsl(var(--muted-foreground))]">Admin</span>
+            <span class="text-[hsl(var(--muted-foreground))]">{t('setup.summaryAdmin')}</span>
             <span class="font-medium">{adminUsername}</span>
 
-            <span class="text-[hsl(var(--muted-foreground))]">Instance</span>
+            <span class="text-[hsl(var(--muted-foreground))]">{t('setup.summaryInstance')}</span>
             <span class="font-medium">{instanceName}</span>
 
-            <span class="text-[hsl(var(--muted-foreground))]">P2P</span>
-            <span class="font-medium">{p2pEnabled ? "Activé" : "Désactivé"}</span>
+            <span class="text-[hsl(var(--muted-foreground))]">{t('setup.summaryP2P')}</span>
+            <span class="font-medium">{p2pEnabled ? t('setup.enabled') : t('setup.disabled')}</span>
 
-            <span class="text-[hsl(var(--muted-foreground))]">Inscriptions</span>
-            <span class="font-medium">{openRegistrations ? "Ouvertes" : "Fermées"}</span>
+            <span class="text-[hsl(var(--muted-foreground))]">{t('setup.summaryRegistrations')}</span>
+            <span class="font-medium">{openRegistrations ? t('setup.open') : t('setup.closed')}</span>
 
-            <span class="text-[hsl(var(--muted-foreground))]">Upload max</span>
+            <span class="text-[hsl(var(--muted-foreground))]">{t('setup.summaryMaxUpload')}</span>
             <span class="font-medium">{maxUploadSizeMb} Mo</span>
           </div>
         </div>
 
         <div class="animate-spin w-6 h-6 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full mx-auto"></div>
-        <p class="text-xs text-[hsl(var(--muted-foreground))]">Redirection en cours...</p>
+        <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('setup.redirecting')}</p>
       </div>
     {/if}
   </div>

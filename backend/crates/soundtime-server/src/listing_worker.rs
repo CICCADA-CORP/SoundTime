@@ -239,11 +239,17 @@ pub fn spawn(state: Arc<AppState>) {
         // Wait 10s before first attempt to let the server fully start
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
-        let client = reqwest::Client::builder()
+        let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .user_agent(format!("SoundTime/{}", soundtime_p2p::build_version()))
             .build()
-            .expect("failed to build HTTP client");
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("failed to build HTTP client for listing worker: {e}");
+                return;
+            }
+        };
 
         let mut was_enabled = false;
 
@@ -412,17 +418,22 @@ async fn upsert_setting(state: &AppState, key: &str, value: &str) {
             let mut update: instance_setting::ActiveModel = s.into();
             update.value = Set(value.to_string());
             update.updated_at = Set(chrono::Utc::now().into());
-            let _ = update.update(&state.db).await;
+            if let Err(e) = update.update(&state.db).await {
+                tracing::warn!(error = %e, key, "failed to update instance setting");
+            }
         }
         None => {
-            let _ = instance_setting::ActiveModel {
+            if let Err(e) = (instance_setting::ActiveModel {
                 id: Set(Uuid::new_v4()),
                 key: Set(key.to_string()),
                 value: Set(value.to_string()),
                 updated_at: Set(chrono::Utc::now().into()),
-            }
+            })
             .insert(&state.db)
-            .await;
+            .await
+            {
+                tracing::warn!(error = %e, key, "failed to insert instance setting");
+            }
         }
     }
 }

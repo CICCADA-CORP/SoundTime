@@ -326,15 +326,16 @@ Respond ONLY with valid JSON in this exact format:
 
     for old in &old_editorials {
         // Delete tracks first (cascade)
-        playlist_track::Entity::delete_many()
+        if let Err(e) = playlist_track::Entity::delete_many()
             .filter(playlist_track::Column::PlaylistId.eq(old.id))
             .exec(&state.db)
             .await
-            .ok();
-        playlist::Entity::delete_by_id(old.id)
-            .exec(&state.db)
-            .await
-            .ok();
+        {
+            tracing::warn!(error = %e, playlist_id = %old.id, "failed to delete editorial playlist tracks");
+        }
+        if let Err(e) = playlist::Entity::delete_by_id(old.id).exec(&state.db).await {
+            tracing::warn!(error = %e, playlist_id = %old.id, "failed to delete old editorial playlist");
+        }
     }
 
     // 4. Need a user_id for playlists — use the first admin
@@ -418,7 +419,9 @@ Respond ONLY with valid JSON in this exact format:
                 track_id: Set(*tid),
                 position: Set(pos as i32),
             };
-            entry.insert(&state.db).await.ok();
+            if let Err(e) = entry.insert(&state.db).await {
+                tracing::warn!(error = %e, playlist_id = %playlist_id, "failed to insert editorial playlist track");
+            }
         }
 
         created_count += 1;
@@ -436,7 +439,7 @@ Respond ONLY with valid JSON in this exact format:
 
     Ok(Json(GenerateResult {
         playlists_created: created_count,
-        message: format!("{created_count} playlists éditoriales créées avec succès"),
+        message: format!("{created_count} editorial playlists created successfully"),
     }))
 }
 
@@ -515,7 +518,9 @@ async fn set_setting(state: &AppState, key: &str, value: &str) {
         let mut active: instance_setting::ActiveModel = existing.into();
         active.value = Set(value.to_string());
         active.updated_at = Set(now);
-        active.update(&state.db).await.ok();
+        if let Err(e) = active.update(&state.db).await {
+            tracing::warn!(error = %e, key, "failed to update instance setting");
+        }
     } else {
         let new_setting = instance_setting::ActiveModel {
             id: Set(Uuid::new_v4()),
@@ -523,7 +528,9 @@ async fn set_setting(state: &AppState, key: &str, value: &str) {
             value: Set(value.to_string()),
             updated_at: Set(now),
         };
-        new_setting.insert(&state.db).await.ok();
+        if let Err(e) = new_setting.insert(&state.db).await {
+            tracing::warn!(error = %e, key, "failed to insert instance setting");
+        }
     }
 }
 
@@ -754,15 +761,16 @@ Respond ONLY with valid JSON in this exact format:
         .unwrap_or_default();
 
     for old in &old_editorials {
-        playlist_track::Entity::delete_many()
+        if let Err(e) = playlist_track::Entity::delete_many()
             .filter(playlist_track::Column::PlaylistId.eq(old.id))
             .exec(&state.db)
             .await
-            .ok();
-        playlist::Entity::delete_by_id(old.id)
-            .exec(&state.db)
-            .await
-            .ok();
+        {
+            tracing::warn!(error = %e, playlist_id = %old.id, "failed to delete editorial playlist tracks (inner)");
+        }
+        if let Err(e) = playlist::Entity::delete_by_id(old.id).exec(&state.db).await {
+            tracing::warn!(error = %e, playlist_id = %old.id, "failed to delete old editorial playlist (inner)");
+        }
     }
 
     let admin_user = soundtime_db::entities::user::Entity::find()
@@ -831,7 +839,9 @@ Respond ONLY with valid JSON in this exact format:
                 track_id: Set(*tid),
                 position: Set(pos as i32),
             };
-            entry.insert(&state.db).await.ok();
+            if let Err(e) = entry.insert(&state.db).await {
+                tracing::warn!(error = %e, playlist_id = %playlist_id, "failed to insert editorial playlist track (inner)");
+            }
         }
 
         created_count += 1;

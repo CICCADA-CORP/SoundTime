@@ -226,7 +226,12 @@ pub async fn add_and_ping_peer(
             registry
                 .upsert_peer_versioned(&node_id, None, track_count, version)
                 .await;
-            let info = registry.get_peer(&node_id).await.expect("just inserted");
+            let info = match registry.get_peer(&node_id).await {
+                Some(info) => info,
+                None => {
+                    return Err(P2pError::Connection("peer disappeared after insert".into()));
+                }
+            };
             Ok(info)
         }
         Ok(_) => {

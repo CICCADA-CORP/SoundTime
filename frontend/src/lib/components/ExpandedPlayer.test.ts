@@ -145,7 +145,7 @@ describe('ExpandedPlayer', () => {
   it('shows "Unknown Artist" when artist_name is null', () => {
     mockPlayerStore.currentTrack = { ...mockTrack, artist_name: null };
     render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('Unknown Artist')).toBeInTheDocument();
+    expect(screen.getByText('track.unknownArtist')).toBeInTheDocument();
   });
 
   it('shows cover image when cover_url is set', () => {
@@ -382,7 +382,7 @@ describe('ExpandedPlayer', () => {
     mockQueueStore.queue = [mockTrack, track2];
     mockQueueStore.currentIndex = 0;
     render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('Unknown')).toBeInTheDocument();
+    expect(screen.getByText('track.unknownArtist')).toBeInTheDocument();
   });
 
   it('shows zero progress when duration is 0', () => {

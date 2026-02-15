@@ -6,10 +6,11 @@
   import TrackList from "$lib/components/TrackList.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
+  import { t } from "$lib/i18n/index.svelte";
 
   const queue = getQueueStore();
   const auth = getAuthStore();
-  let playlist: Playlist | null = $state(null);
+  let playlist = $state<Playlist | null>(null);
   let loading = $state(true);
   let editing = $state(false);
   let deleting = $state(false);
@@ -17,24 +18,24 @@
   let error: string | null = $state(null);
   let success: string | null = $state(null);
 
-  let isOwner = $derived(playlist && auth.user && (playlist as any).user_id === auth.user.id);
+  let isOwner = $derived(playlist !== null && auth.user != null && playlist.owner_id === auth.user.id);
 
   onMount(async () => {
     const id = $page.params.id;
     try {
-      const data = await api.get<any>(`/playlists/${id}`);
+      const data = await api.get<Playlist>(`/playlists/${id}`);
       playlist = {
         id: data.id,
         name: data.name,
         description: data.description,
         is_public: data.is_public,
-        owner_id: data.user_id,
+        owner_id: data.user_id ?? data.owner_id,
         user_id: data.user_id,
         cover_url: data.cover_url,
         created_at: data.created_at,
         updated_at: data.updated_at,
         tracks: data.tracks ?? [],
-      } as any;
+      };
       if (playlist) {
         editForm = {
           name: playlist.name,
@@ -62,23 +63,23 @@
       if (editForm.is_public !== playlist.is_public) body.is_public = editForm.is_public;
       if (editForm.cover_url !== (playlist.cover_url ?? "")) body.cover_url = editForm.cover_url || null;
 
-      const updated = await api.put<any>(`/playlists/${playlist.id}`, body);
+      const updated = await api.put<Playlist>(`/playlists/${playlist.id}`, body);
       playlist = { ...playlist, ...updated };
-      success = "Playlist mise à jour";
+      success = t('playlists.updated');
       editing = false;
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
   async function deletePlaylist() {
-    if (!playlist || !confirm("Supprimer cette playlist ?")) return;
+    if (!playlist || !confirm(t('playlists.deleteConfirm'))) return;
     deleting = true;
     try {
       await api.delete(`/playlists/${playlist.id}`);
       window.location.href = "/playlists";
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
       deleting = false;
     }
   }
@@ -109,14 +110,14 @@
       {/if}
       <div>
         <p class="text-xs uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-          Playlist{#if !playlist.is_public} · <span class="text-yellow-400">Privée</span>{/if}
+          Playlist{#if !playlist.is_public} · <span class="text-yellow-400">{t('playlists.privateLabel')}</span>{/if}
         </p>
         <h1 class="text-4xl font-bold mt-1">{playlist.name}</h1>
         {#if playlist.description}
           <p class="text-sm text-[hsl(var(--muted-foreground))] mt-2">{playlist.description}</p>
         {/if}
         <p class="text-sm text-[hsl(var(--muted-foreground))] mt-2">
-          {playlist.tracks?.length ?? 0} piste{(playlist.tracks?.length ?? 0) !== 1 ? "s" : ""}
+          {playlist.tracks?.length ?? 0} {t('playlists.tracks')}
         </p>
       </div>
     </div>
@@ -131,14 +132,14 @@
           class="px-4 py-2 bg-[hsl(var(--secondary))] hover:opacity-90 rounded-lg text-sm font-medium transition"
           onclick={() => { editing = !editing; success = null; }}
         >
-          {editing ? "Annuler" : "Modifier"}
+          {editing ? t('playlists.cancelEdit') : t('playlists.edit')}
         </button>
         <button
           class="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg text-sm font-medium transition"
           onclick={deletePlaylist}
           disabled={deleting}
         >
-          {deleting ? "Suppression..." : "Supprimer"}
+          {deleting ? t('playlists.deleting') : t('common.delete')}
         </button>
       {/if}
     </div>
@@ -147,23 +148,23 @@
     {#if editing && isOwner}
       <form class="bg-[hsl(var(--card))] rounded-lg p-6 space-y-4" onsubmit={(e) => { e.preventDefault(); saveEdit(); }}>
         <div>
-          <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-name">Nom</label>
+          <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-name">{t('playlists.nameLabel')}</label>
           <input id="edit-name" type="text" bind:value={editForm.name} class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />
         </div>
         <div>
-          <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-desc">Description</label>
+          <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-desc">{t('playlists.descriptionLabel')}</label>
           <textarea id="edit-desc" bind:value={editForm.description} rows="3" class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))] resize-none"></textarea>
         </div>
         <div>
-          <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-cover">URL de la cover</label>
+          <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-cover">{t('playlists.coverUrl')}</label>
           <input id="edit-cover" type="url" bind:value={editForm.cover_url} placeholder="https://..." class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />
         </div>
         <div class="flex items-center gap-2">
           <input id="edit-public" type="checkbox" bind:checked={editForm.is_public} class="rounded" />
-          <label class="text-sm" for="edit-public">Playlist publique</label>
+          <label class="text-sm" for="edit-public">{t('playlists.publicPlaylist')}</label>
         </div>
         <button type="submit" class="px-6 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition">
-          Enregistrer
+          {t('common.save')}
         </button>
       </form>
     {/if}
@@ -171,9 +172,9 @@
     {#if playlist.tracks && playlist.tracks.length > 0}
       <TrackList tracks={playlist.tracks} />
     {:else}
-      <p class="text-[hsl(var(--muted-foreground))] text-center py-10">Cette playlist est vide.</p>
+      <p class="text-[hsl(var(--muted-foreground))] text-center py-10">{t('playlists.empty')}</p>
     {/if}
   </div>
 {:else}
-  <p class="text-center py-20 text-[hsl(var(--muted-foreground))]">Playlist introuvable.</p>
+  <p class="text-center py-20 text-[hsl(var(--muted-foreground))]">{t('playlists.notFound')}</p>
 {/if}

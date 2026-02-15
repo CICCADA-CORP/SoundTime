@@ -5,7 +5,7 @@
   import { t } from "$lib/i18n/index.svelte";
 
   const auth = getAuthStore();
-  let uploads: UploadResponse[] = [];
+  let uploads: UploadResponse[] = $state([]);
 
   function handleUploaded(result: UploadResponse) {
     uploads = [result, ...uploads];

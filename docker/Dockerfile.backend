@@ -13,13 +13,15 @@ COPY crates/soundtime-audio/Cargo.toml crates/soundtime-audio/Cargo.toml
 COPY crates/soundtime-db/Cargo.toml crates/soundtime-db/Cargo.toml
 COPY crates/soundtime-migration/Cargo.toml crates/soundtime-migration/Cargo.toml
 COPY crates/soundtime-p2p/Cargo.toml crates/soundtime-p2p/Cargo.toml
+COPY crates/soundtime-plugin/Cargo.toml crates/soundtime-plugin/Cargo.toml
 
 # 2. Create stub lib.rs / main.rs so cargo can resolve the workspace
 RUN mkdir -p crates/soundtime-server/src && echo "fn main() {}" > crates/soundtime-server/src/main.rs \
     && mkdir -p crates/soundtime-audio/src && echo "" > crates/soundtime-audio/src/lib.rs \
     && mkdir -p crates/soundtime-db/src && echo "" > crates/soundtime-db/src/lib.rs \
     && mkdir -p crates/soundtime-migration/src && echo "" > crates/soundtime-migration/src/lib.rs \
-    && mkdir -p crates/soundtime-p2p/src && echo "" > crates/soundtime-p2p/src/lib.rs
+    && mkdir -p crates/soundtime-p2p/src && echo "" > crates/soundtime-p2p/src/lib.rs \
+    && mkdir -p crates/soundtime-plugin/src && echo "" > crates/soundtime-plugin/src/lib.rs
 
 # 3. Build only dependencies (this layer is cached unless Cargo.toml/lock changes)
 RUN cargo build --release -p soundtime-server 2>/dev/null || true

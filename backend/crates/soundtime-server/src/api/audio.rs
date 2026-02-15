@@ -1,12 +1,12 @@
 use axum::{
     body::Body,
     extract::{Multipart, Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     Extension, Json,
 };
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use soundtime_audio::extract_metadata_from_file;
 use soundtime_db::entities::{album, artist, remote_track, track};
 use std::sync::Arc;
@@ -327,7 +327,9 @@ pub async fn upload_track(
             {
                 let mut update: album::ActiveModel = result.clone().into();
                 update.cover_url = Set(Some(format!("/api/media/{cover_path}")));
-                let _ = update.update(&state.db).await;
+                if let Err(e) = update.update(&state.db).await {
+                    tracing::warn!(error = %e, "failed to update album cover URL");
+                }
             }
         }
 
@@ -408,12 +410,6 @@ pub async fn upload_track(
         format: audio_meta.format,
         message: "Track uploaded successfully".into(),
     }))
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct StreamParams {
-    pub _format: Option<String>,
 }
 
 /// GET /api/tracks/:id/stream — Stream audio with Range support
@@ -557,17 +553,19 @@ pub async fn stream_track(
         };
 
         let mut response_headers = HeaderMap::new();
-        response_headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
         response_headers.insert(
-            header::CONTENT_LENGTH,
-            content_length.to_string().parse().unwrap(),
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(content_type)
+                .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
         );
-        response_headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+        response_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(content_length));
+        response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
 
         if range.is_some() {
             response_headers.insert(
                 header::CONTENT_RANGE,
-                format!("bytes {start}-{end}/{file_size}").parse().unwrap(),
+                HeaderValue::from_str(&format!("bytes {start}-{end}/{file_size}"))
+                    .unwrap_or_else(|_| HeaderValue::from_static("bytes */*")),
             );
         }
 
@@ -634,17 +632,19 @@ pub async fn stream_track(
     };
 
     let mut response_headers = HeaderMap::new();
-    response_headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
     response_headers.insert(
-        header::CONTENT_LENGTH,
-        content_length.to_string().parse().unwrap(),
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(content_type)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
-    response_headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
+    response_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(content_length));
+    response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
 
     if range.is_some() {
         response_headers.insert(
             header::CONTENT_RANGE,
-            format!("bytes {start}-{end}/{file_size}").parse().unwrap(),
+            HeaderValue::from_str(&format!("bytes {start}-{end}/{file_size}"))
+                .unwrap_or_else(|_| HeaderValue::from_static("bytes */*")),
         );
     }
 
@@ -700,10 +700,14 @@ pub async fn serve_media(
     };
 
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(content_type)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+    );
     headers.insert(
         header::CACHE_CONTROL,
-        "public, max-age=31536000, immutable".parse().unwrap(),
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
     );
 
     Ok((headers, data))
@@ -973,7 +977,9 @@ async fn process_single_upload(
             {
                 let mut update: album::ActiveModel = result.clone().into();
                 update.cover_url = Set(Some(format!("/api/media/{cover_path}")));
-                let _ = update.update(&state.db).await;
+                if let Err(e) = update.update(&state.db).await {
+                    tracing::warn!(error = %e, "failed to update album cover URL");
+                }
             }
         }
 

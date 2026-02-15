@@ -178,6 +178,9 @@ export const api = {
   },
 };
 
+// SECURITY: The JWT token is passed as a URL query parameter because HTML <audio>/<video>
+// elements cannot set custom headers on their src requests. This is a known limitation.
+// Mitigations: tokens are short-lived (15min), stream endpoints validate the token server-side.
 export function streamUrl(trackId: string): string {
   const token = getAccessToken();
   return `${API_BASE}/tracks/${trackId}/stream${token ? `?token=${token}` : ""}`;

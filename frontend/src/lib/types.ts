@@ -309,14 +309,17 @@ export interface TrackCredits {
   musicbrainz_id: string | null;
   play_count: number;
   uploaded_by: string | null;
+  uploaded_by_username?: string | null;
   created_at: string;
   artist_id: string;
   artist_name: string;
+  artist?: string;
   artist_bio: string | null;
   artist_image: string | null;
   artist_musicbrainz_id: string | null;
   album_id: string | null;
   album_title: string | null;
+  album?: string | null;
   album_cover_url: string | null;
   album_genre: string | null;
   album_year: number | null;

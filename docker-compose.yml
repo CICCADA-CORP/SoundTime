@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-soundtime}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-soundtime}
@@ -18,10 +19,11 @@ services:
 
   backend:
     image: ghcr.io/ciccada-corp/soundtime-backend:latest
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-soundtime}:${POSTGRES_PASSWORD:-soundtime}@postgres:5432/${POSTGRES_DB:-soundtime}
       RUST_LOG: ${RUST_LOG:-info}
-      JWT_SECRET: ${JWT_SECRET:-change-me-to-a-secure-random-string}
+      JWT_SECRET: ${JWT_SECRET}
       SOUNDTIME_DOMAIN: ${SOUNDTIME_DOMAIN:-localhost}
       AUDIO_STORAGE_PATH: /data/music
       # Storage backend: "local" (default) or "s3"
@@ -54,6 +56,7 @@ services:
 
   frontend:
     image: ghcr.io/ciccada-corp/soundtime-frontend:latest
+    restart: unless-stopped
     depends_on:
       - backend
     ports:
@@ -61,6 +64,7 @@ services:
 
   nginx:
     image: nginx:alpine
+    restart: unless-stopped
     ports:
       - "${NGINX_PORT:-8880}:80"
     volumes:

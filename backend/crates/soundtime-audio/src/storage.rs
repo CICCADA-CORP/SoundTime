@@ -344,9 +344,13 @@ impl StorageBackend for S3Storage {
         // Cache locally for streaming
         let cache_file = self.cache_path.join(&final_relative);
         if let Some(parent) = cache_file.parent() {
-            let _ = fs::create_dir_all(parent).await;
+            if let Err(e) = fs::create_dir_all(parent).await {
+                tracing::warn!(error = %e, "failed to create cache directory for track");
+            }
         }
-        let _ = fs::write(&cache_file, data).await;
+        if let Err(e) = fs::write(&cache_file, data).await {
+            tracing::warn!(error = %e, "failed to write track to local cache");
+        }
 
         Ok(final_relative)
     }
@@ -377,7 +381,9 @@ impl StorageBackend for S3Storage {
             .map_err(|e| StorageError::S3(format!("DeleteObject failed: {e}")))?;
 
         let cache_file = self.cache_path.join(relative_path);
-        let _ = fs::remove_file(cache_file).await;
+        if let Err(e) = fs::remove_file(cache_file).await {
+            tracing::warn!(error = %e, "failed to remove cached file");
+        }
 
         Ok(())
     }
@@ -405,9 +411,13 @@ impl StorageBackend for S3Storage {
 
         let cache_file = self.cache_path.join(&relative);
         if let Some(parent) = cache_file.parent() {
-            let _ = fs::create_dir_all(parent).await;
+            if let Err(e) = fs::create_dir_all(parent).await {
+                tracing::warn!(error = %e, "failed to create cache directory for cover");
+            }
         }
-        let _ = fs::write(&cache_file, data).await;
+        if let Err(e) = fs::write(&cache_file, data).await {
+            tracing::warn!(error = %e, "failed to write cover to local cache");
+        }
 
         Ok(relative)
     }
@@ -437,9 +447,13 @@ impl StorageBackend for S3Storage {
             .to_vec();
 
         if let Some(parent) = cache_file.parent() {
-            let _ = fs::create_dir_all(parent).await;
+            if let Err(e) = fs::create_dir_all(parent).await {
+                tracing::warn!(error = %e, "failed to create cache directory for read file");
+            }
         }
-        let _ = fs::write(&cache_file, &data).await;
+        if let Err(e) = fs::write(&cache_file, &data).await {
+            tracing::warn!(error = %e, "failed to write read file to local cache");
+        }
 
         Ok(data)
     }

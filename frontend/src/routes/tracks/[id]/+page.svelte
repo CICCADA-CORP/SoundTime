@@ -6,6 +6,7 @@
   import { getAuthStore } from "$lib/stores/auth.svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { formatDuration } from "$lib/utils";
+  import { t } from "$lib/i18n/index.svelte";
 
   const auth = getAuthStore();
   const player = getPlayerStore();
@@ -51,23 +52,23 @@
       if (editForm.disc_number !== (credits.disc_number?.toString() ?? "")) body.disc_number = editForm.disc_number ? parseInt(editForm.disc_number) : null;
 
       await api.put(`/tracks/${credits.id}`, body);
-      success = "Métadonnées mises à jour";
+      success = t('track.metadataUpdated');
       editing = false;
       // Reload
       credits = await api.get<TrackCredits>(`/tracks/${credits.id}/credits`);
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
     }
   }
 
   async function deleteTrack() {
-    if (!credits || !confirm("Supprimer ce morceau ? Cette action est irréversible.")) return;
+    if (!credits || !confirm(t('track.deleteConfirm'))) return;
     deleting = true;
     try {
       await api.delete(`/tracks/${credits.id}`);
       window.location.href = "/explore";
-    } catch (e: any) {
-      error = e.message;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
       deleting = false;
     }
   }
@@ -77,11 +78,11 @@
     reportError = "";
     try {
       await api.post(`/tracks/${credits.id}/report`, { reason: reportReason.trim() });
-      reportSuccess = "Signalement envoyé. L'administrateur examinera votre demande.";
+      reportSuccess = t('track.reportSuccess');
       reportReason = "";
       setTimeout(() => { showReportForm = false; reportSuccess = ""; }, 3000);
-    } catch (e: any) {
-      reportError = e?.message ?? "Erreur lors du signalement.";
+    } catch (e: unknown) {
+      reportError = (e instanceof Error ? e.message : String(e)) ?? t('track.reportError');
     }
   }
 </script>
@@ -102,7 +103,7 @@
         <div class="w-48 h-48 rounded-lg bg-gradient-to-br from-[hsl(var(--primary))]/40 to-[hsl(var(--secondary))] flex items-center justify-center text-6xl shadow-xl flex-shrink-0">🎵</div>
       {/if}
       <div class="min-w-0">
-        <p class="text-xs uppercase tracking-wider text-[hsl(var(--muted-foreground))]">Morceau</p>
+        <p class="text-xs uppercase tracking-wider text-[hsl(var(--muted-foreground))]">{t('track.trackLabel')}</p>
         <h1 class="text-3xl font-bold mt-1 truncate">{credits.title}</h1>
         <a href="/artists/{credits.artist_id}" class="text-lg text-[hsl(var(--muted-foreground))] hover:text-white transition">{credits.artist_name}</a>
         {#if credits.album_title}
@@ -111,7 +112,7 @@
           </p>
         {/if}
         <p class="text-xs text-[hsl(var(--muted-foreground))] mt-2">
-          {credits.play_count} écoute{credits.play_count !== 1 ? "s" : ""}
+          {credits.play_count} {credits.play_count !== 1 ? t('track.plays').toLowerCase() : t('track.play')}
         </p>
       </div>
     </div>
@@ -130,14 +131,14 @@
           class="px-4 py-2 bg-[hsl(var(--secondary))] hover:opacity-90 rounded-lg text-sm font-medium transition"
           onclick={() => { editing = !editing; success = null; }}
         >
-          {editing ? "Annuler" : "Modifier les métadonnées"}
+          {editing ? t('track.cancelEdit') : t('track.editMetadata')}
         </button>
         <button
           class="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg text-sm font-medium transition"
           onclick={deleteTrack}
           disabled={deleting}
         >
-          {deleting ? "Suppression..." : "Supprimer le morceau"}
+          {deleting ? t('track.deleting') : t('track.deleteTrack')}
         </button>
       </div>
     {/if}
@@ -149,24 +150,24 @@
           <p class="text-green-400 text-sm bg-green-500/10 border border-green-500/30 rounded-lg p-3">{reportSuccess}</p>
         {:else if showReportForm}
           <div class="bg-[hsl(var(--card))] rounded-lg p-5 space-y-3 border border-[hsl(var(--border))]">
-            <h3 class="text-sm font-semibold">Signaler cette piste</h3>
+            <h3 class="text-sm font-semibold">{t('track.reportTitle')}</h3>
             {#if reportError}
               <p class="text-red-400 text-sm">{reportError}</p>
             {/if}
             <textarea
               bind:value={reportReason}
-              placeholder="Décrivez le problème (ex: violation de droits d'auteur, contenu inapproprié...)"
+              placeholder={t('track.reportDescPlaceholder')}
               class="w-full px-3 py-2 rounded-lg bg-[hsl(var(--secondary))] text-sm resize-none h-24 border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]"
               maxlength="500"
             ></textarea>
             <p class="text-xs text-[hsl(var(--muted-foreground))] text-right">{reportReason.length}/500</p>
             <div class="flex gap-3">
-              <button class="px-4 py-2 text-sm rounded-lg bg-[hsl(var(--secondary))] hover:opacity-80 transition" onclick={() => showReportForm = false}>Annuler</button>
+              <button class="px-4 py-2 text-sm rounded-lg bg-[hsl(var(--secondary))] hover:opacity-80 transition" onclick={() => showReportForm = false}>{t('common.cancel')}</button>
               <button
                 class="px-4 py-2 text-sm rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 font-medium transition disabled:opacity-50"
                 disabled={!reportReason.trim()}
                 onclick={submitReport}
-              >Envoyer</button>
+              >{t('track.send')}</button>
             </div>
           </div>
         {:else}
@@ -175,7 +176,7 @@
             onclick={() => showReportForm = true}
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3v18m0-18l9 6-9 6"/></svg>
-            Signaler cette piste
+            {t('track.reportTitle')}
           </button>
         {/if}
       </div>
@@ -185,75 +186,75 @@
     {#if editing && isOwner}
       <form class="bg-[hsl(var(--card))] rounded-lg p-6 space-y-4" onsubmit={(e) => { e.preventDefault(); saveEdit(); }}>
         <div>
-          <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-title">Titre</label>
+          <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-title">{t('track.title')}</label>
           <input id="edit-title" type="text" bind:value={editForm.title} class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div>
-            <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-genre">Genre</label>
+            <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-genre">{t('track.genre')}</label>
             <input id="edit-genre" type="text" bind:value={editForm.genre} class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />
           </div>
           <div>
-            <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-year">Année</label>
+            <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-year">{t('track.year')}</label>
             <input id="edit-year" type="number" bind:value={editForm.year} class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />
           </div>
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div>
-            <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-track">N° piste</label>
+            <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-track">{t('track.trackNumber')}</label>
             <input id="edit-track" type="number" bind:value={editForm.track_number} class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />
           </div>
           <div>
-            <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-disc">N° disque</label>
+            <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-disc">{t('track.discNumber')}</label>
             <input id="edit-disc" type="number" bind:value={editForm.disc_number} class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />
           </div>
         </div>
         <button type="submit" class="px-6 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition">
-          Enregistrer
+          {t('common.save')}
         </button>
       </form>
     {/if}
 
     <!-- Metadata Table -->
     <div class="bg-[hsl(var(--card))] rounded-lg overflow-hidden">
-      <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">Informations techniques</h2>
+      <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">{t('track.technicalInfo')}</h2>
       <div class="divide-y divide-[hsl(var(--border))]">
         <div class="grid grid-cols-2 p-4">
-          <span class="text-sm text-[hsl(var(--muted-foreground))]">Durée</span>
+          <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.duration')}</span>
           <span class="text-sm">{formatDuration(credits.duration_secs)}</span>
         </div>
         <div class="grid grid-cols-2 p-4">
-          <span class="text-sm text-[hsl(var(--muted-foreground))]">Format</span>
+          <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.format')}</span>
           <span class="text-sm uppercase">{credits.format}</span>
         </div>
         {#if credits.bitrate}
           <div class="grid grid-cols-2 p-4">
-            <span class="text-sm text-[hsl(var(--muted-foreground))]">Bitrate</span>
+            <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.bitrate')}</span>
             <span class="text-sm">{credits.bitrate} kbps</span>
           </div>
         {/if}
         {#if credits.sample_rate}
           <div class="grid grid-cols-2 p-4">
-            <span class="text-sm text-[hsl(var(--muted-foreground))]">Fréquence d'échantillonnage</span>
+            <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.sampleRate')}</span>
             <span class="text-sm">{(credits.sample_rate / 1000).toFixed(1)} kHz</span>
           </div>
         {/if}
         {#if credits.genre}
           <div class="grid grid-cols-2 p-4">
-            <span class="text-sm text-[hsl(var(--muted-foreground))]">Genre</span>
+            <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.genre')}</span>
             <span class="text-sm">{credits.genre}</span>
           </div>
         {/if}
         {#if credits.year}
           <div class="grid grid-cols-2 p-4">
-            <span class="text-sm text-[hsl(var(--muted-foreground))]">Année</span>
+            <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.year')}</span>
             <span class="text-sm">{credits.year}</span>
           </div>
         {/if}
         {#if credits.track_number}
           <div class="grid grid-cols-2 p-4">
-            <span class="text-sm text-[hsl(var(--muted-foreground))]">Piste</span>
-            <span class="text-sm">{credits.track_number}{credits.disc_number ? ` (Disque ${credits.disc_number})` : ""}</span>
+            <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.trackLabel')}</span>
+            <span class="text-sm">{credits.track_number}{credits.disc_number ? ` (${t('track.disc', { n: credits.disc_number })})` : ""}</span>
           </div>
         {/if}
         {#if credits.musicbrainz_id}
@@ -263,15 +264,15 @@
           </div>
         {/if}
         <div class="grid grid-cols-2 p-4">
-          <span class="text-sm text-[hsl(var(--muted-foreground))]">Ajouté le</span>
-          <span class="text-sm">{new Date(credits.created_at).toLocaleDateString("fr-FR", { year: "numeric", month: "long", day: "numeric" })}</span>
+          <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.addedOn')}</span>
+          <span class="text-sm">{new Date(credits.created_at).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}</span>
         </div>
       </div>
     </div>
 
     <!-- Artist Info -->
     <div class="bg-[hsl(var(--card))] rounded-lg overflow-hidden">
-      <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">Artiste</h2>
+      <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">{t('track.artistSection')}</h2>
       <div class="p-5 flex items-center gap-4">
         {#if credits.artist_image}
           <img src={credits.artist_image} alt={credits.artist_name} class="w-16 h-16 rounded-full object-cover" />
@@ -293,7 +294,7 @@
     <!-- Album Info -->
     {#if credits.album_id}
       <div class="bg-[hsl(var(--card))] rounded-lg overflow-hidden">
-        <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">Album</h2>
+        <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">{t('track.albumSection')}</h2>
         <div class="p-5 flex items-center gap-4">
           {#if credits.album_cover_url}
             <img src={credits.album_cover_url} alt={credits.album_title ?? ""} class="w-16 h-16 rounded object-cover" />
@@ -317,5 +318,5 @@
     {/if}
   </div>
 {:else}
-  <p class="text-center py-20 text-[hsl(var(--muted-foreground))]">Morceau introuvable.</p>
+  <p class="text-center py-20 text-[hsl(var(--muted-foreground))]">{t('track.notFound')}</p>
 {/if}

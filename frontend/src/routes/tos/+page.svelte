@@ -2,16 +2,17 @@
   import { onMount } from "svelte";
   import { api } from "$lib/api";
   import type { TosResponse } from "$lib/types";
+  import { t } from "$lib/i18n/index.svelte";
 
-  let content = "";
-  let loading = true;
+  let content = $state("");
+  let loading = $state(true);
 
   onMount(async () => {
     try {
       const tos = await api.get<TosResponse>("/tos");
       content = tos.content;
     } catch {
-      content = "Impossible de charger les conditions d'utilisation.";
+      content = t('tos.loadError');
     } finally {
       loading = false;
     }
@@ -38,7 +39,7 @@
 </script>
 
 <svelte:head>
-  <title>Conditions d'utilisation — SoundTime</title>
+  <title>{t('tos.title')}</title>
 </svelte:head>
 
 <div class="max-w-3xl mx-auto py-8 px-4">
@@ -48,6 +49,7 @@
     </div>
   {:else}
     <div class="prose prose-invert max-w-none space-y-2 text-[hsl(var(--foreground))] leading-relaxed text-sm">
+      <!-- SECURITY: renderMarkdown() escapes &, <, > before applying transforms — safe from XSS -->
       {@html renderMarkdown(content)}
     </div>
   {/if}

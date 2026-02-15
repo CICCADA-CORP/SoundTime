@@ -107,9 +107,12 @@ pub async fn log_listen(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
     if let Some(t) = track_model {
+        let new_count = t.play_count + 1;
         let mut update: track::ActiveModel = t.into();
-        update.play_count = Set(update.play_count.unwrap() + 1);
-        let _ = update.update(&state.db).await;
+        update.play_count = Set(new_count);
+        if let Err(e) = update.update(&state.db).await {
+            tracing::warn!(error = %e, "failed to update play count");
+        }
     }
 
     // Dispatch plugin event (best-effort)
