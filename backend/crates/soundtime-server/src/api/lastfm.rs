@@ -15,6 +15,12 @@ use crate::auth::middleware::AuthUser;
 use soundtime_db::entities::{album, artist, track, user_setting};
 use soundtime_db::AppState;
 
+// SECURITY: These are HKDF domain-separation parameters (salt and info), NOT secret keys.
+// They ensure the derived encryption key is unique to the "Last.fm session key" use-case.
+// The actual secret input to HKDF is `jwt_secret`, sourced from the JWT_SECRET environment variable.
+const HKDF_SALT: &[u8] = b"soundtime-lastfm";
+const HKDF_INFO: &[u8] = b"lastfm-session-key";
+
 // ─── Structs ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -71,9 +77,9 @@ fn encrypt_session_key(key: &str, jwt_secret: &str) -> Result<String, String> {
     use hkdf::Hkdf;
     use sha2::Sha256;
 
-    let hk = Hkdf::<Sha256>::new(Some(b"soundtime-lastfm"), jwt_secret.as_bytes());
+    let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), jwt_secret.as_bytes());
     let mut derived = [0u8; 32];
-    hk.expand(b"lastfm-session-key", &mut derived)
+    hk.expand(HKDF_INFO, &mut derived)
         .map_err(|e| format!("HKDF expand failed: {e}"))?;
 
     let cipher =
@@ -101,9 +107,9 @@ fn decrypt_session_key(encrypted: &str, jwt_secret: &str) -> Result<String, Stri
     use hkdf::Hkdf;
     use sha2::Sha256;
 
-    let hk = Hkdf::<Sha256>::new(Some(b"soundtime-lastfm"), jwt_secret.as_bytes());
+    let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), jwt_secret.as_bytes());
     let mut derived = [0u8; 32];
-    hk.expand(b"lastfm-session-key", &mut derived)
+    hk.expand(HKDF_INFO, &mut derived)
         .map_err(|e| format!("HKDF expand failed: {e}"))?;
 
     let cipher =

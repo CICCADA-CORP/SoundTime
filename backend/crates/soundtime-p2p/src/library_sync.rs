@@ -387,10 +387,17 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
             let db = node.db();
             let domain = normalize_instance_domain(&peer_node_id);
             let poll_interval = std::time::Duration::from_secs(2);
-            let timeout = std::time::Duration::from_secs(300); // 5 minutes max
+            // Scale timeout dynamically: 2s per track, min 5m, max 2h
+            let timeout_secs = (expected_tracks * 2).clamp(300, 7200);
+            let timeout = std::time::Duration::from_secs(timeout_secs);
             let deadline = std::time::Instant::now() + timeout;
             let mut last_count = 0u64;
             let mut stall_count = 0u32;
+
+            // Scale stall threshold: allow more time between pages for large catalogs.
+            // Each page of 500 tracks can take 25-60s to process, so we allow
+            // (pages * 5 + 30) polls × 2s each.
+            let max_stall = ((expected_tracks / 500) * 5 + 30) as u32;
 
             loop {
                 tokio::time::sleep(poll_interval).await;
@@ -429,7 +436,7 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
                 // Detect stall: if count hasn't changed for 10 consecutive polls (20s)
                 if current_count == last_count {
                     stall_count += 1;
-                    if stall_count >= 10 {
+                    if stall_count >= max_stall {
                         info!(
                             peer = %peer_node_id,
                             received = current_count,
@@ -448,7 +455,8 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
                         peer = %peer_node_id,
                         received = current_count,
                         expected = expected_tracks,
-                        "catalog reception timed out after 5 minutes"
+                        timeout_secs,
+                        "catalog reception timed out"
                     );
                     break;
                 }
@@ -481,7 +489,12 @@ pub fn spawn_library_resync(node: Arc<P2pNode>, peer_node_id: String, tracker: S
                 },
             };
         }
-        node.incremental_sync_to_peer(nid, None).await;
+        // Pass sync start time so only tracks added DURING the sync are sent
+        // (Phase 2 already sent the full catalog — this avoids duplicating 24K announcements)
+        let sync_start_chrono =
+            chrono::Utc::now() - chrono::Duration::seconds(start.elapsed().as_secs() as i64);
+        node.incremental_sync_to_peer(nid, Some(sync_start_chrono))
+            .await;
 
         // Count final results
         let db = node.db();

@@ -6,6 +6,7 @@
 //! - Fetches tracks from remote peers by hash
 //! - Exposes the local EndpointId for discovery
 
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1101,6 +1102,7 @@ impl P2pNode {
         let page_size = 500u64;
         let total = match track::Entity::find()
             .filter(track::Column::ContentHash.is_not_null())
+            .filter(track::Column::FilePath.not_like("p2p://%"))
             .count(&self.db)
             .await
         {
@@ -1121,9 +1123,13 @@ impl P2pNode {
 
         let our_node = self.node_id().to_string();
 
+        // Cache cover hashes by album_id to avoid re-reading + re-publishing the same cover
+        let mut cover_cache: HashMap<Uuid, Option<String>> = HashMap::new();
+
         for page_num in 0..num_pages {
             let tracks = match track::Entity::find()
                 .filter(track::Column::ContentHash.is_not_null())
+                .filter(track::Column::FilePath.not_like("p2p://%"))
                 .paginate(&self.db, page_size)
                 .fetch_page(page_num)
                 .await
@@ -1136,6 +1142,46 @@ impl P2pNode {
                     );
                     continue;
                 }
+            };
+
+            // ── Batch-fetch artists and albums for this page ──
+            let artist_ids: Vec<Uuid> = tracks
+                .iter()
+                .map(|t| t.artist_id)
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+            let album_ids: Vec<Uuid> = tracks
+                .iter()
+                .filter_map(|t| t.album_id)
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+
+            let artist_map: HashMap<Uuid, String> = if !artist_ids.is_empty() {
+                artist::Entity::find()
+                    .filter(artist::Column::Id.is_in(artist_ids))
+                    .all(&self.db)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|a| (a.id, a.name))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
+
+            let album_map: HashMap<Uuid, (String, Option<String>)> = if !album_ids.is_empty() {
+                album::Entity::find()
+                    .filter(album::Column::Id.is_in(album_ids))
+                    .all(&self.db)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|a| (a.id, (a.title, a.cover_url)))
+                    .collect()
+            } else {
+                HashMap::new()
             };
 
             let mut announcements = Vec::with_capacity(tracks.len());
@@ -1151,53 +1197,50 @@ impl P2pNode {
                     None => continue,
                 };
 
-                let artist_name = artist::Entity::find_by_id(t.artist_id)
-                    .one(&self.db)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|a| a.name)
+                let artist_name = artist_map
+                    .get(&t.artist_id)
+                    .cloned()
                     .unwrap_or_else(|| "Unknown".to_string());
 
                 let (album_title, cover_hash) = match t.album_id {
                     Some(aid) => {
-                        let album_opt = album::Entity::find_by_id(aid)
-                            .one(&self.db)
-                            .await
-                            .ok()
-                            .flatten();
-                        match album_opt {
-                            Some(a) => {
-                                let title = Some(a.title);
-                                // Publish cover art to blob store if available
-                                let ch = if let Some(ref url) = a.cover_url {
-                                    // cover_url is like "/api/media/<relative_path>"
-                                    let rel = url.strip_prefix("/api/media/").unwrap_or(url);
-                                    let full = self.audio_storage_path.join(rel);
-                                    let cover_data = match tokio::fs::read(&full).await {
-                                        Ok(data) => Some(data),
-                                        Err(_) => {
-                                            if let Some(ref meta) = self.metadata_storage_path {
-                                                tokio::fs::read(meta.join(rel)).await.ok()
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                    };
-                                    match cover_data {
-                                        Some(data) => {
-                                            match self.publish_cover(Bytes::from(data)).await {
-                                                Ok(h) => Some(h.to_string()),
-                                                Err(e) => {
-                                                    warn!("failed to publish cover blob: {e}");
+                        match album_map.get(&aid) {
+                            Some((title, cover_url)) => {
+                                let title = Some(title.clone());
+                                // Use cover cache to avoid re-reading/re-publishing same cover
+                                let ch = if let Some(cached) = cover_cache.get(&aid) {
+                                    cached.clone()
+                                } else {
+                                    let result = if let Some(ref url) = cover_url {
+                                        let rel = url.strip_prefix("/api/media/").unwrap_or(url);
+                                        let full = self.audio_storage_path.join(rel);
+                                        let cover_data = match tokio::fs::read(&full).await {
+                                            Ok(data) => Some(data),
+                                            Err(_) => {
+                                                if let Some(ref meta) = self.metadata_storage_path {
+                                                    tokio::fs::read(meta.join(rel)).await.ok()
+                                                } else {
                                                     None
                                                 }
                                             }
+                                        };
+                                        match cover_data {
+                                            Some(data) => {
+                                                match self.publish_cover(Bytes::from(data)).await {
+                                                    Ok(h) => Some(h.to_string()),
+                                                    Err(e) => {
+                                                        warn!("failed to publish cover blob: {e}");
+                                                        None
+                                                    }
+                                                }
+                                            }
+                                            None => None,
                                         }
-                                        None => None,
-                                    }
-                                } else {
-                                    None
+                                    } else {
+                                        None
+                                    };
+                                    cover_cache.insert(aid, result.clone());
+                                    result
                                 };
                                 (title, ch)
                             }
@@ -1211,7 +1254,7 @@ impl P2pNode {
                     hash,
                     title: t.title.clone(),
                     artist_name,
-                    album_artist_name: None, // Not available from DB query; artist_id on album suffices
+                    album_artist_name: None,
                     album_title,
                     duration_secs: t.duration_secs,
                     format: t.format.clone(),
@@ -1675,123 +1718,192 @@ impl P2pNode {
     ) {
         let since_ts = since.unwrap_or(chrono::DateTime::UNIX_EPOCH);
 
-        let tracks = match track::Entity::find()
+        let page_size = 500u64;
+        let total = match track::Entity::find()
             .filter(track::Column::ContentHash.is_not_null())
+            .filter(track::Column::FilePath.not_like("p2p://%"))
             .filter(track::Column::CreatedAt.gt(since_ts))
-            .all(&self.db)
+            .count(&self.db)
             .await
         {
-            Ok(t) => t,
+            Ok(c) => c,
             Err(e) => {
-                warn!("failed to read tracks for incremental sync: {e}");
+                warn!("failed to count tracks for incremental sync: {e}");
                 return;
             }
         };
 
-        if tracks.is_empty() {
+        if total == 0 {
             debug!(peer = %peer_id, "no new tracks since last sync");
             return;
         }
 
-        let mut announcements = Vec::with_capacity(tracks.len());
+        let num_pages = total.div_ceil(page_size);
         let our_node = self.node_id().to_string();
+        let mut cover_cache: HashMap<Uuid, Option<String>> = HashMap::new();
 
-        for t in &tracks {
-            if t.file_path.starts_with("p2p://") {
-                continue;
-            }
-            let hash = match &t.content_hash {
-                Some(h) => h.clone(),
-                None => continue,
+        info!(
+            peer = %peer_id,
+            total,
+            since = %since_ts,
+            pages = num_pages,
+            "starting paginated incremental sync"
+        );
+
+        for page_num in 0..num_pages {
+            let tracks = match track::Entity::find()
+                .filter(track::Column::ContentHash.is_not_null())
+                .filter(track::Column::FilePath.not_like("p2p://%"))
+                .filter(track::Column::CreatedAt.gt(since_ts))
+                .paginate(&self.db, page_size)
+                .fetch_page(page_num)
+                .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        page = page_num,
+                        "failed to read tracks page for incremental sync: {e}"
+                    );
+                    continue;
+                }
             };
 
-            let artist_name = artist::Entity::find_by_id(t.artist_id)
-                .one(&self.db)
-                .await
-                .ok()
-                .flatten()
-                .map(|a| a.name)
-                .unwrap_or_else(|| "Unknown".to_string());
+            // ── Batch-fetch artists and albums for this page ──
+            let artist_ids: Vec<Uuid> = tracks
+                .iter()
+                .map(|t| t.artist_id)
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+            let album_ids: Vec<Uuid> = tracks
+                .iter()
+                .filter_map(|t| t.album_id)
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
 
-            let (album_title, cover_hash) = match t.album_id {
-                Some(aid) => {
-                    let album_opt = album::Entity::find_by_id(aid)
-                        .one(&self.db)
-                        .await
-                        .ok()
-                        .flatten();
-                    match album_opt {
-                        Some(a) => {
-                            let title = Some(a.title);
-                            let ch = if let Some(ref url) = a.cover_url {
-                                let rel = url.strip_prefix("/api/media/").unwrap_or(url);
-                                let full = self.audio_storage_path.join(rel);
-                                let cover_data = match tokio::fs::read(&full).await {
-                                    Ok(data) => Some(data),
-                                    Err(_) => {
-                                        if let Some(ref meta) = self.metadata_storage_path {
-                                            tokio::fs::read(meta.join(rel)).await.ok()
-                                        } else {
-                                            None
-                                        }
-                                    }
-                                };
-                                match cover_data {
-                                    Some(data) => match self.publish_cover(Bytes::from(data)).await
-                                    {
-                                        Ok(h) => Some(h.to_string()),
-                                        Err(_) => None,
-                                    },
-                                    None => None,
-                                }
+            let artist_map: HashMap<Uuid, String> = if !artist_ids.is_empty() {
+                artist::Entity::find()
+                    .filter(artist::Column::Id.is_in(artist_ids))
+                    .all(&self.db)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|a| (a.id, a.name))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
+
+            let album_map: HashMap<Uuid, (String, Option<String>)> = if !album_ids.is_empty() {
+                album::Entity::find()
+                    .filter(album::Column::Id.is_in(album_ids))
+                    .all(&self.db)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|a| (a.id, (a.title, a.cover_url)))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
+
+            let mut announcements = Vec::with_capacity(tracks.len());
+
+            for t in &tracks {
+                if t.file_path.starts_with("p2p://") {
+                    continue;
+                }
+                let hash = match &t.content_hash {
+                    Some(h) => h.clone(),
+                    None => continue,
+                };
+
+                let artist_name = artist_map
+                    .get(&t.artist_id)
+                    .cloned()
+                    .unwrap_or_else(|| "Unknown".to_string());
+
+                let (album_title, cover_hash) = match t.album_id {
+                    Some(aid) => match album_map.get(&aid) {
+                        Some((title, cover_url)) => {
+                            let title = Some(title.clone());
+                            let ch = if let Some(cached) = cover_cache.get(&aid) {
+                                cached.clone()
                             } else {
-                                None
+                                let result = if let Some(ref url) = cover_url {
+                                    let rel = url.strip_prefix("/api/media/").unwrap_or(url);
+                                    let full = self.audio_storage_path.join(rel);
+                                    let cover_data = match tokio::fs::read(&full).await {
+                                        Ok(data) => Some(data),
+                                        Err(_) => {
+                                            if let Some(ref meta) = self.metadata_storage_path {
+                                                tokio::fs::read(meta.join(rel)).await.ok()
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                    };
+                                    match cover_data {
+                                        Some(data) => {
+                                            match self.publish_cover(Bytes::from(data)).await {
+                                                Ok(h) => Some(h.to_string()),
+                                                Err(_) => None,
+                                            }
+                                        }
+                                        None => None,
+                                    }
+                                } else {
+                                    None
+                                };
+                                cover_cache.insert(aid, result.clone());
+                                result
                             };
                             (title, ch)
                         }
                         None => (None, None),
-                    }
+                    },
+                    None => (None, None),
+                };
+
+                announcements.push(TrackAnnouncement {
+                    hash,
+                    title: t.title.clone(),
+                    artist_name,
+                    album_artist_name: None,
+                    album_title,
+                    duration_secs: t.duration_secs,
+                    format: t.format.clone(),
+                    file_size: t.file_size,
+                    genre: t.genre.clone(),
+                    year: t.year,
+                    track_number: t.track_number,
+                    disc_number: t.disc_number,
+                    bitrate: t.bitrate,
+                    sample_rate: t.sample_rate,
+                    origin_node: our_node.clone(),
+                    cover_hash,
+                });
+            }
+
+            if !announcements.is_empty() {
+                info!(
+                    peer = %peer_id,
+                    count = announcements.len(),
+                    page = page_num,
+                    since = %since_ts,
+                    "incremental catalog sync page"
+                );
+
+                let msg = P2pMessage::CatalogDelta {
+                    since: since_ts,
+                    tracks: announcements,
+                };
+                if let Err(e) = self.send_message_to_peer(peer_id, &msg).await {
+                    warn!(peer = %peer_id, page = page_num, "failed to send catalog delta page: {e}");
                 }
-                None => (None, None),
-            };
-
-            announcements.push(TrackAnnouncement {
-                hash,
-                title: t.title.clone(),
-                artist_name,
-                album_artist_name: None,
-                album_title,
-                duration_secs: t.duration_secs,
-                format: t.format.clone(),
-                file_size: t.file_size,
-                genre: t.genre.clone(),
-                year: t.year,
-                track_number: t.track_number,
-                disc_number: t.disc_number,
-                bitrate: t.bitrate,
-                sample_rate: t.sample_rate,
-                origin_node: our_node.clone(),
-                cover_hash,
-            });
-        }
-
-        if announcements.is_empty() {
-            return;
-        }
-
-        info!(
-            peer = %peer_id,
-            count = announcements.len(),
-            since = %since_ts,
-            "incremental catalog sync"
-        );
-
-        let msg = P2pMessage::CatalogDelta {
-            since: since_ts,
-            tracks: announcements,
-        };
-        if let Err(e) = self.send_message_to_peer(peer_id, &msg).await {
-            warn!(peer = %peer_id, "failed to send catalog delta: {e}");
+            }
         }
 
         // Also send our bloom filter so the peer can route searches to us
