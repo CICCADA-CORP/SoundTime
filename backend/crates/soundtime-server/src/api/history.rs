@@ -139,7 +139,12 @@ pub async fn log_listen(
         let jwt_secret = state.jwt_secret.clone();
         tokio::spawn(async move {
             if let Err(e) = super::lastfm::scrobble_for_user(
-                &db, user_id, track_id, duration_listened, timestamp, &jwt_secret,
+                &db,
+                user_id,
+                track_id,
+                duration_listened,
+                timestamp,
+                &jwt_secret,
             )
             .await
             {

@@ -360,7 +360,10 @@ async fn main() {
         .route("/lastfm/connect", get(api::lastfm::lastfm_connect))
         .route("/lastfm/callback", post(api::lastfm::lastfm_callback))
         .route("/lastfm/toggle", post(api::lastfm::lastfm_toggle))
-        .route("/lastfm/disconnect", axum::routing::delete(api::lastfm::lastfm_disconnect))
+        .route(
+            "/lastfm/disconnect",
+            axum::routing::delete(api::lastfm::lastfm_disconnect),
+        )
         .route("/lastfm/now-playing", post(api::lastfm::lastfm_now_playing))
         .route("/radio/next", post(api::radio::radio_next))
         .layer(axum_middleware::from_fn_with_state(

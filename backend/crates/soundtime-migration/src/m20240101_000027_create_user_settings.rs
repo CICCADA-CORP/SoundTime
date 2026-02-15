@@ -26,10 +26,8 @@ impl MigrationTrait for Migration {
         )
         .await?;
 
-        db.execute_unprepared(
-            "CREATE INDEX idx_user_settings_user_id ON user_settings(user_id)",
-        )
-        .await?;
+        db.execute_unprepared("CREATE INDEX idx_user_settings_user_id ON user_settings(user_id)")
+            .await?;
 
         db.execute_unprepared(
             "CREATE INDEX idx_user_settings_user_key ON user_settings(user_id, key)",

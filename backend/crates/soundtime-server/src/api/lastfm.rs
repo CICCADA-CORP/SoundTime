@@ -76,8 +76,8 @@ fn encrypt_session_key(key: &str, jwt_secret: &str) -> Result<String, String> {
     hk.expand(b"lastfm-session-key", &mut derived)
         .map_err(|e| format!("HKDF expand failed: {e}"))?;
 
-    let cipher = Aes256Gcm::new_from_slice(&derived)
-        .map_err(|e| format!("AES-GCM key init failed: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&derived).map_err(|e| format!("AES-GCM key init failed: {e}"))?;
 
     let nonce_bytes: [u8; 12] = rand::random();
     #[allow(deprecated)]
@@ -106,8 +106,8 @@ fn decrypt_session_key(encrypted: &str, jwt_secret: &str) -> Result<String, Stri
     hk.expand(b"lastfm-session-key", &mut derived)
         .map_err(|e| format!("HKDF expand failed: {e}"))?;
 
-    let cipher = Aes256Gcm::new_from_slice(&derived)
-        .map_err(|e| format!("AES-GCM key init failed: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&derived).map_err(|e| format!("AES-GCM key init failed: {e}"))?;
 
     use base64::Engine;
     let combined = base64::engine::general_purpose::STANDARD
@@ -225,8 +225,7 @@ pub async fn lastfm_connect(
     })?;
 
     let callback_url = {
-        let scheme =
-            std::env::var("SOUNDTIME_SCHEME").unwrap_or_else(|_| "https".to_string());
+        let scheme = std::env::var("SOUNDTIME_SCHEME").unwrap_or_else(|_| "https".to_string());
         format!("{scheme}://{}/settings?lastfm_callback=1", state.domain)
     };
 
@@ -311,19 +310,20 @@ pub async fn lastfm_callback(
         )
     })?;
 
-    let session = json
-        .get("session")
-        .ok_or((StatusCode::BAD_GATEWAY, "No session in Last.fm response".to_string()))?;
+    let session = json.get("session").ok_or((
+        StatusCode::BAD_GATEWAY,
+        "No session in Last.fm response".to_string(),
+    ))?;
 
-    let session_key = session
-        .get("key")
-        .and_then(|v| v.as_str())
-        .ok_or((StatusCode::BAD_GATEWAY, "No session key in Last.fm response".to_string()))?;
+    let session_key = session.get("key").and_then(|v| v.as_str()).ok_or((
+        StatusCode::BAD_GATEWAY,
+        "No session key in Last.fm response".to_string(),
+    ))?;
 
-    let username = session
-        .get("name")
-        .and_then(|v| v.as_str())
-        .ok_or((StatusCode::BAD_GATEWAY, "No username in Last.fm response".to_string()))?;
+    let username = session.get("name").and_then(|v| v.as_str()).ok_or((
+        StatusCode::BAD_GATEWAY,
+        "No username in Last.fm response".to_string(),
+    ))?;
 
     // Encrypt and store
     let encrypted = encrypt_session_key(session_key, &state.jwt_secret).map_err(|e| {
@@ -424,7 +424,10 @@ pub async fn lastfm_now_playing(
 
     let session_key = decrypt_session_key(&encrypted_sk, &state.jwt_secret).map_err(|e| {
         tracing::warn!(error = %e, "Failed to decrypt Last.fm session key");
-        (StatusCode::INTERNAL_SERVER_ERROR, "Decryption error".to_string())
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Decryption error".to_string(),
+        )
     })?;
 
     // Get track info
@@ -474,7 +477,12 @@ pub async fn lastfm_now_playing(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("HTTP client error: {e}")))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("HTTP client error: {e}"),
+            )
+        })?;
 
     let mut form_params: Vec<(&str, &str)> = params.into_iter().collect();
     form_params.push(("api_sig", api_sig.as_str()));
@@ -558,9 +566,7 @@ pub async fn scrobble_for_user(
         .await
         .map_err(|e| format!("DB error: {e}"))?;
 
-    let artist_name = artist_model
-        .map(|a| a.name)
-        .unwrap_or_default();
+    let artist_name = artist_model.map(|a| a.name).unwrap_or_default();
 
     if artist_name.is_empty() {
         tracing::warn!(track_id = %track_id, "Skipping scrobble: no artist name");

@@ -153,8 +153,7 @@ async fn seed_track(
     let exclude_vec: Vec<Uuid> = exclude.iter().copied().collect();
 
     // Phase 1 — Same artist
-    let mut phase1_query = track::Entity::find()
-        .filter(track::Column::ArtistId.eq(seed.artist_id));
+    let mut phase1_query = track::Entity::find().filter(track::Column::ArtistId.eq(seed.artist_id));
     if !exclude_vec.is_empty() {
         phase1_query = phase1_query.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
     }
@@ -243,8 +242,7 @@ async fn seed_artist(
         .collect();
 
     // Phase 1 — Artist's own tracks
-    let mut phase1_query = track::Entity::find()
-        .filter(track::Column::ArtistId.eq(seed_id));
+    let mut phase1_query = track::Entity::find().filter(track::Column::ArtistId.eq(seed_id));
     if !exclude_vec.is_empty() {
         phase1_query = phase1_query.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
     }
@@ -294,8 +292,7 @@ async fn seed_genre(
     let pool_size = (count * 5).min(500);
     let exclude_vec: Vec<Uuid> = exclude.iter().copied().collect();
 
-    let mut query = track::Entity::find()
-        .filter(track::Column::Genre.eq(genre));
+    let mut query = track::Entity::find().filter(track::Column::Genre.eq(genre));
     if !exclude_vec.is_empty() {
         query = query.filter(track::Column::Id.is_not_in(exclude_vec));
     }
@@ -403,8 +400,8 @@ async fn seed_personal_mix(
     // Phase 1 — Tracks from favorite artists (40%)
     let mut phase1 = Vec::new();
     if !top_artists.is_empty() {
-        let mut q = track::Entity::find()
-            .filter(track::Column::ArtistId.is_in(top_artists.clone()));
+        let mut q =
+            track::Entity::find().filter(track::Column::ArtistId.is_in(top_artists.clone()));
         if !exclude_vec.is_empty() {
             q = q.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
         }
@@ -414,8 +411,7 @@ async fn seed_personal_mix(
     // Phase 2 — Tracks from favorite genres, different artists (40%)
     let mut phase2 = Vec::new();
     if !top_genres.is_empty() {
-        let mut q = track::Entity::find()
-            .filter(track::Column::Genre.is_in(top_genres));
+        let mut q = track::Entity::find().filter(track::Column::Genre.is_in(top_genres));
         if !top_artists.is_empty() {
             q = q.filter(track::Column::ArtistId.is_not_in(top_artists));
         }
