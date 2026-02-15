@@ -4,6 +4,8 @@
   import { goto } from "$app/navigation";
   import { t, getLocale, setLocale, supportedLocales, localeNames } from "$lib/i18n/index.svelte";
   import type { Locale } from "$lib/i18n/index.svelte";
+  import { lastfmApi } from "$lib/api";
+  import type { LastfmStatus } from "$lib/types";
 
   const auth = getAuthStore();
 
@@ -37,6 +39,84 @@
   let passwordError = $state("");
   let passwordSuccess = $state("");
   let passwordLoading = $state(false);
+
+  // Last.fm
+  let lastfmStatus = $state<LastfmStatus | null>(null);
+  let lastfmLoading = $state(false);
+  let lastfmError = $state("");
+  let lastfmConfigured = $state(false);
+
+  $effect(() => {
+    if (auth.isAuthenticated) {
+      lastfmApi.status().then((s) => {
+        lastfmStatus = s;
+        lastfmConfigured = s.connected;
+      }).catch(() => {
+        lastfmConfigured = false;
+      });
+    }
+  });
+
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token");
+    if (token) {
+      lastfmLoading = true;
+      lastfmError = "";
+      lastfmApi.callback(token).then(() => {
+        return lastfmApi.status();
+      }).then((s) => {
+        lastfmStatus = s;
+        lastfmConfigured = s.connected;
+        // Remove token from URL
+        const url = new URL(window.location.href);
+        url.searchParams.delete("token");
+        window.history.replaceState({}, "", url.pathname);
+      }).catch((e: unknown) => {
+        lastfmError = e instanceof Error ? e.message : "Connection failed";
+      }).finally(() => {
+        lastfmLoading = false;
+      });
+    }
+  });
+
+  async function connectLastfm() {
+    lastfmLoading = true;
+    lastfmError = "";
+    try {
+      const res = await lastfmApi.connect();
+      window.location.href = res.auth_url;
+    } catch (e: unknown) {
+      lastfmError = e instanceof Error ? e.message : "Connection failed";
+      lastfmLoading = false;
+    }
+  }
+
+  async function disconnectLastfm() {
+    lastfmLoading = true;
+    lastfmError = "";
+    try {
+      await lastfmApi.disconnect();
+      lastfmStatus = null;
+      lastfmConfigured = false;
+    } catch (e: unknown) {
+      lastfmError = e instanceof Error ? e.message : "Disconnection failed";
+    } finally {
+      lastfmLoading = false;
+    }
+  }
+
+  async function toggleLastfmScrobble() {
+    if (!lastfmStatus) return;
+    const newVal = !lastfmStatus.scrobble_enabled;
+    try {
+      await lastfmApi.toggleScrobble(newVal);
+      lastfmStatus = { ...lastfmStatus, scrobble_enabled: newVal };
+    } catch (e: unknown) {
+      lastfmError = e instanceof Error ? e.message : "Toggle failed";
+    }
+  }
 
   const deleteWarningParts = $derived(t('settings.deleteModalWarning').split(/\{\/?\s*strong\s*\}/));
 
@@ -256,6 +336,61 @@
           {/each}
         </select>
       </div>
+    </section>
+
+    <!-- Last.fm -->
+    <section class="bg-[hsl(var(--card))] rounded-lg p-6 space-y-4">
+      <h2 class="text-lg font-semibold">{t('settings.lastfm')}</h2>
+      {#if lastfmError}
+        <p class="text-sm text-red-400">{lastfmError}</p>
+      {/if}
+
+      {#if lastfmConfigured && lastfmStatus}
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-sm font-medium">{t('settings.lastfmConnectedAs')}</p>
+            <p class="text-xs text-[hsl(var(--muted-foreground))]">{lastfmStatus.username}</p>
+          </div>
+          <button
+            class="px-3 py-1.5 text-sm bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30 transition disabled:opacity-50"
+            onclick={disconnectLastfm}
+            disabled={lastfmLoading}
+          >
+            {lastfmLoading ? t('common.loading') : t('settings.lastfmDisconnect')}
+          </button>
+        </div>
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-sm font-medium">{t('settings.lastfmScrobbling')}</p>
+            <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('settings.lastfmScrobblingHint')}</p>
+          </div>
+          <button
+            class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors {lastfmStatus.scrobble_enabled ? 'bg-[hsl(var(--primary))]' : 'bg-[hsl(var(--secondary))]'}"
+            onclick={toggleLastfmScrobble}
+            role="switch"
+            aria-checked={lastfmStatus.scrobble_enabled}
+            aria-label={t('settings.lastfmScrobbling')}
+          >
+            <span
+              class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform {lastfmStatus.scrobble_enabled ? 'translate-x-6' : 'translate-x-1'}"
+            ></span>
+          </button>
+        </div>
+      {:else}
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-sm font-medium">{t('settings.lastfmConnect')}</p>
+            <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('settings.lastfmConnectHint')}</p>
+          </div>
+          <button
+            class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium disabled:opacity-50"
+            onclick={connectLastfm}
+            disabled={lastfmLoading}
+          >
+            {lastfmLoading ? t('common.loading') : t('settings.lastfmConnect')}
+          </button>
+        </div>
+      {/if}
     </section>
 
     <section class="bg-[hsl(var(--card))] rounded-lg p-6 space-y-4">

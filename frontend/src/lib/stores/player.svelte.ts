@@ -1,5 +1,5 @@
 import type { Track } from "$lib/types";
-import { streamUrl, api, API_BASE } from "$lib/api";
+import { streamUrl, api, API_BASE, lastfmApi } from "$lib/api";
 
 let currentTrack = $state<Track | null>(null);
 let isPlaying = $state(false);
@@ -223,6 +223,9 @@ function play(track: Track) {
   // Update lock screen / notification with track info
   updateMediaSession(track);
   updateFavicon(track.cover_url);
+
+  // Notify Last.fm of now-playing track
+  lastfmApi.nowPlaying(track.id).catch(() => {});
   if ("mediaSession" in navigator) {
     navigator.mediaSession.playbackState = "playing";
   }

@@ -3,6 +3,7 @@
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
+  import { getRadioStore } from "$lib/stores/radio.svelte";
   import { api } from "$lib/api";
   import { formatDuration } from "$lib/utils";
   import { onMount } from "svelte";
@@ -94,6 +95,17 @@
   function handleAddToQueue(trackId: string) {
     const track = tracks.find(t => t.id === trackId);
     if (track) queue.addToQueue(track);
+    closeMenu();
+  }
+
+  function handleStartRadio(trackId: string) {
+    const track = tracks.find(t => t.id === trackId);
+    if (!track) return;
+    const radio = getRadioStore();
+    radio.startRadio("track", {
+      seedId: trackId,
+      label: track.title,
+    });
     closeMenu();
   }
 
@@ -307,6 +319,13 @@
     <button class="w-full text-left px-4 py-2 text-sm hover:bg-[hsl(var(--secondary))] transition flex items-center gap-3" onclick={() => handleAddToQueue(menuTrackId!)}>
       <svg class="w-4 h-4 text-[hsl(var(--muted-foreground))]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v12m-6-6h12"/></svg>
       {t('track.addToQueue')}
+    </button>
+    <button class="w-full text-left px-4 py-2 text-sm hover:bg-[hsl(var(--secondary))] transition flex items-center gap-3" onclick={() => handleStartRadio(menuTrackId!)}>
+      <svg class="w-4 h-4 text-[hsl(var(--muted-foreground))]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M12 6v6l4 2"/>
+      </svg>
+      {t('radio.startFromTrack')}
     </button>
     {#if auth.isAuthenticated}
       <div class="border-t border-[hsl(var(--border))] my-1"></div>

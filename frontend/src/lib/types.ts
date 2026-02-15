@@ -632,3 +632,32 @@ export interface HistoryEntry {
   listened_at: string;
   track: Track;
 }
+
+// ─── Last.fm Scrobbling ─────────────────────────────────────────────
+
+export interface LastfmStatus {
+  connected: boolean;
+  username: string | null;
+  scrobble_enabled: boolean;
+}
+
+export interface LastfmConnectResponse {
+  auth_url: string;
+}
+
+// ─── Radio ───────────────────────────────────────────────────────────
+
+export type RadioSeedType = "track" | "artist" | "genre" | "personal_mix";
+
+export interface RadioNextRequest {
+  seed_type: RadioSeedType;
+  seed_id?: string;
+  genre?: string;
+  count?: number;
+  exclude: string[];
+}
+
+export interface RadioNextResponse {
+  tracks: Track[];
+  exhausted: boolean;
+}

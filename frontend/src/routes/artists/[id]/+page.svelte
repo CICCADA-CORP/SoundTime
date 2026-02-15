@@ -5,6 +5,9 @@
   import type { Artist } from "$lib/types";
   import AlbumCard from "$lib/components/AlbumCard.svelte";
   import TrackList from "$lib/components/TrackList.svelte";
+  import { getRadioStore } from "$lib/stores/radio.svelte";
+  import { Radio as RadioIcon } from "lucide-svelte";
+  import { t } from "$lib/i18n/index.svelte";
 
   let artist: Artist | null = $state(null);
   let loading = $state(true);
@@ -38,6 +41,19 @@
         {#if artist.bio}
           <p class="text-sm text-[hsl(var(--muted-foreground))] mt-3 max-w-xl">{artist.bio}</p>
         {/if}
+        <div class="mt-4 flex gap-2">
+          <button
+            class="px-4 py-2 rounded-lg bg-[hsl(var(--secondary))] hover:bg-[hsl(var(--primary))]/20 text-sm font-medium transition flex items-center gap-2"
+            onclick={() => {
+              if (!artist) return;
+              const radio = getRadioStore();
+              radio.startRadio("artist", { seedId: artist.id, label: artist.name });
+            }}
+          >
+            <RadioIcon class="w-4 h-4" />
+            {t('radio.startFromArtist')}
+          </button>
+        </div>
       </div>
     </div>
 

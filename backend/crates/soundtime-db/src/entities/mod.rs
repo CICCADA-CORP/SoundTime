@@ -17,3 +17,4 @@ pub mod theme;
 pub mod track;
 pub mod track_report;
 pub mod user;
+pub mod user_setting;

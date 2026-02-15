@@ -87,6 +87,14 @@ async fn main() {
 
     tracing::info!("instance domain: {}", domain);
 
+    // Last.fm integration validation
+    if std::env::var("LASTFM_API_KEY").is_ok() && std::env::var("LASTFM_API_SECRET").is_err() {
+        tracing::error!("LASTFM_API_KEY is set but LASTFM_API_SECRET is missing.");
+    }
+    if std::env::var("LASTFM_API_KEY").is_ok() {
+        tracing::info!("Last.fm scrobbling enabled");
+    }
+
     // Initialize storage backend (S3 or local)
     let storage: Arc<dyn soundtime_audio::StorageBackend> = match std::env::var("STORAGE_BACKEND")
         .unwrap_or_default()
@@ -348,6 +356,13 @@ async fn main() {
         )
         .route("/history/recent", get(api::history::list_recent_history))
         .route("/tracks/{id}/report", post(api::reports::report_track))
+        .route("/lastfm/status", get(api::lastfm::lastfm_status))
+        .route("/lastfm/connect", get(api::lastfm::lastfm_connect))
+        .route("/lastfm/callback", post(api::lastfm::lastfm_callback))
+        .route("/lastfm/toggle", post(api::lastfm::lastfm_toggle))
+        .route("/lastfm/disconnect", axum::routing::delete(api::lastfm::lastfm_disconnect))
+        .route("/lastfm/now-playing", post(api::lastfm::lastfm_now_playing))
+        .route("/radio/next", post(api::radio::radio_next))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             auth::middleware::require_auth,

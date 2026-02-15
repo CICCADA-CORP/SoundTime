@@ -8,6 +8,10 @@ vi.mock('$lib/api', () => ({
   },
   streamUrl: vi.fn((id: string) => `/api/tracks/${id}/stream`),
   API_BASE: '/api',
+  lastfmApi: {
+    nowPlaying: vi.fn().mockResolvedValue(undefined),
+    scrobble: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 
 import { getPlayerStore } from './player.svelte';

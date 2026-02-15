@@ -1,11 +1,18 @@
 import type { Track } from "$lib/types";
 import { getPlayerStore } from "./player.svelte";
+import { getRadioStore } from "./radio.svelte";
 
 let queue = $state<Track[]>([]);
 let currentIndex = $state(-1);
 let originalQueue = $state<Track[]>([]);
 
 function playQueue(tracks: Track[], startIndex = 0) {
+  // Stop radio if active — user is manually choosing what to play
+  try {
+    const radio = getRadioStore();
+    if (radio.active) radio.stopRadio();
+  } catch {}
+
   queue = [...tracks];
   originalQueue = [...tracks];
   currentIndex = startIndex;
@@ -61,6 +68,19 @@ function next() {
       player.play(queue[0]);
     }
   }
+
+  // Radio auto-fetch: mark played and fetch more if running low
+  try {
+    const radio = getRadioStore();
+    if (radio.active && !radio.exhausted && !radio.loading) {
+      if (queue[currentIndex]) {
+        radio.markPlayed(queue[currentIndex].id);
+      }
+      if (currentIndex >= queue.length - 3) {
+        radio.fetchMoreTracks();
+      }
+    }
+  } catch {}
 }
 
 function previous() {
@@ -97,6 +117,9 @@ export function getQueueStore() {
     get currentTrack() { return queue[currentIndex] ?? null; },
     get hasNext() { return currentIndex < queue.length - 1; },
     get hasPrevious() { return currentIndex > 0; },
+    get radioMode() {
+      try { return getRadioStore().active; } catch { return false; }
+    },
     playQueue,
     addToQueue,
     addNext,

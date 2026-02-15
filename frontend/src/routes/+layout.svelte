@@ -18,6 +18,7 @@
     ListMusic,
     Heart,
     Clock,
+    Radio,
     Upload,
     Settings,
     Disc3,
@@ -94,6 +95,7 @@
     { href: "/playlists", key: "nav.playlists" as const, icon: ListMusic },
     { href: "/favorites", key: "nav.favorites" as const, icon: Heart },
     { href: "/history", key: "nav.history" as const, icon: Clock },
+    { href: "/radio", key: "nav.radio" as const, icon: Radio },
     { href: "/upload", key: "nav.upload" as const, icon: Upload },
   ];
 

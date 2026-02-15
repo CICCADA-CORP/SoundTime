@@ -294,4 +294,36 @@ export const homeApi = {
     api.get<import("./types").EditorialPlaylist[]>("/editorial-playlists").catch(() => [] as import("./types").EditorialPlaylist[]),
 };
 
+// ─── Last.fm API ─────────────────────────────────────────────────────
+
+export const lastfmApi = {
+  /** Get the current user's Last.fm connection status. */
+  status: () => api.get<import("./types").LastfmStatus>("/lastfm/status"),
+
+  /** Get a Last.fm OAuth connect URL. */
+  connect: () => api.get<import("./types").LastfmConnectResponse>("/lastfm/connect"),
+
+  /** Complete the OAuth callback with the token returned by Last.fm. */
+  callback: (token: string) => api.post<void>("/lastfm/callback", { token }),
+
+  /** Disconnect the user's Last.fm account. */
+  disconnect: () => api.delete<void>("/lastfm/disconnect"),
+
+  /** Toggle scrobbling on/off. */
+  toggleScrobble: (enabled: boolean) =>
+    api.post<void>("/lastfm/scrobble", { enabled }),
+
+  /** Send a "now playing" notification for a track. */
+  nowPlaying: (trackId: string) =>
+    api.post<void>("/lastfm/now-playing", { track_id: trackId }),
+};
+
+// ─── Radio API ──────────────────────────────────────────────────────
+
+export const radioApi = {
+  /** Fetch the next batch of radio tracks */
+  next: (request: import("./types").RadioNextRequest) =>
+    api.post<import("./types").RadioNextResponse>("/radio/next", request),
+};
+
 export { setTokens, API_BASE };

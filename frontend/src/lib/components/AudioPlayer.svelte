@@ -2,14 +2,17 @@
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
+  import { getRadioStore } from "$lib/stores/radio.svelte";
   import { api, API_BASE } from "$lib/api";
   import { formatDuration } from "$lib/utils";
+  import { t } from "$lib/i18n/index.svelte";
   import FavoriteButton from "./FavoriteButton.svelte";
   import ExpandedPlayer from "./ExpandedPlayer.svelte";
 
   const player = getPlayerStore();
   const queue = getQueueStore();
   const auth = getAuthStore();
+  const radio = getRadioStore();
 
   let liked = $state(false);
   let lastCheckedTrackId = $state<string | null>(null);
@@ -71,6 +74,9 @@
       <div class="min-w-0 flex-1" role="button" tabindex="0" onclick={() => expanded = true} onkeydown={(e) => e.key === 'Enter' && (expanded = true)}>
         <p class="text-sm font-medium truncate">{player.currentTrack.title}</p>
         <p class="text-xs text-[hsl(var(--muted-foreground))] truncate">{player.currentTrack.artist_name ?? "Unknown"}</p>
+        {#if radio.active}
+          <span class="text-[10px] text-[hsl(var(--primary))] font-medium">{t('radio.label')}</span>
+        {/if}
       </div>
       <div class="flex items-center gap-1 flex-shrink-0">
         <FavoriteButton trackId={player.currentTrack.id} bind:liked size={16} />
@@ -101,6 +107,12 @@
         <div class="min-w-0 flex-1">
           <p class="text-sm font-medium truncate">{player.currentTrack.title}</p>
           <p class="text-xs text-[hsl(var(--muted-foreground))] truncate">{player.currentTrack.artist_name ?? "Unknown"}</p>
+          {#if radio.active}
+            <div class="flex items-center gap-1 mt-0.5">
+              <div class="w-1.5 h-1.5 rounded-full bg-[hsl(var(--primary))] animate-pulse"></div>
+              <span class="text-[10px] text-[hsl(var(--primary))] font-medium">{t('radio.nowPlaying')}</span>
+            </div>
+          {/if}
         </div>
         <FavoriteButton trackId={player.currentTrack.id} bind:liked size={16} />
       </div>
@@ -130,6 +142,17 @@
               <span class="absolute text-[8px] font-bold">1</span>
             {/if}
           </button>
+          {#if radio.active}
+            <button
+              class="text-[hsl(var(--primary))] hover:text-white transition ml-2"
+              onclick={() => radio.stopRadio()}
+              title={t('radio.stop')}
+            >
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm-4-4h8V8H8v8z"/>
+              </svg>
+            </button>
+          {/if}
         </div>
 
         <!-- Progress Bar -->

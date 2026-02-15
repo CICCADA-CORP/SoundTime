@@ -129,6 +129,25 @@ pub async fn log_listen(
         });
     }
 
+    // Scrobble to Last.fm (best-effort, fire-and-forget)
+    {
+        let db = state.db.clone();
+        let user_id = auth_user.0.sub;
+        let track_id = body.track_id;
+        let duration_listened = body.duration_listened;
+        let timestamp = chrono::Utc::now().fixed_offset();
+        let jwt_secret = state.jwt_secret.clone();
+        tokio::spawn(async move {
+            if let Err(e) = super::lastfm::scrobble_for_user(
+                &db, user_id, track_id, duration_listened, timestamp, &jwt_secret,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "Last.fm scrobble failed");
+            }
+        });
+    }
+
     Ok(StatusCode::CREATED)
 }
 

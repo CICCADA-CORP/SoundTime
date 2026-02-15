@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { clearTokens, streamUrl, apiFetch, api, setTokens, API_BASE, pluginApi, themeApi, homeApi } from '$lib/api';
+import { clearTokens, streamUrl, apiFetch, api, setTokens, API_BASE, pluginApi, themeApi, homeApi, radioApi } from '$lib/api';
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -674,6 +674,51 @@ describe('API module', () => {
 			}));
 			const result = await homeApi.editorialPlaylists();
 			expect(result).toEqual([]);
+		});
+	});
+
+	describe('radioApi', () => {
+		beforeEach(() => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve('{"tracks":[],"exhausted":false}'),
+			}));
+		});
+
+		it('radioApi.next calls POST /radio/next with request body', async () => {
+			const request = {
+				seed_type: 'genre' as const,
+				genre: 'Rock',
+				count: 5,
+				exclude: ['id1', 'id2'],
+			};
+			await radioApi.next(request);
+
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/radio/next');
+			expect(options?.method).toBe('POST');
+			expect(options?.body).toBe(JSON.stringify(request));
+		});
+
+		it('radioApi.next returns parsed response', async () => {
+			const mockResponse = {
+				tracks: [{ id: 't1', title: 'Track 1' }],
+				exhausted: false,
+			};
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve(JSON.stringify(mockResponse)),
+			}));
+
+			const result = await radioApi.next({
+				seed_type: 'genre',
+				genre: 'Rock',
+				exclude: [],
+			});
+
+			expect(result).toEqual(mockResponse);
 		});
 	});
 });

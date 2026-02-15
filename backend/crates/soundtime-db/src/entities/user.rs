@@ -56,6 +56,8 @@ pub enum Relation {
     ListenHistory,
     #[sea_orm(has_many = "super::favorite::Entity")]
     Favorite,
+    #[sea_orm(has_many = "super::user_setting::Entity")]
+    UserSetting,
 }
 
 impl Related<super::library::Entity> for Entity {
@@ -79,6 +81,12 @@ impl Related<super::listen_history::Entity> for Entity {
 impl Related<super::favorite::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Favorite.def()
+    }
+}
+
+impl Related<super::user_setting::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::UserSetting.def()
     }
 }
 
