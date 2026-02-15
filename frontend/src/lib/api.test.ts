@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { clearTokens, streamUrl, apiFetch, api, setTokens, API_BASE, pluginApi, themeApi } from '$lib/api';
+import { clearTokens, streamUrl, apiFetch, api, setTokens, API_BASE, pluginApi, themeApi, homeApi } from '$lib/api';
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -226,6 +226,24 @@ describe('API module', () => {
 			await expect(apiFetch('/thing')).rejects.toThrow('Unauthorized');
 			expect(localStorageMock.removeItem).toHaveBeenCalledWith('soundtime_access_token');
 		});
+
+		it('clears tokens when refresh request throws network error', async () => {
+			localStorageMock.setItem('soundtime_access_token', 'expired');
+			localStorageMock.setItem('soundtime_refresh_token', 'refresh-token');
+
+			const fetchMock = vi.fn()
+				.mockResolvedValueOnce({
+					ok: false,
+					status: 401,
+					json: () => Promise.resolve({ error: 'Unauthorized' }),
+				})
+				.mockRejectedValueOnce(new Error('Network error'));
+
+			vi.stubGlobal('fetch', fetchMock);
+
+			await expect(apiFetch('/thing')).rejects.toThrow('Unauthorized');
+			expect(localStorageMock.removeItem).toHaveBeenCalledWith('soundtime_access_token');
+		});
 	});
 
 	describe('api helper methods', () => {
@@ -373,6 +391,75 @@ describe('API module', () => {
 		});
 	});
 
+	describe('api.uploadWithProgress edge cases', () => {
+		function createMockXHR(overrides: Record<string, any> = {}) {
+			const instance = {
+				open: vi.fn(),
+				send: vi.fn(),
+				abort: vi.fn(),
+				setRequestHeader: vi.fn(),
+				upload: { addEventListener: vi.fn() },
+				addEventListener: vi.fn(),
+				status: 200,
+				responseText: '{}',
+				...overrides,
+			};
+			const MockXHR = function (this: any) {
+				Object.assign(this, instance);
+			} as any;
+			vi.stubGlobal('XMLHttpRequest', MockXHR);
+			return instance;
+		}
+
+		it('does not call onProgress when not lengthComputable', () => {
+			const xhr = createMockXHR();
+			const onProgress = vi.fn();
+			api.uploadWithProgress('/upload', new FormData(), onProgress);
+			const progressHandler = xhr.upload.addEventListener.mock.calls[0][1];
+			progressHandler({ lengthComputable: false, loaded: 50, total: 100 });
+			expect(onProgress).not.toHaveBeenCalled();
+		});
+
+		it('does not call onProgress when no callback provided', () => {
+			const xhr = createMockXHR();
+			api.uploadWithProgress('/upload', new FormData());
+			const progressHandler = xhr.upload.addEventListener.mock.calls[0][1];
+			// Should not throw even without onProgress
+			expect(() => progressHandler({ lengthComputable: true, loaded: 50, total: 100 })).not.toThrow();
+		});
+
+		it('resolves undefined when successful response is not valid JSON', async () => {
+			const xhr = createMockXHR({ status: 200, responseText: 'not json' });
+			const { promise } = api.uploadWithProgress('/upload', new FormData());
+			const loadCall = xhr.addEventListener.mock.calls.find((c: any[]) => c[0] === 'load');
+			loadCall![1]();
+			const result = await promise;
+			expect(result).toBeUndefined();
+		});
+
+		it('rejects with generic HTTP error when error response is not valid JSON', async () => {
+			const xhr = createMockXHR({ status: 500, responseText: 'not json' });
+			const { promise } = api.uploadWithProgress('/upload', new FormData());
+			const loadCall = xhr.addEventListener.mock.calls.find((c: any[]) => c[0] === 'load');
+			loadCall![1]();
+			await expect(promise).rejects.toThrow('HTTP 500');
+		});
+
+		it('does not set Authorization header when no token exists', () => {
+			localStorageMock.clear();
+			const xhr = createMockXHR();
+			api.uploadWithProgress('/upload', new FormData());
+			expect(xhr.setRequestHeader).not.toHaveBeenCalledWith('Authorization', expect.any(String));
+		});
+
+		it('abort function calls xhr.abort', () => {
+			const xhr = createMockXHR();
+			const { abort } = api.uploadWithProgress('/upload', new FormData());
+			abort();
+			expect(xhr.abort).toHaveBeenCalled();
+		});
+	});
+
 	describe('pluginApi', () => {
 		beforeEach(() => {
 			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -500,6 +587,93 @@ describe('API module', () => {
 			await themeApi.active();
 			const [url] = vi.mocked(fetch).mock.calls[0];
 			expect(url).toContain('/themes/active');
+		});
+	});
+
+	describe('homeApi', () => {
+		beforeEach(() => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve('[]'),
+			}));
+		});
+
+		it('homeApi.randomTracks calls GET /tracks/random with count', async () => {
+			await homeApi.randomTracks(5);
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/tracks/random');
+			expect(url).toContain('count=5');
+		});
+
+		it('homeApi.randomTracks with genre param', async () => {
+			await homeApi.randomTracks(10, 'rock');
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('genre=rock');
+		});
+
+		it('homeApi.recentlyAdded calls GET /tracks/recently-added', async () => {
+			await homeApi.recentlyAdded(5);
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/tracks/recently-added');
+		});
+
+		it('homeApi.popularTracks calls GET /tracks/popular', async () => {
+			await homeApi.popularTracks();
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/tracks/popular');
+		});
+
+		it('homeApi.genres calls GET /genres', async () => {
+			await homeApi.genres();
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/genres');
+		});
+
+		it('homeApi.genreTracks calls GET /genres/:genre/tracks', async () => {
+			await homeApi.genreTracks('jazz');
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/genres/jazz/tracks');
+		});
+
+		it('homeApi.recentHistory calls GET /history/recent', async () => {
+			await homeApi.recentHistory();
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/history/recent');
+		});
+
+		it('homeApi.statsOverview calls GET /stats/overview', async () => {
+			await homeApi.statsOverview();
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/stats/overview');
+		});
+
+		it('homeApi.recentAlbums calls GET /albums/recent', async () => {
+			await homeApi.recentAlbums();
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/albums/recent');
+		});
+
+		it('homeApi.topArtists calls GET /artists/top', async () => {
+			await homeApi.topArtists();
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/artists/top');
+		});
+
+		it('homeApi.editorialPlaylists calls GET /editorial-playlists', async () => {
+			await homeApi.editorialPlaylists();
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/editorial-playlists');
+		});
+
+		it('homeApi.editorialPlaylists returns empty array on failure', async () => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: false,
+				status: 500,
+				json: () => Promise.resolve({ error: 'Server error' }),
+			}));
+			const result = await homeApi.editorialPlaylists();
+			expect(result).toEqual([]);
 		});
 	});
 });
