@@ -295,7 +295,11 @@ async fn import_file(state: &AppState, relative_path: &str) -> Result<Uuid, Stri
                 .await
                 .map_err(|e| format!("DB user lookup: {e}"))?
                 .is_some();
-            if exists { Some(uid) } else { None }
+            if exists {
+                Some(uid)
+            } else {
+                None
+            }
         } else {
             None
         }
