@@ -278,6 +278,20 @@ function cycleRepeat() {
   else repeat = "none";
 }
 
+/** Reset all player state. Intended for test isolation. */
+function _resetForTests() {
+  currentTrack = null;
+  isPlaying = false;
+  volume = 0.8;
+  progress = 0;
+  duration = 0;
+  shuffle = false;
+  repeat = "none";
+  audio = null;
+  lastPositionUpdate = 0;
+  originalFaviconHref = null;
+}
+
 export function getPlayerStore() {
   return {
     get currentTrack() { return currentTrack; },
@@ -295,5 +309,6 @@ export function getPlayerStore() {
     setVolume,
     toggleShuffle,
     cycleRepeat,
+    _resetForTests,
   };
 }

@@ -308,6 +308,88 @@ describe('Radio Store', () => {
 			expect(radio.active).toBe(true);
 			expect(radio.loading).toBe(false);
 		});
+
+		it('resets playedIds and retries when tracks empty but not server-exhausted', async () => {
+			// Start radio with played tracks
+			vi.mocked(radioApi.next).mockResolvedValueOnce({
+				tracks: [mockTrack('t1'), mockTrack('t2')],
+				exhausted: false,
+			});
+			await radio.startRadio('genre', { genre: 'Rock', label: 'Rock' });
+			expect(radio.playedCount).toBe(2);
+
+			// fetchMoreTracks returns empty but server says NOT exhausted
+			vi.mocked(radioApi.next)
+				.mockResolvedValueOnce({ tracks: [], exhausted: false })
+				// The retry call should succeed with tracks
+				.mockResolvedValueOnce({ tracks: [mockTrack('t3')], exhausted: false });
+
+			await radio.fetchMoreTracks();
+
+			// Should have retried and gotten t3
+			expect(radio.exhausted).toBe(false);
+			// radioApi.next called: 1 (start) + 1 (empty) + 1 (retry) = 3
+			expect(radioApi.next).toHaveBeenCalledTimes(3);
+		});
+
+		it('does not retry when already retrying (retrying=true)', async () => {
+			vi.mocked(radioApi.next).mockResolvedValueOnce({
+				tracks: [mockTrack('t1')],
+				exhausted: false,
+			});
+			await radio.startRadio('genre', { genre: 'Rock', label: 'Rock' });
+
+			// Return empty, not exhausted — but since we can't directly call with retrying=true,
+			// we simulate double-empty: first call resets and retries, retry also returns empty
+			vi.mocked(radioApi.next)
+				.mockResolvedValueOnce({ tracks: [], exhausted: false })
+				.mockResolvedValueOnce({ tracks: [], exhausted: true });
+
+			await radio.fetchMoreTracks();
+			expect(radio.exhausted).toBe(true);
+		});
+
+		it('resets playedIds when exhausted with tracks and not retrying', async () => {
+			vi.mocked(radioApi.next).mockResolvedValueOnce({
+				tracks: [mockTrack('t1')],
+				exhausted: false,
+			});
+			await radio.startRadio('genre', { genre: 'Rock', label: 'Rock' });
+
+			// Server returns tracks but signals exhaustion
+			vi.mocked(radioApi.next).mockResolvedValueOnce({
+				tracks: [mockTrack('t2')],
+				exhausted: true,
+			});
+			await radio.fetchMoreTracks();
+
+			// Should have reset playedIds and exhausted for next call
+			expect(radio.exhausted).toBe(false);
+			// playedCount should be 1 (only t2 re-added after reset)
+			expect(radio.playedCount).toBe(1);
+		});
+
+		it('limits exclude list to 2000 IDs', async () => {
+			vi.mocked(radioApi.next).mockResolvedValueOnce({
+				tracks: [mockTrack('t1')],
+				exhausted: false,
+			});
+			await radio.startRadio('genre', { genre: 'Rock', label: 'Rock' });
+
+			// Manually mark 2500 tracks as played
+			for (let i = 0; i < 2500; i++) {
+				radio.markPlayed(`track-${i}`);
+			}
+
+			vi.mocked(radioApi.next).mockResolvedValueOnce({
+				tracks: [mockTrack('new1')],
+				exhausted: false,
+			});
+			await radio.fetchMoreTracks();
+
+			const lastCall = vi.mocked(radioApi.next).mock.calls[1][0];
+			expect(lastCall.exclude.length).toBeLessThanOrEqual(2000);
+		});
 	});
 
 	describe('error state', () => {

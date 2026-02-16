@@ -277,4 +277,88 @@ describe('Queue Store', () => {
       expect(queue.currentTrack).toBeNull();
     });
   });
+
+  describe('moveInQueue', () => {
+    it('does nothing when fromIndex is negative', () => {
+      queue.playQueue([track1, track2, track3]);
+      queue.moveInQueue(-1, 1);
+      expect(queue.queue).toEqual([track1, track2, track3]);
+    });
+
+    it('does nothing when fromIndex >= queue.length', () => {
+      queue.playQueue([track1, track2, track3]);
+      queue.moveInQueue(5, 1);
+      expect(queue.queue).toEqual([track1, track2, track3]);
+    });
+
+    it('does nothing when toIndex is negative', () => {
+      queue.playQueue([track1, track2, track3]);
+      queue.moveInQueue(0, -1);
+      expect(queue.queue).toEqual([track1, track2, track3]);
+    });
+
+    it('does nothing when toIndex >= queue.length', () => {
+      queue.playQueue([track1, track2, track3]);
+      queue.moveInQueue(0, 5);
+      expect(queue.queue).toEqual([track1, track2, track3]);
+    });
+
+    it('does nothing when fromIndex === toIndex', () => {
+      queue.playQueue([track1, track2, track3]);
+      queue.moveInQueue(1, 1);
+      expect(queue.queue).toEqual([track1, track2, track3]);
+    });
+
+    it('moves track from index 0 to index 2', () => {
+      queue.playQueue([track1, track2, track3]);
+      queue.moveInQueue(0, 2);
+      expect(queue.queue).toEqual([track2, track3, track1]);
+    });
+
+    it('moves track from index 2 to index 0', () => {
+      queue.playQueue([track1, track2, track3]);
+      queue.moveInQueue(2, 0);
+      expect(queue.queue).toEqual([track3, track1, track2]);
+    });
+
+    it('updates currentIndex when moving the current track', () => {
+      queue.playQueue([track1, track2, track3], 0);
+      queue.moveInQueue(0, 2);
+      expect(queue.currentIndex).toBe(2);
+    });
+
+    it('decrements currentIndex when moving track from before to after current', () => {
+      queue.playQueue([track1, track2, track3], 1);
+      queue.moveInQueue(0, 2);
+      expect(queue.currentIndex).toBe(0);
+    });
+
+    it('increments currentIndex when moving track from after to before current', () => {
+      queue.playQueue([track1, track2, track3], 1);
+      queue.moveInQueue(2, 0);
+      expect(queue.currentIndex).toBe(2);
+    });
+
+    it('does not change currentIndex when move does not affect it', () => {
+      queue.playQueue([track1, track2, track3], 0);
+      queue.moveInQueue(1, 2);
+      expect(queue.currentIndex).toBe(0);
+    });
+  });
+
+  describe('removeFromQueue - currentIndex adjustment', () => {
+    it('decrements currentIndex when removing track before current', () => {
+      queue.playQueue([track1, track2, track3], 2);
+      const indexBefore = queue.currentIndex;
+      queue.removeFromQueue(0);
+      expect(queue.currentIndex).toBe(indexBefore - 1);
+    });
+
+    it('does not change currentIndex when removing track at current index', () => {
+      queue.playQueue([track1, track2, track3], 1);
+      queue.removeFromQueue(1);
+      // After removal, queue is [track1, track3], currentIndex stays 1
+      expect(queue.queue).toEqual([track1, track3]);
+    });
+  });
 });

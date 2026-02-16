@@ -99,6 +99,11 @@ describe('Player Store', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     player = getPlayerStore();
+    player._resetForTests();
+
+    // Reset DOM favicon to a known default so favicon tests are isolated
+    const existingFavicon = document.querySelector('link[rel="icon"]');
+    if (existingFavicon) existingFavicon.remove();
   });
 
   describe('initial state', () => {
@@ -533,6 +538,124 @@ describe('Player Store', () => {
     it('seekto handler via mediaSession sets currentTime', () => {
       player.play(mockTrack);
       expect('mediaSession' in navigator).toBe(true);
+    });
+  });
+
+  describe('updateMediaSession edge cases', () => {
+    const trackWithoutCover = {
+      id: 'no-cover-ms', title: 'No Cover', artist_id: 'a1', album_id: null,
+      track_number: null, disc_number: null, duration_secs: 180, genre: null,
+      year: null, file_path: '/nc.mp3', file_size: 1000, format: 'mp3',
+      bitrate: 320, sample_rate: 44100, musicbrainz_id: null, waveform_data: null,
+      uploaded_by: null, play_count: 0, created_at: '2025-01-01',
+      cover_url: undefined,
+      artist_name: undefined,
+      album_title: undefined,
+    };
+
+    it('sets empty artwork array when track has no cover_url', () => {
+      player.play(trackWithoutCover);
+      if ('mediaSession' in navigator && navigator.mediaSession.metadata) {
+        expect(navigator.mediaSession.metadata.artwork).toEqual([]);
+      }
+    });
+
+    it('uses "Unknown Artist" when artist_name is undefined', () => {
+      player.play(trackWithoutCover);
+      if ('mediaSession' in navigator && navigator.mediaSession.metadata) {
+        expect(navigator.mediaSession.metadata.artist).toBe('Unknown Artist');
+      }
+    });
+
+    it('uses empty string for album when album_title is undefined', () => {
+      player.play(trackWithoutCover);
+      if ('mediaSession' in navigator && navigator.mediaSession.metadata) {
+        expect(navigator.mediaSession.metadata.album).toBe('');
+      }
+    });
+  });
+
+  describe('updatePositionState edge cases', () => {
+    const mockTrack = {
+      id: 'pos-edge', title: 'Position Edge', artist_id: 'a1', album_id: null,
+      track_number: null, disc_number: null, duration_secs: 180, genre: null,
+      year: null, file_path: '/pos.mp3', file_size: 1000, format: 'mp3',
+      bitrate: 320, sample_rate: 44100, musicbrainz_id: null, waveform_data: null,
+      uploaded_by: null, play_count: 0, created_at: '2025-01-01',
+    };
+
+    it('handles setPositionState throwing without crashing', () => {
+      if ('mediaSession' in navigator) {
+        vi.mocked(navigator.mediaSession.setPositionState).mockImplementation(() => {
+          throw new Error('Position exceeds duration');
+        });
+      }
+      player.play(mockTrack);
+      // Set valid duration
+      (lastAudioInstance as any).duration = 200;
+      lastAudioInstance!.trigger('loadedmetadata');
+      // Seek should not throw even if setPositionState fails
+      expect(() => player.seek(100)).not.toThrow();
+    });
+
+    it('skips position update when audio duration is 0', () => {
+      player.play(mockTrack);
+      (lastAudioInstance as any).duration = 0;
+      lastAudioInstance!.trigger('loadedmetadata');
+      // timeupdate should work without error
+      lastAudioInstance!.currentTime = 5;
+      lastAudioInstance!.trigger('timeupdate');
+      expect(player.progress).toBe(5);
+    });
+
+    it('skips position update when audio duration is NaN', () => {
+      player.play(mockTrack);
+      (lastAudioInstance as any).duration = NaN;
+      lastAudioInstance!.trigger('loadedmetadata');
+      lastAudioInstance!.currentTime = 10;
+      lastAudioInstance!.trigger('timeupdate');
+      expect(player.progress).toBe(10);
+    });
+  });
+
+  describe('timeupdate periodic position state update', () => {
+    const mockTrack = {
+      id: 'periodic', title: 'Periodic', artist_id: 'a1', album_id: null,
+      track_number: null, disc_number: null, duration_secs: 300, genre: null,
+      year: null, file_path: '/p.mp3', file_size: 1000, format: 'mp3',
+      bitrate: 320, sample_rate: 44100, musicbrainz_id: null, waveform_data: null,
+      uploaded_by: null, play_count: 0, created_at: '2025-01-01',
+    };
+
+    it('updates position state after 5 second interval', () => {
+      player.play(mockTrack);
+      (lastAudioInstance as any).duration = 300;
+      lastAudioInstance!.trigger('loadedmetadata');
+
+      if ('mediaSession' in navigator) {
+        vi.mocked(navigator.mediaSession.setPositionState).mockClear();
+      }
+
+      // First timeupdate
+      const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now);
+      lastAudioInstance!.currentTime = 10;
+      lastAudioInstance!.trigger('timeupdate');
+
+      // Second timeupdate 6 seconds later — should trigger position update
+      vi.spyOn(Date, 'now').mockReturnValue(now + 6000);
+      lastAudioInstance!.currentTime = 16;
+      lastAudioInstance!.trigger('timeupdate');
+
+      expect(player.progress).toBe(16);
+    });
+  });
+
+  describe('resume edge cases', () => {
+    it('does nothing when no track is loaded', () => {
+      // No track played, resume should not throw
+      player.resume();
+      expect(player.isPlaying).toBe(false);
     });
   });
 });

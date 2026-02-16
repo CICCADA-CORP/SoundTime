@@ -44,4 +44,19 @@ describe('MoodCard', () => {
     await fireEvent.click(button);
     expect(button).toBeInTheDocument();
   });
+
+  it('applies different gradient classes correctly', () => {
+    const { container } = render(MoodCard, {
+      props: { mood: 'Energetic', gradient: 'bg-gradient-to-r from-red-500 to-yellow-500', emoji: '🔥' }
+    });
+    const gradientDiv = container.querySelector('.bg-gradient-to-r');
+    expect(gradientDiv).toBeInTheDocument();
+  });
+
+  it('renders with empty gradient string', () => {
+    const { container } = render(MoodCard, {
+      props: { mood: 'None', gradient: '', emoji: '😶' }
+    });
+    expect(screen.getByText('None')).toBeInTheDocument();
+  });
 });

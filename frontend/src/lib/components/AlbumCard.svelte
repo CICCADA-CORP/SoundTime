@@ -39,7 +39,7 @@
     </div>
     <h3 class="text-sm font-medium truncate">{album.title}</h3>
     <p class="text-xs text-[hsl(var(--muted-foreground))] truncate mt-1">
-      {album.year ?? ""}{album.artist_name ? ` · ${album.artist_name}` : ""}
+      {album.year ?? ""}{album.year && album.artist_name ? " · " : ""}{album.artist_name ?? ""}
     </p>
   </div>
 </a>

@@ -158,4 +158,24 @@ describe('i18n module', () => {
       expect(typeof result).toBe('string');
     });
   });
+
+  describe('t() with locale fallback to en translations', () => {
+    it('falls back to en dict when currentLocale translations dict is somehow missing a key', () => {
+      setLocale('ru');
+      // Use a key that might not be in Russian but is in English
+      const result = t('search.placeholder' as TranslationKey);
+      // Should return a non-empty string (either ru or en fallback)
+      expect(result.length).toBeGreaterThan(0);
+    });
+
+    it('handles switching between all supported locales', () => {
+      for (const locale of supportedLocales) {
+        setLocale(locale);
+        expect(getLocale()).toBe(locale);
+        // t() should return something for a common key
+        const result = t('search.placeholder' as TranslationKey);
+        expect(typeof result).toBe('string');
+      }
+    });
+  });
 });

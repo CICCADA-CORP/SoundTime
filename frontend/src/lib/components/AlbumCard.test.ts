@@ -123,4 +123,17 @@ describe('AlbumCard', () => {
     await fireEvent.click(playButton);
     expect(mockPlayQueue).not.toHaveBeenCalled();
   });
+
+  it('renders only year when artist_name is missing', () => {
+    const albumYearOnly = { ...album, artist_name: undefined, year: 2023 };
+    render(AlbumCard, { props: { album: albumYearOnly } });
+    // Should render "2023" without the " · " separator
+    expect(screen.getByText('2023')).toBeInTheDocument();
+  });
+
+  it('renders only artist when year is null', () => {
+    const albumArtistOnly = { ...album, year: null, artist_name: 'Some Artist' };
+    render(AlbumCard, { props: { album: albumArtistOnly } });
+    expect(screen.getByText('Some Artist')).toBeInTheDocument();
+  });
 });

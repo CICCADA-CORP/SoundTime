@@ -29,4 +29,15 @@ describe('FederatedBadge', () => {
     render(FederatedBadge, { props: { instance: '' } });
     expect(screen.getByText('federated')).toBeInTheDocument();
   });
+
+  it('does not show "federated" when instance is provided', () => {
+    render(FederatedBadge, { props: { instance: 'my.server.org' } });
+    expect(screen.queryByText('federated')).not.toBeInTheDocument();
+    expect(screen.getByText('my.server.org')).toBeInTheDocument();
+  });
+
+  it('renders with a long instance name', () => {
+    render(FederatedBadge, { props: { instance: 'very-long-instance-name.example.com' } });
+    expect(screen.getByText('very-long-instance-name.example.com')).toBeInTheDocument();
+  });
 });

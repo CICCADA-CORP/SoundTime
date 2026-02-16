@@ -96,4 +96,24 @@ describe('WaveformViewer', () => {
     const div = container.querySelector('div');
     expect(div?.getAttribute('style')).toContain('height: 60px');
   });
+
+  it('handles progress at 0.5 correctly - first half past, second half future', () => {
+    const data = [0.5, 0.5, 0.5, 0.5];
+    const { container } = render(WaveformViewer, { props: { data, progress: 0.5 } });
+    const rects = container.querySelectorAll('rect');
+    // First two bars should be "past" (x < 50%), last two "future"
+    expect(rects[0]?.getAttribute('fill')).toContain('142');
+    expect(rects[rects.length - 1]?.getAttribute('fill')).toContain('0, 0%');
+  });
+
+  it('renders correctly with data length of 2', () => {
+    const data = [0.8, 0.3];
+    const { container } = render(WaveformViewer, { props: { data, progress: 0.25 } });
+    const rects = container.querySelectorAll('rect');
+    expect(rects.length).toBe(2);
+    // First bar at x=0% (0/2*100), progress=25%, so 0 < 25 → past
+    expect(rects[0]?.getAttribute('fill')).toContain('142');
+    // Second bar at x=50% (1/2*100), 50 < 25 is false → future
+    expect(rects[1]?.getAttribute('fill')).toContain('0, 0%');
+  });
 });

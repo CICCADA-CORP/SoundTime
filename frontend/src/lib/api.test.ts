@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { clearTokens, streamUrl, apiFetch, api, setTokens, API_BASE, pluginApi, themeApi, homeApi, radioApi } from '$lib/api';
+import { clearTokens, streamUrl, apiFetch, api, setTokens, API_BASE, pluginApi, themeApi, homeApi, radioApi, lastfmApi } from '$lib/api';
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -719,6 +719,65 @@ describe('API module', () => {
 			});
 
 			expect(result).toEqual(mockResponse);
+		});
+	});
+
+	describe('lastfmApi', () => {
+		beforeEach(() => {
+			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve('{}'),
+			}));
+		});
+
+		it('lastfmApi.status calls GET /lastfm/status', async () => {
+			await lastfmApi.status();
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/lastfm/status');
+		});
+
+		it('lastfmApi.connect calls GET /lastfm/connect', async () => {
+			await lastfmApi.connect();
+			const [url] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/lastfm/connect');
+		});
+
+		it('lastfmApi.callback calls POST /lastfm/callback with token', async () => {
+			await lastfmApi.callback('my-token-123');
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/lastfm/callback');
+			expect(options?.method).toBe('POST');
+			expect(options?.body).toBe(JSON.stringify({ token: 'my-token-123' }));
+		});
+
+		it('lastfmApi.disconnect calls DELETE /lastfm/disconnect', async () => {
+			await lastfmApi.disconnect();
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/lastfm/disconnect');
+			expect(options?.method).toBe('DELETE');
+		});
+
+		it('lastfmApi.toggleScrobble calls POST /lastfm/scrobble with enabled', async () => {
+			await lastfmApi.toggleScrobble(true);
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/lastfm/scrobble');
+			expect(options?.method).toBe('POST');
+			expect(options?.body).toBe(JSON.stringify({ enabled: true }));
+		});
+
+		it('lastfmApi.toggleScrobble with false', async () => {
+			await lastfmApi.toggleScrobble(false);
+			const [, options] = vi.mocked(fetch).mock.calls[0];
+			expect(options?.body).toBe(JSON.stringify({ enabled: false }));
+		});
+
+		it('lastfmApi.nowPlaying calls POST /lastfm/now-playing with track_id', async () => {
+			await lastfmApi.nowPlaying('track-abc');
+			const [url, options] = vi.mocked(fetch).mock.calls[0];
+			expect(url).toContain('/lastfm/now-playing');
+			expect(options?.method).toBe('POST');
+			expect(options?.body).toBe(JSON.stringify({ track_id: 'track-abc' }));
 		});
 	});
 });
