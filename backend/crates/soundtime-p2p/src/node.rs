@@ -467,6 +467,17 @@ impl P2pNode {
             });
         }
 
+        // Backfill content_hash for tracks imported before P2P was enabled.
+        // This ensures all local tracks are available for catalog sync.
+        {
+            let node_clone = Arc::clone(&node);
+            tokio::spawn(async move {
+                // Small delay to let the published_hashes pre-population finish first
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                node_clone.backfill_content_hashes().await;
+            });
+        }
+
         // Spawn the connection accept loop
         let node_clone = Arc::clone(&node);
         tokio::spawn(async move {
@@ -1092,6 +1103,99 @@ impl P2pNode {
         for h in handles {
             let _ = h.await;
         }
+    }
+
+    /// Backfill `content_hash` for local tracks that were imported before P2P was enabled.
+    /// Reads each file, publishes it to the blob store (BLAKE3), and updates the DB.
+    /// Runs on startup to ensure all local tracks are available for P2P catalog sync.
+    async fn backfill_content_hashes(&self) {
+        let page_size = 100u64;
+        let total = match track::Entity::find()
+            .filter(track::Column::ContentHash.is_null())
+            .filter(track::Column::FilePath.not_like("p2p://%"))
+            .count(&self.db)
+            .await
+        {
+            Ok(0) => {
+                debug!("all local tracks already have content hashes");
+                return;
+            }
+            Ok(c) => c,
+            Err(e) => {
+                warn!("failed to count tracks for content hash backfill: {e}");
+                return;
+            }
+        };
+
+        info!(total, "starting content hash backfill for local tracks");
+
+        let num_pages = total.div_ceil(page_size);
+        let mut backfilled = 0u64;
+        let mut skipped = 0u64;
+
+        for page_num in 0..num_pages {
+            let tracks = match track::Entity::find()
+                .filter(track::Column::ContentHash.is_null())
+                .filter(track::Column::FilePath.not_like("p2p://%"))
+                .paginate(&self.db, page_size)
+                .fetch_page(page_num)
+                .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(
+                        page = page_num,
+                        "failed to fetch tracks page for backfill: {e}"
+                    );
+                    continue;
+                }
+            };
+
+            for t in &tracks {
+                let file_path = self.audio_storage_path.join(&t.file_path);
+                let data = match tokio::fs::read(&file_path).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!(
+                            track_id = %t.id,
+                            path = %file_path.display(),
+                            "skipping backfill — file not readable: {e}"
+                        );
+                        skipped += 1;
+                        continue;
+                    }
+                };
+
+                match self.publish_track(Bytes::from(data)).await {
+                    Ok(hash) => {
+                        let update = track::ActiveModel {
+                            id: Set(t.id),
+                            content_hash: Set(Some(hash.to_string())),
+                            ..Default::default()
+                        };
+                        if let Err(e) = update.update(&self.db).await {
+                            warn!(track_id = %t.id, "failed to save content_hash during backfill: {e}");
+                            skipped += 1;
+                            continue;
+                        }
+                        // Register hash so it can be served to peers
+                        self.published_hashes.write().await.insert(hash.to_string());
+                        backfilled += 1;
+                    }
+                    Err(e) => {
+                        warn!(track_id = %t.id, "failed to publish track during backfill: {e}");
+                        skipped += 1;
+                    }
+                }
+            }
+
+            info!(
+                processed = backfilled + skipped,
+                total, backfilled, skipped, "content hash backfill progress"
+            );
+        }
+
+        info!(backfilled, skipped, total, "content hash backfill complete");
     }
 
     /// Announce all locally-uploaded tracks to a specific peer using paginated queries.
@@ -2309,13 +2413,20 @@ impl P2pNode {
                     .map_err(|e| P2pError::Connection(e.to_string()))?;
             }
             P2pMessage::Ping => {
-                // Get actual track count from DB
-                let track_count = track::Entity::find()
-                    .filter(track::Column::ContentHash.is_not_null())
+                // Count ALL local tracks (not just those with content_hash set).
+                // During backfill, some tracks may not yet have hashes, but we still
+                // report the full catalog size so peers know to wait for announcements.
+                let track_count = match track::Entity::find()
                     .filter(track::Column::FilePath.not_like("p2p://%"))
                     .count(&self.db)
                     .await
-                    .unwrap_or(0);
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!("failed to count tracks for ping response: {e}");
+                        0
+                    }
+                };
 
                 let pong = P2pMessage::Pong {
                     node_id: node_id.to_string(),
