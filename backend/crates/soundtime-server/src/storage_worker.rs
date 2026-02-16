@@ -11,7 +11,7 @@
 
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::Serialize;
-use soundtime_db::entities::track;
+use soundtime_db::entities::{track, user};
 use soundtime_db::AppState;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -283,10 +283,23 @@ async fn import_file(state: &AppState, relative_path: &str) -> Result<Uuid, Stri
         .to_lowercase();
 
     // Try to derive user_id from path pattern {user_id}/...
-    let uploaded_by: Option<Uuid> = relative_path
-        .split('/')
-        .next()
-        .and_then(|s| Uuid::parse_str(s).ok());
+    // Validate against the users table to avoid FK violations.
+    let uploaded_by: Option<Uuid> = {
+        let candidate = relative_path
+            .split('/')
+            .next()
+            .and_then(|s| Uuid::parse_str(s).ok());
+        if let Some(uid) = candidate {
+            let exists = user::Entity::find_by_id(uid)
+                .one(&state.db)
+                .await
+                .map_err(|e| format!("DB user lookup: {e}"))?
+                .is_some();
+            if exists { Some(uid) } else { None }
+        } else {
+            None
+        }
+    };
 
     let artist_name = meta
         .artist
