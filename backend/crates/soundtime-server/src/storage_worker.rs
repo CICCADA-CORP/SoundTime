@@ -142,7 +142,7 @@ pub async fn run_integrity_check(
     let total = paginator
         .num_items()
         .await
-        .map_err(|e| format!("DB count: {e}"))? as u64;
+        .map_err(|e| format!("DB count: {e}"))?;
 
     let mut report = IntegrityReport {
         total_checked: 0,
