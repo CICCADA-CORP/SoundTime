@@ -164,25 +164,30 @@ pub async fn list_recent_history(
 ) -> Result<Json<Vec<HistoryEntry>>, (StatusCode, String)> {
     let limit = params.per_page.unwrap_or(6).min(50);
 
-    let entries = listen_history::Entity::find()
+    // Fetch more rows than needed so we can deduplicate by track_id in Rust,
+    // keeping only the most recent listen per track.
+    let raw_entries = listen_history::Entity::find()
         .filter(listen_history::Column::UserId.eq(auth_user.0.sub))
         .order_by_desc(listen_history::Column::ListenedAt)
-        .limit(limit)
+        .limit(limit * 10)
         .all(&state.db)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    // Deduplicate: keep only the first (most recent) listen per track_id
+    let mut seen_tracks: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+    let entries: Vec<listen_history::Model> = raw_entries
+        .into_iter()
+        .filter(|e| seen_tracks.insert(e.track_id))
+        .take(limit as usize)
+        .collect();
 
     if entries.is_empty() {
         return Ok(Json(vec![]));
     }
 
     // Batch-fetch all tracks
-    let track_ids: Vec<Uuid> = entries
-        .iter()
-        .map(|e| e.track_id)
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
+    let track_ids: Vec<Uuid> = entries.iter().map(|e| e.track_id).collect();
     let tracks_map: HashMap<Uuid, track::Model> = track::Entity::find()
         .filter(track::Column::Id.is_in(track_ids))
         .all(&state.db)

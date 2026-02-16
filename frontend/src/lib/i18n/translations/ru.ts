@@ -649,6 +649,13 @@ export default {
   "admin.sync.alreadyReferenced": "Уже зарегистрированы",
   "admin.sync.importErrors": "Ошибки импорта",
 
+  // Admin — task banner (persistent progress indicator)
+  "admin.taskBanner.syncInProgress": "Синхронизация хранилища…",
+  "admin.taskBanner.integrityInProgress": "Проверка целостности…",
+  "admin.taskBanner.syncCompleted": "Синхронизация хранилища завершена",
+  "admin.taskBanner.integrityCompleted": "Проверка целостности завершена",
+  "admin.taskBanner.error": "Ошибка задачи",
+
   // Admin — Plugins
   "admin.tab.plugins": "Плагины",
   "admin.plugins.title": "Плагины",

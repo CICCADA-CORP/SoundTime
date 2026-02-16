@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Playlist } from "$lib/types";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
@@ -30,6 +31,11 @@
 
   // Active panel on mobile  
   let activePanel = $state<"info" | "lyrics" | "queue">("info");
+
+  // Playlist picker state
+  let showPlaylistPicker = $state(false);
+  let userPlaylists = $state<Playlist[]>([]);
+  let playlistLoading = $state(false);
 
   // Favorite state  
   let liked = $state(false);
@@ -95,6 +101,28 @@
       // Update queue index and play
       queue.playQueue(queue.queue, index);
     }
+  }
+
+  async function openPlaylistPicker() {
+    showPlaylistPicker = true;
+    playlistLoading = true;
+    try {
+      const res = await api.get<{ data: Playlist[] }>("/playlists");
+      userPlaylists = (res.data ?? []).filter(p => p.user_id === auth.user?.id || p.owner_id === auth.user?.id);
+    } catch {
+      userPlaylists = [];
+    } finally {
+      playlistLoading = false;
+    }
+  }
+
+  async function addToPlaylist(playlistId: string) {
+    const trackId = player.currentTrack?.id;
+    if (!trackId) return;
+    try {
+      await api.post(`/playlists/${playlistId}/tracks`, { track_id: trackId });
+    } catch { /* ignore duplicates */ }
+    showPlaylistPicker = false;
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -194,9 +222,17 @@
         <div class="w-full max-w-[380px] flex items-start justify-between gap-3">
           <div class="min-w-0 flex-1">
             <h2 class="text-xl font-bold truncate">{player.currentTrack.title}</h2>
-            <p class="text-sm text-[hsl(var(--muted-foreground))] truncate">{player.currentTrack.artist_name ?? t('track.unknownArtist')}</p>
+            {#if player.currentTrack.artist_id}
+              <a href="/artists/{player.currentTrack.artist_id}" class="text-sm text-[hsl(var(--muted-foreground))] truncate block hover:underline">{player.currentTrack.artist_name ?? t('track.unknownArtist')}</a>
+            {:else}
+              <p class="text-sm text-[hsl(var(--muted-foreground))] truncate">{player.currentTrack.artist_name ?? t('track.unknownArtist')}</p>
+            {/if}
             {#if player.currentTrack.album_title}
-              <p class="text-xs text-[hsl(var(--muted-foreground))]/60 truncate mt-0.5">{player.currentTrack.album_title}</p>
+              {#if player.currentTrack.album_id}
+                <a href="/albums/{player.currentTrack.album_id}" class="text-xs text-[hsl(var(--muted-foreground))]/60 truncate mt-0.5 block hover:underline">{player.currentTrack.album_title}</a>
+              {:else}
+                <p class="text-xs text-[hsl(var(--muted-foreground))]/60 truncate mt-0.5">{player.currentTrack.album_title}</p>
+              {/if}
             {/if}
             {#if radio.active}
               <div class="flex items-center gap-1.5 mt-1">
@@ -206,7 +242,16 @@
             {/if}
           </div>
           {#if auth.isAuthenticated}
-            <FavoriteButton trackId={player.currentTrack.id} bind:liked size={22} />
+            <div class="flex items-center gap-1.5 flex-shrink-0">
+              <button
+                onclick={openPlaylistPicker}
+                class="text-[hsl(var(--muted-foreground))] hover:text-white transition p-1.5 rounded-full hover:bg-white/10"
+                title={t('track.addToPlaylist')}
+              >
+                <svg class="w-[22px] h-[22px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
+              </button>
+              <FavoriteButton trackId={player.currentTrack.id} bind:liked size={22} />
+            </div>
           {/if}
         </div>
 
@@ -331,28 +376,89 @@
           {:else}
             <div class="divide-y divide-[hsl(var(--border))]/10">
               {#each upcomingTracks as track, i}
-                <button
-                  class="w-full flex items-center gap-3 px-6 py-3 hover:bg-white/5 transition text-left"
-                  onclick={() => playFromQueue(queue.currentIndex + 1 + i)}
-                >
+                <div class="w-full flex items-center gap-3 px-6 py-3 hover:bg-white/5 transition group">
                   <span class="text-xs text-[hsl(var(--muted-foreground))] w-5 text-right flex-shrink-0">{i + 1}</span>
-                  <div class="w-10 h-10 rounded bg-[hsl(var(--secondary))] flex-shrink-0 overflow-hidden">
+                  <button
+                    class="w-10 h-10 rounded bg-[hsl(var(--secondary))] flex-shrink-0 overflow-hidden"
+                    onclick={() => playFromQueue(queue.currentIndex + 1 + i)}
+                  >
                     {#if track.cover_url}
                       <img src={resolveMediaUrl(track.cover_url)} alt="" class="w-full h-full object-cover" />
                     {:else}
                       <div class="w-full h-full flex items-center justify-center text-xs">🎵</div>
                     {/if}
-                  </div>
-                  <div class="min-w-0 flex-1">
+                  </button>
+                  <button
+                    class="min-w-0 flex-1 text-left"
+                    onclick={() => playFromQueue(queue.currentIndex + 1 + i)}
+                  >
                     <p class="text-sm font-medium truncate">{track.title}</p>
                     <p class="text-xs text-[hsl(var(--muted-foreground))] truncate">{track.artist_name ?? t('track.unknownArtist')}</p>
-                  </div>
+                  </button>
                   <span class="text-xs text-[hsl(var(--muted-foreground))] flex-shrink-0">{formatDuration(track.duration_secs)}</span>
-                </button>
+                  <div class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      class="p-1 text-[hsl(var(--muted-foreground))] hover:text-white transition rounded hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
+                      onclick={() => queue.moveInQueue(queue.currentIndex + 1 + i, queue.currentIndex + i)}
+                      disabled={i === 0}
+                      title="Move up"
+                    >
+                      <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M7 14l5-5 5 5H7z"/></svg>
+                    </button>
+                    <button
+                      class="p-1 text-[hsl(var(--muted-foreground))] hover:text-white transition rounded hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
+                      onclick={() => queue.moveInQueue(queue.currentIndex + 1 + i, queue.currentIndex + 2 + i)}
+                      disabled={i === upcomingTracks.length - 1}
+                      title="Move down"
+                    >
+                      <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5H7z"/></svg>
+                    </button>
+                    <button
+                      class="p-1 text-[hsl(var(--muted-foreground))] hover:text-red-400 transition rounded hover:bg-white/10"
+                      onclick={() => queue.removeFromQueue(queue.currentIndex + 1 + i)}
+                      title="Remove from queue"
+                    >
+                      <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                    </button>
+                  </div>
+                </div>
               {/each}
             </div>
           {/if}
         </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Playlist Picker Modal -->
+{#if showPlaylistPicker}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="fixed inset-0 bg-black/60 z-[201] flex items-center justify-center p-4" onclick={() => showPlaylistPicker = false} onkeydown={(e) => e.key === 'Escape' && (showPlaylistPicker = false)} role="dialog" tabindex="-1">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="bg-[hsl(var(--card))] rounded-xl p-6 w-full max-w-sm shadow-2xl" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
+      <h3 class="text-lg font-semibold mb-4">{t('track.addToPlaylist')}</h3>
+      {#if playlistLoading}
+        <div class="flex justify-center py-6">
+          <div class="w-6 h-6 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full animate-spin"></div>
+        </div>
+      {:else if userPlaylists.length === 0}
+        <p class="text-sm text-[hsl(var(--muted-foreground))] py-4">{t('track.noPlaylists')}</p>
+      {:else}
+        <div class="space-y-1 max-h-60 overflow-y-auto">
+          {#each userPlaylists as pl}
+            <button
+              class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-[hsl(var(--secondary))] transition text-sm flex items-center gap-3"
+              onclick={() => addToPlaylist(pl.id)}
+            >
+              <span class="text-lg">🎶</span>
+              <span class="truncate">{pl.name}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+      <div class="mt-4 flex justify-end">
+        <button class="px-4 py-2 text-sm rounded-lg bg-[hsl(var(--secondary))] hover:opacity-80 transition" onclick={() => showPlaylistPicker = false}>{t('common.cancel')}</button>
       </div>
     </div>
   </div>

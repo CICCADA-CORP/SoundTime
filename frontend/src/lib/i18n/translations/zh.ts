@@ -649,6 +649,13 @@ export default {
   "admin.sync.alreadyReferenced": "已引用",
   "admin.sync.importErrors": "导入错误",
 
+  // Admin — task banner (persistent progress indicator)
+  "admin.taskBanner.syncInProgress": "存储同步进行中…",
+  "admin.taskBanner.integrityInProgress": "完整性检查进行中…",
+  "admin.taskBanner.syncCompleted": "存储同步已完成",
+  "admin.taskBanner.integrityCompleted": "完整性检查已完成",
+  "admin.taskBanner.error": "任务错误",
+
   // Admin — Plugins
   "admin.tab.plugins": "插件",
   "admin.plugins.title": "插件",

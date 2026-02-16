@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getAuthStore } from "$lib/stores/auth.svelte";
+  import { getTaskStore } from "$lib/stores/tasks.svelte";
   import { api, pluginApi, themeApi } from "$lib/api";
   import { t } from "$lib/i18n/index.svelte";
   import {
@@ -44,6 +45,7 @@
   } from "$lib/types";
 
   const auth = getAuthStore();
+  const tasks = getTaskStore();
 
   let activeTab = $state<string>("overview");
   let stats = $state<AdminStats | null>(null);
@@ -339,9 +341,29 @@
           break;
         case "integrity":
           storageStatus = await api.get<StorageStatus>("/admin/storage/status");
+          // Check if a task is already running and resume polling
+          try {
+            const taskStatus = await api.get<StorageTaskStatus>("/admin/storage/task-status");
+            if (taskStatus.status === "running") {
+              storageChecking = true;
+              taskProgress = taskStatus.progress ?? null;
+              tasks.startPolling("integrity");
+              pollTaskStatus("integrity").finally(() => { storageChecking = false; taskProgress = null; });
+            }
+          } catch { /* ignore */ }
           break;
         case "sync":
           storageStatus = await api.get<StorageStatus>("/admin/storage/status");
+          // Check if a task is already running and resume polling
+          try {
+            const taskStatus = await api.get<StorageTaskStatus>("/admin/storage/task-status");
+            if (taskStatus.status === "running") {
+              storageSyncing = true;
+              taskProgress = taskStatus.progress ?? null;
+              tasks.startPolling("sync");
+              pollTaskStatus("sync").finally(() => { storageSyncing = false; taskProgress = null; });
+            }
+          } catch { /* ignore */ }
           break;
         case "plugins":
           try {
@@ -2524,8 +2546,21 @@
                 taskProgress = null;
                 try {
                   await api.post("/admin/storage/integrity-check");
+                  tasks.startPolling("integrity");
                   await pollTaskStatus("integrity");
-                } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
+                } catch (e: unknown) {
+                  // The POST may have timed out (504) but the task was spawned server-side
+                  // Check if it's actually running
+                  try {
+                    const status = await api.get<StorageTaskStatus>("/admin/storage/task-status");
+                    if (status.status === "running") {
+                      tasks.startPolling("integrity");
+                      await pollTaskStatus("integrity");
+                      return;
+                    }
+                  } catch { /* truly failed */ }
+                  error = e instanceof Error ? e.message : String(e);
+                }
                 finally { storageChecking = false; taskProgress = null; }
               }}
             >
@@ -2613,8 +2648,21 @@
                 taskProgress = null;
                 try {
                   await api.post("/admin/storage/sync");
+                  tasks.startPolling("sync");
                   await pollTaskStatus("sync");
-                } catch (e: unknown) { error = e instanceof Error ? e.message : String(e); }
+                } catch (e: unknown) {
+                  // The POST may have timed out (504) but the task was spawned server-side
+                  // Check if it's actually running
+                  try {
+                    const status = await api.get<StorageTaskStatus>("/admin/storage/task-status");
+                    if (status.status === "running") {
+                      tasks.startPolling("sync");
+                      await pollTaskStatus("sync");
+                      return;
+                    }
+                  } catch { /* truly failed */ }
+                  error = e instanceof Error ? e.message : String(e);
+                }
                 finally { storageSyncing = false; taskProgress = null; }
               }}
             >

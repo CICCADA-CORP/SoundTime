@@ -177,6 +177,33 @@ pub async fn list_top_artists(
     }))
 }
 
+/// GET /api/artists/random — random artists
+pub async fn list_random_artists(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<super::tracks::PaginatedResponse<ArtistResponse>>, (StatusCode, String)> {
+    use sea_orm::{sea_query::Expr, Order, QuerySelect};
+
+    let per_page = params.per_page.unwrap_or(10).min(50);
+
+    let artists = artist::Entity::find()
+        .order_by(Expr::cust("RANDOM()"), Order::Asc)
+        .limit(per_page)
+        .all(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    let total = artists.len() as u64;
+
+    Ok(Json(super::tracks::PaginatedResponse {
+        data: artists.into_iter().map(ArtistResponse::from).collect(),
+        total,
+        page: 1,
+        per_page,
+        total_pages: 1,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

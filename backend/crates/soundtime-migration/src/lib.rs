@@ -27,6 +27,7 @@ mod m20240101_000024_create_plugins;
 mod m20240101_000025_create_themes;
 mod m20240101_000026_fix_album_dedup;
 mod m20240101_000027_create_user_settings;
+mod m20240101_000028_normalize_genres;
 
 pub struct Migrator;
 
@@ -61,6 +62,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000025_create_themes::Migration),
             Box::new(m20240101_000026_fix_album_dedup::Migration),
             Box::new(m20240101_000027_create_user_settings::Migration),
+            Box::new(m20240101_000028_normalize_genres::Migration),
         ]
     }
 }

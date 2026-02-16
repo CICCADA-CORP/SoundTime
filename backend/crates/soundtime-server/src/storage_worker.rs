@@ -9,8 +9,12 @@
 //! The admin API triggers them asynchronously and polls for results
 //! via `TaskTracker`.
 
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, FromQueryResult, PaginatorTrait, QueryFilter,
+    QuerySelect, Set,
+};
 use serde::Serialize;
+use soundtime_audio::metadata::normalize_genre;
 use soundtime_db::entities::{track, user};
 use soundtime_db::AppState;
 use std::sync::Arc;
@@ -130,18 +134,15 @@ pub async fn run_integrity_check(
     state: &AppState,
     tracker: Option<&TaskTrackerHandle>,
 ) -> Result<IntegrityReport, String> {
-    let all_tracks = track::Entity::find()
-        .all(&state.db)
+    // Filter out P2P tracks at DB level and paginate to avoid loading all rows
+    let paginator = track::Entity::find()
+        .filter(track::Column::FilePath.not_like("p2p://%"))
+        .paginate(&state.db, 500);
+
+    let total = paginator
+        .num_items()
         .await
-        .map_err(|e| format!("DB query: {e}"))?;
-
-    // Exclude P2P tracks — their files live on remote peers, not local storage
-    let local_tracks: Vec<_> = all_tracks
-        .into_iter()
-        .filter(|t| !t.file_path.starts_with("p2p://"))
-        .collect();
-
-    let total = local_tracks.len() as u64;
+        .map_err(|e| format!("DB count: {e}"))? as u64;
 
     let mut report = IntegrityReport {
         total_checked: 0,
@@ -150,40 +151,52 @@ pub async fn run_integrity_check(
         errors: Vec::new(),
     };
 
-    for t in &local_tracks {
-        report.total_checked += 1;
+    let mut page = 0u64;
+    loop {
+        let batch = paginator
+            .fetch_page(page)
+            .await
+            .map_err(|e| format!("DB query page {page}: {e}"))?;
+        if batch.is_empty() {
+            break;
+        }
 
-        // Update progress every 10 tracks
-        if let Some(tr) = tracker {
-            if report.total_checked.is_multiple_of(10) || report.total_checked == total {
-                let mut lock = tr.lock().await;
-                *lock = Some(TaskStatus::Running {
-                    progress: TaskProgress {
-                        processed: report.total_checked,
-                        total: Some(total),
-                    },
+        for t in &batch {
+            report.total_checked += 1;
+
+            // Update progress every 10 tracks
+            if let Some(tr) = tracker {
+                if report.total_checked.is_multiple_of(10) || report.total_checked == total {
+                    let mut lock = tr.lock().await;
+                    *lock = Some(TaskStatus::Running {
+                        progress: TaskProgress {
+                            processed: report.total_checked,
+                            total: Some(total),
+                        },
+                    });
+                }
+            }
+
+            if !state.storage.file_exists(&t.file_path).await {
+                report.missing.push(MissingTrack {
+                    track_id: t.id.to_string(),
+                    title: t.title.clone(),
+                    file_path: t.file_path.clone(),
                 });
+                continue;
+            }
+
+            // Verify file is readable (hash check)
+            match state.storage.hash_file(&t.file_path).await {
+                Ok(_) => report.healthy += 1,
+                Err(e) => {
+                    report
+                        .errors
+                        .push(format!("Track {} ({}): hash error — {}", t.id, t.title, e));
+                }
             }
         }
-
-        if !state.storage.file_exists(&t.file_path).await {
-            report.missing.push(MissingTrack {
-                track_id: t.id.to_string(),
-                title: t.title.clone(),
-                file_path: t.file_path.clone(),
-            });
-            continue;
-        }
-
-        // Verify file is readable (hash check)
-        match state.storage.hash_file(&t.file_path).await {
-            Ok(_) => report.healthy += 1,
-            Err(e) => {
-                report
-                    .errors
-                    .push(format!("Track {} ({}): hash error — {}", t.id, t.title, e));
-            }
-        }
+        page += 1;
     }
 
     Ok(report)
@@ -202,14 +215,22 @@ pub async fn run_sync(
         errors: Vec::new(),
     };
 
-    // Collect all known file paths from DB
-    let known_tracks = track::Entity::find()
+    // Collect only file_path column from DB to minimise memory usage
+    #[derive(Debug, FromQueryResult)]
+    struct FilePathRow {
+        file_path: String,
+    }
+
+    let known_paths: std::collections::HashSet<String> = track::Entity::find()
+        .select_only()
+        .column(track::Column::FilePath)
+        .into_model::<FilePathRow>()
         .all(&state.db)
         .await
-        .map_err(|e| format!("DB query: {e}"))?;
-
-    let known_paths: std::collections::HashSet<String> =
-        known_tracks.iter().map(|t| t.file_path.clone()).collect();
+        .map_err(|e| format!("DB query: {e}"))?
+        .into_iter()
+        .map(|r| r.file_path)
+        .collect();
 
     // List all files in storage root
     let all_files = state
@@ -231,27 +252,35 @@ pub async fn run_sync(
         })
         .collect();
 
-    let total = audio_files.len() as u64;
+    let total_audio = audio_files.len() as u64;
 
-    for file_path in audio_files {
-        report.scanned += 1;
+    // Pre-filter to only new (unknown) files so the progress bar
+    // reflects actual import work, not skipped files.
+    let new_files: Vec<String> = audio_files
+        .into_iter()
+        .filter(|f| !known_paths.contains(f))
+        .collect();
+    let total_new = new_files.len() as u64;
+
+    // Set final counts for scanned/skipped up front
+    report.scanned = total_audio;
+    report.skipped = total_audio - total_new;
+
+    let mut processed: u64 = 0;
+    for file_path in new_files {
+        processed += 1;
 
         // Update progress every 5 files
         if let Some(tr) = tracker {
-            if report.scanned.is_multiple_of(5) || report.scanned == total {
+            if processed.is_multiple_of(5) || processed == total_new {
                 let mut lock = tr.lock().await;
                 *lock = Some(TaskStatus::Running {
                     progress: TaskProgress {
-                        processed: report.scanned,
-                        total: Some(total),
+                        processed,
+                        total: Some(total_new),
                     },
                 });
             }
-        }
-
-        if known_paths.contains(&file_path) {
-            report.skipped += 1;
-            continue;
         }
 
         // Try to import the file
@@ -391,7 +420,11 @@ async fn import_file(state: &AppState, relative_path: &str) -> Result<Uuid, Stri
                 release_date: Set(None),
                 cover_url: Set(None),
                 musicbrainz_id: Set(None),
-                genre: Set(meta.genre.clone()),
+                genre: Set(meta
+                    .genre
+                    .as_deref()
+                    .map(normalize_genre)
+                    .filter(|g| !g.is_empty())),
                 year: Set(meta.year.map(|y| y as i16)),
                 created_at: Set(chrono::Utc::now().into()),
             };
@@ -443,7 +476,11 @@ async fn import_file(state: &AppState, relative_path: &str) -> Result<Uuid, Stri
         track_number: Set(meta.track_number.map(|n| n as i16)),
         disc_number: Set(meta.disc_number.map(|n| n as i16)),
         duration_secs: Set(meta.duration_secs as f32),
-        genre: Set(meta.genre.clone()),
+        genre: Set(meta
+            .genre
+            .as_deref()
+            .map(normalize_genre)
+            .filter(|g| !g.is_empty())),
         year: Set(meta.year.map(|y| y as i16)),
         musicbrainz_id: Set(None),
         file_path: Set(relative_path.to_string()),

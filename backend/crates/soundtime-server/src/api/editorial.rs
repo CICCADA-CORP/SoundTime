@@ -9,7 +9,8 @@
 
 use axum::{extract::State, http::StatusCode, Json};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+    sea_query::Expr, ActiveModelTrait, ColumnTrait, EntityTrait, Order, PaginatorTrait,
+    QueryFilter, QueryOrder, QuerySelect, Set,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -122,9 +123,10 @@ pub async fn generate_editorial_playlists(
         .await
         .unwrap_or_else(|| "gpt-4o-mini".to_string());
 
-    // 1. Fetch all available tracks with artist names
+    // 1. Fetch a random sample of tracks (up to 5000) with artist names
     let all_tracks = track::Entity::find()
-        .order_by_asc(track::Column::Title)
+        .order_by(Expr::cust("RANDOM()"), Order::Asc)
+        .limit(5000)
         .all(&state.db)
         .await
         .map_err(|e| {
@@ -603,7 +605,8 @@ async fn generate_editorial_inner(state: &AppState) -> Result<usize, String> {
         .unwrap_or_else(|| "gpt-4o-mini".to_string());
 
     let all_tracks = track::Entity::find()
-        .order_by_asc(track::Column::Title)
+        .order_by(Expr::cust("RANDOM()"), Order::Asc)
+        .limit(5000)
         .all(&state.db)
         .await
         .map_err(|e| format!("DB error: {e}"))?;

@@ -37,6 +37,24 @@ function removeFromQueue(index: number) {
   if (index < currentIndex) currentIndex--;
 }
 
+function moveInQueue(fromIndex: number, toIndex: number) {
+  if (fromIndex < 0 || fromIndex >= queue.length) return;
+  if (toIndex < 0 || toIndex >= queue.length) return;
+  if (fromIndex === toIndex) return;
+  const updated = [...queue];
+  const [track] = updated.splice(fromIndex, 1);
+  updated.splice(toIndex, 0, track);
+  queue = updated;
+  // Adjust currentIndex if it was affected by the move
+  if (currentIndex === fromIndex) {
+    currentIndex = toIndex;
+  } else if (fromIndex < currentIndex && toIndex >= currentIndex) {
+    currentIndex--;
+  } else if (fromIndex > currentIndex && toIndex <= currentIndex) {
+    currentIndex++;
+  }
+}
+
 function clearQueue() {
   queue = [];
   originalQueue = [];
@@ -124,6 +142,7 @@ export function getQueueStore() {
     addToQueue,
     addNext,
     removeFromQueue,
+    moveInQueue,
     clearQueue,
     next,
     previous,

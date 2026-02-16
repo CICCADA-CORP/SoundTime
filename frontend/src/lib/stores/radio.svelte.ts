@@ -85,7 +85,7 @@ function stopRadio() {
  * Fetch more tracks when the queue is running low.
  * Called from queue.svelte.ts when currentIndex >= queue.length - 3.
  */
-async function fetchMoreTracks() {
+async function fetchMoreTracks(retrying = false) {
   if (!active || exhausted || loading || !seedType) return;
 
   loading = true;
@@ -106,10 +106,24 @@ async function fetchMoreTracks() {
 
     if (res.tracks.length === 0) {
       exhausted = true;
+      // If the server didn't explicitly signal exhaustion and tracks were played,
+      // reset the exclude list and retry once to find previously-excluded tracks
+      if (!res.exhausted && playedIds.size > 0 && !retrying) {
+        playedIds = new Set();
+        exhausted = false;
+        loading = false;
+        return fetchMoreTracks(true);
+      }
       return;
     }
 
     exhausted = res.exhausted;
+
+    // If exhausted but tracks were played and not retrying, reset for next call
+    if (exhausted && playedIds.size > 0 && !retrying) {
+      playedIds = new Set();
+      exhausted = false;
+    }
 
     // Add new track IDs to played set
     for (const track of res.tracks) {

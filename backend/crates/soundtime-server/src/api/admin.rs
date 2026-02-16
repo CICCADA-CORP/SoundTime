@@ -5,8 +5,10 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
+use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+    ActiveModelTrait, ColumnTrait, EntityTrait, FromQueryResult, PaginatorTrait, QueryFilter,
+    QueryOrder, QuerySelect, Set,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -825,12 +827,25 @@ pub struct StorageStatusResponse {
 pub async fn storage_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<StorageStatusResponse>, StatusCode> {
-    let tracks = track::Entity::find()
-        .all(&state.db)
+    let total_tracks = track::Entity::find()
+        .count(&state.db)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let total_size: i64 = tracks.iter().map(|t| t.file_size).sum();
+    #[derive(Debug, FromQueryResult)]
+    struct SizeSum {
+        total_size: Option<i64>,
+    }
+
+    let size_result = track::Entity::find()
+        .select_only()
+        .column_as(Expr::cust("COALESCE(SUM(file_size), 0)"), "total_size")
+        .into_model::<SizeSum>()
+        .one(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let total_size: i64 = size_result.map(|r| r.total_size.unwrap_or(0)).unwrap_or(0);
 
     let remote_track_count = remote_track::Entity::find()
         .count(&state.db)
@@ -851,7 +866,7 @@ pub async fn storage_status(
 
     Ok(Json(StorageStatusResponse {
         backend: backend_type,
-        total_tracks: tracks.len() as u64,
+        total_tracks,
         total_size_bytes: total_size,
         storage_path_or_bucket: storage_info,
         remote_track_count,

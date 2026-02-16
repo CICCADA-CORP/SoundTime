@@ -649,6 +649,13 @@ export default {
   "admin.sync.alreadyReferenced": "Ya referenciados",
   "admin.sync.importErrors": "Errores de importación",
 
+  // Admin — task banner (persistent progress indicator)
+  "admin.taskBanner.syncInProgress": "Sincronización del almacenamiento en curso…",
+  "admin.taskBanner.integrityInProgress": "Verificación de integridad en curso…",
+  "admin.taskBanner.syncCompleted": "Sincronización del almacenamiento completada",
+  "admin.taskBanner.integrityCompleted": "Verificación de integridad completada",
+  "admin.taskBanner.error": "Error de tarea",
+
   // Admin — Plugins
   "admin.tab.plugins": "Extensiones",
   "admin.plugins.title": "Extensiones",

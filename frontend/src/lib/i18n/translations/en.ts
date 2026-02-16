@@ -679,6 +679,13 @@ export default {
   "admin.sync.alreadyReferenced": "Already referenced",
   "admin.sync.importErrors": "Import errors",
 
+  // Admin — task banner (persistent progress indicator)
+  "admin.taskBanner.syncInProgress": "Storage sync in progress…",
+  "admin.taskBanner.integrityInProgress": "Integrity check in progress…",
+  "admin.taskBanner.syncCompleted": "Storage sync completed",
+  "admin.taskBanner.integrityCompleted": "Integrity check completed",
+  "admin.taskBanner.error": "Task error",
+
   // Admin — MusicBrainz config
   "admin.metadata.mbConfig": "MusicBrainz Configuration",
   "admin.metadata.mbConfigDesc": "Configure the MusicBrainz API endpoint and user agent used for metadata enrichment. Rate limited to 1 request/second.",

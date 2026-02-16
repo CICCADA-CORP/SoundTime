@@ -7,6 +7,7 @@
   import SearchBar from "$lib/components/SearchBar.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
+  import { getTaskStore } from "$lib/stores/tasks.svelte";
   import { getThemeStore } from "$lib/stores/theme.svelte";
   import { api } from "$lib/api";
   import type { SetupStatus } from "$lib/types";
@@ -34,6 +35,7 @@
 
   const auth = getAuthStore();
   const player = getPlayerStore();
+  const tasks = getTaskStore();
   const theme = getThemeStore();
 
   let setupChecked = $state(false);
@@ -55,6 +57,11 @@
     setupChecked = true;
     auth.init();
     theme.init();
+
+    // Check if a storage task is already running (e.g., user navigated away and came back)
+    if (auth.isAdmin) {
+      tasks.checkForRunningTask();
+    }
   });
 
   // Close sidebar on navigation
@@ -287,6 +294,64 @@
   </div>
 </nav>
 
+{/if}
+
+<!-- Persistent task progress banner (above the audio player) -->
+{#if tasks.isActive && auth.isAdmin}
+  <div class="fixed bottom-[7.5rem] md:bottom-20 left-0 right-0 z-[57] px-4 pb-2">
+    <a
+      href="/admin"
+      class="mx-auto max-w-md flex items-center gap-3 bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-lg px-4 py-2 shadow-lg hover:bg-[hsl(var(--secondary))] transition"
+    >
+      {#if tasks.isRunning}
+        <!-- Spinning icon -->
+        <svg class="h-4 w-4 animate-spin text-[hsl(var(--primary))]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+        <div class="flex-1 min-w-0">
+          <p class="text-xs font-medium truncate">
+            {tasks.taskType === "sync" ? t("admin.taskBanner.syncInProgress") : t("admin.taskBanner.integrityInProgress")}
+          </p>
+          {#if tasks.progress}
+            <div class="flex items-center gap-2 mt-1">
+              <div class="flex-1 bg-[hsl(var(--secondary))] rounded-full h-1.5">
+                <div
+                  class="bg-[hsl(var(--primary))] h-1.5 rounded-full transition-all duration-300"
+                  style="width: {tasks.progress.total ? (tasks.progress.processed / tasks.progress.total * 100) : 50}%"
+                ></div>
+              </div>
+              <span class="text-[10px] text-[hsl(var(--muted-foreground))] tabular-nums">
+                {tasks.progress.processed}{tasks.progress.total ? ` / ${tasks.progress.total}` : ''}
+              </span>
+            </div>
+          {/if}
+        </div>
+      {:else if tasks.lastStatus?.status === "completed"}
+        <svg class="h-4 w-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+        <span class="text-xs font-medium text-green-400 flex-1">
+          {tasks.taskType === "sync" ? t("admin.taskBanner.syncCompleted") : t("admin.taskBanner.integrityCompleted")}
+        </span>
+        <button
+          class="text-xs text-[hsl(var(--muted-foreground))] hover:text-white"
+          onclick={(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); tasks.dismiss(); }}
+        >✕</button>
+      {:else if tasks.lastStatus?.status === "error"}
+        <svg class="h-4 w-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+        <span class="text-xs font-medium text-red-400 flex-1 truncate">
+          {t("admin.taskBanner.error")}
+        </span>
+        <button
+          class="text-xs text-[hsl(var(--muted-foreground))] hover:text-white"
+          onclick={(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); tasks.dismiss(); }}
+        >✕</button>
+      {/if}
+    </a>
+  </div>
 {/if}
 
 <!-- Audio Player Bar (always mounted to prevent music interruption on navigation) -->

@@ -35,6 +35,10 @@
   let heroIndex = $state(0);
   let heroInterval: ReturnType<typeof setInterval> | undefined;
 
+  // Hero banner touch/swipe
+  let touchStartX: number = $state(0);
+  let touchStartY: number = $state(0);
+
   // Genre filter
   let activeGenre: string | null = $state(null);
   let genreTracks: Track[] = $state([]);
@@ -189,7 +193,28 @@
 
     <!-- ─── 1. Dynamic Hero Banner ─────────────────────────────────── -->
     {#if heroItems.length > 0}
-      <div class="relative">
+      <div
+        class="relative"
+        role="region"
+        aria-label="Featured albums"
+        ontouchstart={(e: TouchEvent) => {
+          touchStartX = e.touches[0].clientX;
+          touchStartY = e.touches[0].clientY;
+        }}
+        ontouchend={(e: TouchEvent) => {
+          const deltaX = e.changedTouches[0].clientX - touchStartX;
+          const deltaY = e.changedTouches[0].clientY - touchStartY;
+          if (Math.abs(deltaX) > 50 && Math.abs(deltaX) > Math.abs(deltaY)) {
+            if (deltaX < 0) {
+              // Swipe left → next
+              setHeroIndex((heroIndex + 1) % heroItems.length);
+            } else {
+              // Swipe right → previous
+              setHeroIndex((heroIndex - 1 + heroItems.length) % heroItems.length);
+            }
+          }
+        }}
+      >
         <HeroBanner
           item={heroItems[heroIndex].item}
           type={heroItems[heroIndex].type}

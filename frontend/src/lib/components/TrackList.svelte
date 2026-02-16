@@ -66,7 +66,11 @@
   });
 
   function playTrack(index: number) {
-    queue.playQueue(tracks, index);
+    if (player.currentTrack?.id === tracks[index].id) {
+      player.togglePlay();
+    } else {
+      queue.playQueue(tracks, index);
+    }
   }
 
   // Context menu handlers
@@ -253,7 +257,11 @@
       <!-- Album/Artist column (desktop) -->
       <span class="hidden md:block text-sm text-[hsl(var(--muted-foreground))] truncate">
         {#if showAlbum}
-          {track.album_title ?? ""}
+          {#if track.album_id}
+            <a href="/albums/{track.album_id}" class="hover:underline" onclick={(e: MouseEvent) => e.stopPropagation()}>{track.album_title ?? ""}</a>
+          {:else}
+            {track.album_title ?? ""}
+          {/if}
         {:else if showArtist}
           {track.artist_name ?? ""}
         {/if}

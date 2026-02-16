@@ -35,43 +35,48 @@ pub async fn stats_overview(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    // Count distinct genres
+    // Count distinct non-empty genres
+    use sea_orm::sea_query::Expr;
     use sea_orm::{FromQueryResult, QuerySelect};
 
     #[derive(Debug, FromQueryResult)]
-    struct GenreRow {
-        genre: Option<String>,
+    struct CountResult {
+        count: Option<i64>,
     }
 
-    let genre_rows = track::Entity::find()
+    let genre_result = track::Entity::find()
         .select_only()
-        .column(track::Column::Genre)
-        .distinct()
-        .into_model::<GenreRow>()
-        .all(&state.db)
+        .column_as(
+            Expr::cust(
+                "COUNT(DISTINCT CASE WHEN genre IS NOT NULL AND genre != '' THEN genre END)",
+            ),
+            "count",
+        )
+        .into_model::<CountResult>()
+        .one(&state.db)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let total_genres = genre_rows
-        .into_iter()
-        .filter(|r| r.genre.as_ref().is_some_and(|g| !g.is_empty()))
-        .count() as u64;
+    let total_genres = genre_result.and_then(|r| r.count).unwrap_or(0) as u64;
 
     // Sum all durations
     #[derive(Debug, FromQueryResult)]
-    struct DurationRow {
-        duration_secs: f32,
+    struct SumResult {
+        total: Option<f64>,
     }
 
-    let duration_rows = track::Entity::find()
+    let duration_result = track::Entity::find()
         .select_only()
-        .column(track::Column::DurationSecs)
-        .into_model::<DurationRow>()
-        .all(&state.db)
+        .column_as(
+            Expr::cust("COALESCE(SUM(CAST(duration_secs AS DOUBLE PRECISION)), 0)"),
+            "total",
+        )
+        .into_model::<SumResult>()
+        .one(&state.db)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let total_duration_secs: f64 = duration_rows.iter().map(|r| r.duration_secs as f64).sum();
+    let total_duration_secs: f64 = duration_result.and_then(|r| r.total).unwrap_or(0.0);
 
     // Get P2P peer count
     let total_peers = if let Some(ref p2p) = state.p2p {

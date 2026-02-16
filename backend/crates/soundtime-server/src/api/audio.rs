@@ -8,6 +8,7 @@ use axum::{
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::Serialize;
 use soundtime_audio::extract_metadata_from_file;
+use soundtime_audio::metadata::normalize_genre;
 use soundtime_db::entities::{album, artist, remote_track, track};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
@@ -307,7 +308,11 @@ pub async fn upload_track(
             release_date: Set(None),
             cover_url: Set(None),
             musicbrainz_id: Set(None),
-            genre: Set(audio_meta.genre.clone()),
+            genre: Set(audio_meta
+                .genre
+                .as_deref()
+                .map(normalize_genre)
+                .filter(|g| !g.is_empty())),
             year: Set(audio_meta.year.map(|y| y as i16)),
             created_at: Set(chrono::Utc::now().into()),
         };
@@ -354,7 +359,11 @@ pub async fn upload_track(
         track_number: Set(audio_meta.track_number.map(|n| n as i16)),
         disc_number: Set(audio_meta.disc_number.map(|n| n as i16)),
         duration_secs: Set(audio_meta.duration_secs as f32),
-        genre: Set(audio_meta.genre.clone()),
+        genre: Set(audio_meta
+            .genre
+            .as_deref()
+            .map(normalize_genre)
+            .filter(|g| !g.is_empty())),
         year: Set(audio_meta.year.map(|y| y as i16)),
         musicbrainz_id: Set(None),
         file_path: Set(relative_path),
@@ -959,7 +968,11 @@ async fn process_single_upload(
             release_date: Set(None),
             cover_url: Set(None),
             musicbrainz_id: Set(None),
-            genre: Set(audio_meta.genre.clone()),
+            genre: Set(audio_meta
+                .genre
+                .as_deref()
+                .map(normalize_genre)
+                .filter(|g| !g.is_empty())),
             year: Set(audio_meta.year.map(|y| y as i16)),
             created_at: Set(chrono::Utc::now().into()),
         };
@@ -1003,7 +1016,11 @@ async fn process_single_upload(
         track_number: Set(audio_meta.track_number.map(|n| n as i16)),
         disc_number: Set(audio_meta.disc_number.map(|n| n as i16)),
         duration_secs: Set(audio_meta.duration_secs as f32),
-        genre: Set(audio_meta.genre.clone()),
+        genre: Set(audio_meta
+            .genre
+            .as_deref()
+            .map(normalize_genre)
+            .filter(|g| !g.is_empty())),
         year: Set(audio_meta.year.map(|y| y as i16)),
         musicbrainz_id: Set(None),
         file_path: Set(relative_path),

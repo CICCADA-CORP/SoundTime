@@ -287,6 +287,7 @@ async fn main() {
         .route("/albums/{id}", get(api::albums::get_album))
         .route("/artists", get(api::artists::list_artists))
         .route("/artists/top", get(api::artists::list_top_artists))
+        .route("/artists/random", get(api::artists::list_random_artists))
         .route("/artists/{id}", get(api::artists::get_artist))
         .route("/playlists", get(api::playlists::list_playlists))
         .route("/playlists/{id}", get(api::playlists::get_playlist))

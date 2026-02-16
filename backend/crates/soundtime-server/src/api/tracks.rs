@@ -780,6 +780,7 @@ pub async fn list_random_tracks(
     Query(params): Query<RandomTracksParams>,
 ) -> Result<Json<Vec<TrackResponse>>, (StatusCode, String)> {
     use sea_orm::QuerySelect;
+    use sea_orm::{sea_query::Expr, Order};
 
     let count = params.count.unwrap_or(10).min(50);
 
@@ -788,22 +789,12 @@ pub async fn list_random_tracks(
         query = query.filter(track::Column::Genre.eq(genre.clone()));
     }
 
-    // Fetch more than needed, then shuffle in memory (Sea-ORM doesn't support RANDOM() portably)
-    let pool_size = (count * 5).min(500);
-    let pool = query
-        .limit(pool_size)
+    let selected: Vec<track::Model> = query
+        .order_by(Expr::cust("RANDOM()"), Order::Asc)
+        .limit(count)
         .all(&state.db)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
-
-    // Shuffle and take `count`
-    use rand::seq::SliceRandom;
-    let mut pool = pool;
-    {
-        let mut rng = rand::rng();
-        pool.shuffle(&mut rng);
-    }
-    let selected: Vec<track::Model> = pool.into_iter().take(count as usize).collect();
 
     // Batch-fetch artist/album data
     let artist_ids: Vec<Uuid> = selected
@@ -1021,9 +1012,11 @@ pub async fn list_genre_tracks(
     let page = params.page.unwrap_or(1).max(1);
     let per_page = params.per_page.unwrap_or(20).min(100);
 
+    use sea_orm::{sea_query::Expr, Order};
+
     let paginator = track::Entity::find()
         .filter(track::Column::Genre.eq(genre))
-        .order_by_desc(track::Column::PlayCount)
+        .order_by(Expr::cust("RANDOM()"), Order::Asc)
         .paginate(&state.db, per_page);
 
     let total = paginator

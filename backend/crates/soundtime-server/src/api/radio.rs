@@ -5,7 +5,9 @@
 //! frontend sends previously played track IDs to avoid duplicates.
 
 use axum::{extract::State, http::StatusCode, Json};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{
+    sea_query::Expr, ColumnTrait, EntityTrait, Order, QueryFilter, QueryOrder, QuerySelect,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -158,6 +160,7 @@ async fn seed_track(
         phase1_query = phase1_query.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
     }
     let phase1 = phase1_query
+        .order_by(Expr::cust("RANDOM()"), Order::Asc)
         .limit(pool_size)
         .all(db)
         .await
@@ -172,7 +175,12 @@ async fn seed_track(
         if !exclude_vec.is_empty() {
             q = q.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
         }
-        phase2 = q.limit(pool_size).all(db).await.unwrap_or_default();
+        phase2 = q
+            .order_by(Expr::cust("RANDOM()"), Order::Asc)
+            .limit(pool_size)
+            .all(db)
+            .await
+            .unwrap_or_default();
     }
 
     // Phase 3 — Same era ±5 years
@@ -184,7 +192,12 @@ async fn seed_track(
         if !exclude_vec.is_empty() {
             q = q.filter(track::Column::Id.is_not_in(exclude_vec));
         }
-        phase3 = q.limit(pool_size).all(db).await.unwrap_or_default();
+        phase3 = q
+            .order_by(Expr::cust("RANDOM()"), Order::Asc)
+            .limit(pool_size)
+            .all(db)
+            .await
+            .unwrap_or_default();
     }
 
     // Merge, deduplicate, shuffle, take count
@@ -247,6 +260,7 @@ async fn seed_artist(
         phase1_query = phase1_query.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
     }
     let phase1 = phase1_query
+        .order_by(Expr::cust("RANDOM()"), Order::Asc)
         .limit(pool_size)
         .all(db)
         .await
@@ -261,7 +275,12 @@ async fn seed_artist(
         if !exclude_vec.is_empty() {
             q = q.filter(track::Column::Id.is_not_in(exclude_vec));
         }
-        phase2 = q.limit(pool_size).all(db).await.unwrap_or_default();
+        phase2 = q
+            .order_by(Expr::cust("RANDOM()"), Order::Asc)
+            .limit(pool_size)
+            .all(db)
+            .await
+            .unwrap_or_default();
     }
 
     // Merge, deduplicate, shuffle, take count
@@ -298,6 +317,7 @@ async fn seed_genre(
     }
 
     let mut pool = query
+        .order_by(Expr::cust("RANDOM()"), Order::Asc)
         .limit(pool_size)
         .all(db)
         .await
@@ -354,6 +374,7 @@ async fn seed_personal_mix(
     if all_track_ids.is_empty() {
         // Fallback: random tracks
         let mut pool = track::Entity::find()
+            .order_by(Expr::cust("RANDOM()"), Order::Asc)
             .limit((count * 5).min(500))
             .all(db)
             .await
@@ -405,7 +426,12 @@ async fn seed_personal_mix(
         if !exclude_vec.is_empty() {
             q = q.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
         }
-        phase1 = q.limit(pool_size).all(db).await.unwrap_or_default();
+        phase1 = q
+            .order_by(Expr::cust("RANDOM()"), Order::Asc)
+            .limit(pool_size)
+            .all(db)
+            .await
+            .unwrap_or_default();
     }
 
     // Phase 2 — Tracks from favorite genres, different artists (40%)
@@ -418,7 +444,12 @@ async fn seed_personal_mix(
         if !exclude_vec.is_empty() {
             q = q.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
         }
-        phase2 = q.limit(pool_size).all(db).await.unwrap_or_default();
+        phase2 = q
+            .order_by(Expr::cust("RANDOM()"), Order::Asc)
+            .limit(pool_size)
+            .all(db)
+            .await
+            .unwrap_or_default();
     }
 
     // Phase 3 — Random tracks for discovery (20%)
@@ -427,6 +458,7 @@ async fn seed_personal_mix(
         phase3_query = phase3_query.filter(track::Column::Id.is_not_in(exclude_vec));
     }
     let phase3 = phase3_query
+        .order_by(Expr::cust("RANDOM()"), Order::Asc)
         .limit(pool_size)
         .all(db)
         .await
@@ -480,24 +512,60 @@ pub async fn radio_next(
                 StatusCode::BAD_REQUEST,
                 "seed_id is required for seed_type=track".to_string(),
             ))?;
-            seed_track(&state.db, seed_id, count, &exclude).await?
+            let result = seed_track(&state.db, seed_id, count, &exclude).await?;
+            if result.is_empty() {
+                tracing::info!(
+                    seed_type = %seed_type_debug,
+                    "radio wrapped around — clearing exclude list and retrying"
+                );
+                seed_track(&state.db, seed_id, count, &HashSet::new()).await?
+            } else {
+                result
+            }
         }
         RadioSeedType::Artist => {
             let seed_id = body.seed_id.ok_or((
                 StatusCode::BAD_REQUEST,
                 "seed_id is required for seed_type=artist".to_string(),
             ))?;
-            seed_artist(&state.db, seed_id, count, &exclude).await?
+            let result = seed_artist(&state.db, seed_id, count, &exclude).await?;
+            if result.is_empty() {
+                tracing::info!(
+                    seed_type = %seed_type_debug,
+                    "radio wrapped around — clearing exclude list and retrying"
+                );
+                seed_artist(&state.db, seed_id, count, &HashSet::new()).await?
+            } else {
+                result
+            }
         }
         RadioSeedType::Genre => {
             let genre = body.genre.ok_or((
                 StatusCode::BAD_REQUEST,
                 "genre is required for seed_type=genre".to_string(),
             ))?;
-            seed_genre(&state.db, &genre, count, &exclude).await?
+            let result = seed_genre(&state.db, &genre, count, &exclude).await?;
+            if result.is_empty() {
+                tracing::info!(
+                    seed_type = %seed_type_debug,
+                    "radio wrapped around — clearing exclude list and retrying"
+                );
+                seed_genre(&state.db, &genre, count, &HashSet::new()).await?
+            } else {
+                result
+            }
         }
         RadioSeedType::PersonalMix => {
-            seed_personal_mix(&state.db, auth_user.0.sub, count, &exclude).await?
+            let result = seed_personal_mix(&state.db, auth_user.0.sub, count, &exclude).await?;
+            if result.is_empty() {
+                tracing::info!(
+                    seed_type = %seed_type_debug,
+                    "radio wrapped around — clearing exclude list and retrying"
+                );
+                seed_personal_mix(&state.db, auth_user.0.sub, count, &HashSet::new()).await?
+            } else {
+                result
+            }
         }
     };
 
@@ -505,7 +573,7 @@ pub async fn radio_next(
     if exhausted {
         tracing::info!(
             seed_type = %seed_type_debug,
-            "radio exhausted — all tracks excluded"
+            "radio exhausted — no matching tracks in database"
         );
     }
 

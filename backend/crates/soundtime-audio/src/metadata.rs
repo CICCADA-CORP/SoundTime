@@ -47,6 +47,36 @@ pub fn is_supported_format(extension: &str) -> bool {
     SUPPORTED_EXTENSIONS.contains(&extension.to_lowercase().as_str())
 }
 
+/// Normalize a genre string: split compound genres on common separators,
+/// take the first segment, trim whitespace, and title-case it.
+pub fn normalize_genre(raw: &str) -> String {
+    let first = raw
+        .split(&['/', ';', ',', ':', '\\', '|'][..])
+        .next()
+        .unwrap_or(raw)
+        .trim();
+
+    if first.is_empty() {
+        return String::new();
+    }
+
+    // Title case: capitalize first letter of each word
+    first
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => {
+                    let upper: String = c.to_uppercase().collect();
+                    upper + &chars.as_str().to_lowercase()
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Extract metadata from an audio file using lofty
 pub fn extract_metadata_from_file(path: &Path) -> Result<AudioMetadata, MetadataError> {
     let extension = path
@@ -83,7 +113,9 @@ pub fn extract_metadata_from_file(path: &Path) -> Result<AudioMetadata, Metadata
                 tag.artist().map(|a| a.to_string()),
                 tag.album().map(|a| a.to_string()),
                 tag.get_string(&ItemKey::AlbumArtist).map(|s| s.to_string()),
-                tag.genre().map(|g| g.to_string()),
+                tag.genre()
+                    .map(|g| normalize_genre(g.as_ref()))
+                    .filter(|g| !g.is_empty()),
                 tag.year(),
                 tag.track(),
                 tag.disk(),
