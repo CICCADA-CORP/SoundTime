@@ -5,7 +5,8 @@
   import { api, API_BASE } from "$lib/api";
   import { formatDuration } from "$lib/utils";
   import FavoriteButton from "./FavoriteButton.svelte";
-  import { X, ChevronDown, Music, ListMusic, Mic2 } from "lucide-svelte";
+  import { X, ChevronDown, Music, ListMusic, Mic2, Radio, Square } from "lucide-svelte";
+  import { getRadioStore } from "$lib/stores/radio.svelte";
   import { t } from "$lib/i18n/index.svelte";
 
   interface Props {
@@ -18,6 +19,7 @@
   const player = getPlayerStore();
   const queue = getQueueStore();
   const auth = getAuthStore();
+  const radio = getRadioStore();
 
   // Lyrics state  
   let lyrics = $state<string | null>(null);
@@ -128,9 +130,18 @@
         <ChevronDown class="w-6 h-6" />
       </button>
 
-      <p class="text-xs font-medium text-[hsl(var(--muted-foreground))] uppercase tracking-widest">
-        {t('player.nowPlaying')}
-      </p>
+      {#if radio.active}
+        <div class="flex items-center gap-2">
+          <div class="w-2 h-2 rounded-full bg-[hsl(var(--primary))] animate-pulse"></div>
+          <p class="text-xs font-medium text-[hsl(var(--primary))] uppercase tracking-widest">
+            {t('radio.nowPlayingFrom')} {radio.seedLabel}
+          </p>
+        </div>
+      {:else}
+        <p class="text-xs font-medium text-[hsl(var(--muted-foreground))] uppercase tracking-widest">
+          {t('player.nowPlaying')}
+        </p>
+      {/if}
 
       <div class="w-10"></div>
     </div>
@@ -187,6 +198,12 @@
             {#if player.currentTrack.album_title}
               <p class="text-xs text-[hsl(var(--muted-foreground))]/60 truncate mt-0.5">{player.currentTrack.album_title}</p>
             {/if}
+            {#if radio.active}
+              <div class="flex items-center gap-1.5 mt-1">
+                <Radio class="w-3 h-3 text-[hsl(var(--primary))]" />
+                <span class="text-[10px] text-[hsl(var(--primary))] font-medium uppercase tracking-wider">{t('radio.label')}</span>
+              </div>
+            {/if}
           </div>
           {#if auth.isAuthenticated}
             <FavoriteButton trackId={player.currentTrack.id} bind:liked size={22} />
@@ -235,6 +252,15 @@
               <span class="absolute text-[8px] font-bold">1</span>
             {/if}
           </button>
+          {#if radio.active}
+            <button
+              class="text-[hsl(var(--primary))] hover:text-white transition"
+              onclick={() => radio.stopRadio()}
+              title={t('radio.stop')}
+            >
+              <Square class="w-5 h-5" />
+            </button>
+          {/if}
         </div>
 
         <!-- Technical details -->

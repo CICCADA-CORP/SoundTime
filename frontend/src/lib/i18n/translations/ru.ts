@@ -16,6 +16,10 @@ export default {
   "common.create": "Создать",
   "common.search": "Поиск",
   "common.noResults": "Ничего не найдено",
+  "common.bytes": "Б",
+  "common.kilobytes": "КБ",
+  "common.megabytes": "МБ",
+  "common.gigabytes": "ГБ",
 
   // Navigation
   "nav.home": "Главная",
@@ -795,4 +799,13 @@ export default {
   "radio.tracksPlayed": "треков воспроизведено",
   "radio.byGenre": "По Жанру",
   "radio.activeRadio": "Активное радио",
+  "radio.error": "Не удалось запустить радио. Попробуйте снова.",
+  "radio.heroTitle": "Ваше Радио",
+  "radio.heroSubtitle": "Бесконечная музыка по вашему вкусу",
+  "radio.mixSubtitle": "Персональный микс на основе вашей истории прослушивания и избранного",
+  "radio.mixImproveHint": "Ваш микс улучшается по мере прослушивания музыки",
+  "radio.startGenreRadio": "Запустить радио",
+  "radio.tryAgain": "Повторить",
+  "radio.nowPlayingFrom": "Воспроизводится из",
+  "radio.stationEmpty": "В этой станции закончились треки. Попробуйте другой источник!",
 } as const;

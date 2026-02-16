@@ -12,6 +12,7 @@ let seedLabel = $state<string>("");
 let playedIds = $state<Set<string>>(new Set());
 let loading = $state(false);
 let exhausted = $state(false);
+let error = $state<string | null>(null);
 
 // ─── Functions ──────────────────────────────────────────────────────
 
@@ -25,6 +26,7 @@ async function startRadio(
 ) {
   // Reset state
   active = true;
+  error = null;
   seedType = type;
   seedId = opts.seedId ?? null;
   seedGenre = opts.genre ?? null;
@@ -58,8 +60,9 @@ async function startRadio(
     // Start playback through queue
     const queue = getQueueStore();
     queue.playQueue(res.tracks, 0);
-  } catch {
+  } catch (e) {
     active = false;
+    error = e instanceof Error ? e.message : "Failed to start radio";
   } finally {
     loading = false;
   }
@@ -75,6 +78,7 @@ function stopRadio() {
   seedGenre = null;
   seedLabel = "";
   exhausted = false;
+  error = null;
 }
 
 /**
@@ -132,6 +136,10 @@ function markPlayed(trackId: string) {
   playedIds = new Set([...playedIds, trackId]);
 }
 
+function clearError() {
+  error = null;
+}
+
 // ─── Exported Store ──────────────────────────────────────────────────
 
 export function getRadioStore() {
@@ -141,10 +149,12 @@ export function getRadioStore() {
     get seedLabel() { return seedLabel; },
     get loading() { return loading; },
     get exhausted() { return exhausted; },
+    get error() { return error; },
     get playedCount() { return playedIds.size; },
     startRadio,
     stopRadio,
     fetchMoreTracks,
     markPlayed,
+    clearError,
   };
 }

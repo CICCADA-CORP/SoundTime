@@ -16,6 +16,10 @@ export default {
   "common.create": "创建",
   "common.search": "搜索",
   "common.noResults": "未找到结果",
+  "common.bytes": "B",
+  "common.kilobytes": "KB",
+  "common.megabytes": "MB",
+  "common.gigabytes": "GB",
 
   // Navigation
   "nav.home": "首页",
@@ -795,4 +799,13 @@ export default {
   "radio.tracksPlayed": "已播放曲目",
   "radio.byGenre": "按流派",
   "radio.activeRadio": "活跃电台",
+  "radio.error": "无法启动电台。请重试。",
+  "radio.heroTitle": "你的电台",
+  "radio.heroSubtitle": "根据你的品味定制的无限音乐",
+  "radio.mixSubtitle": "基于你的收听历史和收藏的个性化混合",
+  "radio.mixImproveHint": "你听的音乐越多，混合效果越好",
+  "radio.startGenreRadio": "开始电台",
+  "radio.tryAgain": "重试",
+  "radio.nowPlayingFrom": "正在播放来自",
+  "radio.stationEmpty": "此电台已无更多曲目。试试其他种子！",
 } as const;

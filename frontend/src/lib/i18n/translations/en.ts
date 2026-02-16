@@ -16,6 +16,10 @@ export default {
   "common.create": "Create",
   "common.search": "Search",
   "common.noResults": "No results found",
+  "common.bytes": "B",
+  "common.kilobytes": "KB",
+  "common.megabytes": "MB",
+  "common.gigabytes": "GB",
 
   // Navigation
   "nav.home": "Home",
@@ -832,4 +836,13 @@ export default {
   "radio.tracksPlayed": "tracks played",
   "radio.byGenre": "By Genre",
   "radio.activeRadio": "Active Radio",
+  "radio.error": "Failed to start radio. Please try again.",
+  "radio.heroTitle": "Your Radio",
+  "radio.heroSubtitle": "Infinite music tailored to your taste",
+  "radio.mixSubtitle": "A personalized mix based on your listening history and favorites",
+  "radio.mixImproveHint": "Your mix improves as you listen to more music",
+  "radio.startGenreRadio": "Start Radio",
+  "radio.tryAgain": "Try Again",
+  "radio.nowPlayingFrom": "Now playing from",
+  "radio.stationEmpty": "This station has run out of tracks. Try a different seed!",
 } as const;

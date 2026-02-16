@@ -72,6 +72,7 @@ describe('Radio Store', () => {
 			expect(radio.loading).toBe(false);
 			expect(radio.exhausted).toBe(false);
 			expect(radio.playedCount).toBe(0);
+			expect(radio.error).toBeNull();
 		});
 	});
 
@@ -147,6 +148,7 @@ describe('Radio Store', () => {
 
 			expect(radio.active).toBe(false);
 			expect(radio.loading).toBe(false);
+			expect(radio.error).toBe('Network error');
 		});
 
 		it('should reset state on new radio start', async () => {
@@ -305,6 +307,62 @@ describe('Radio Store', () => {
 			// Should not throw, radio stays active
 			expect(radio.active).toBe(true);
 			expect(radio.loading).toBe(false);
+		});
+	});
+
+	describe('error state', () => {
+		it('should have null error by default', () => {
+			expect(radio.error).toBeNull();
+		});
+
+		it('should set error on API failure in startRadio', async () => {
+			vi.mocked(radioApi.next).mockRejectedValueOnce(new Error('Network error'));
+
+			await radio.startRadio('genre', { genre: 'Rock', label: 'Rock' });
+
+			expect(radio.error).toBe('Network error');
+			expect(radio.active).toBe(false);
+		});
+
+		it('should set default error message for non-Error objects', async () => {
+			vi.mocked(radioApi.next).mockRejectedValueOnce('string error');
+
+			await radio.startRadio('genre', { genre: 'Rock', label: 'Rock' });
+
+			expect(radio.error).toBe('Failed to start radio');
+		});
+
+		it('should clear error on new startRadio call', async () => {
+			// First call fails
+			vi.mocked(radioApi.next).mockRejectedValueOnce(new Error('Network error'));
+			await radio.startRadio('genre', { genre: 'Rock', label: 'Rock' });
+			expect(radio.error).toBe('Network error');
+
+			// Second call succeeds - error should be cleared
+			vi.mocked(radioApi.next).mockResolvedValueOnce({
+				tracks: [mockTrack('t1')],
+				exhausted: false,
+			});
+			await radio.startRadio('genre', { genre: 'Rock', label: 'Rock' });
+			expect(radio.error).toBeNull();
+		});
+
+		it('should clear error on stopRadio', async () => {
+			vi.mocked(radioApi.next).mockRejectedValueOnce(new Error('Network error'));
+			await radio.startRadio('genre', { genre: 'Rock', label: 'Rock' });
+			expect(radio.error).toBe('Network error');
+
+			radio.stopRadio();
+			expect(radio.error).toBeNull();
+		});
+
+		it('should clear error via clearError()', async () => {
+			vi.mocked(radioApi.next).mockRejectedValueOnce(new Error('Network error'));
+			await radio.startRadio('genre', { genre: 'Rock', label: 'Rock' });
+			expect(radio.error).toBe('Network error');
+
+			radio.clearError();
+			expect(radio.error).toBeNull();
 		});
 	});
 });

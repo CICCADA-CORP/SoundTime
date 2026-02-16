@@ -16,6 +16,10 @@ export default {
   "common.create": "Créer",
   "common.search": "Rechercher",
   "common.noResults": "Aucun résultat trouvé",
+  "common.bytes": "o",
+  "common.kilobytes": "Ko",
+  "common.megabytes": "Mo",
+  "common.gigabytes": "Go",
 
   // Navigation
   "nav.home": "Accueil",
@@ -832,4 +836,13 @@ export default {
   "radio.tracksPlayed": "pistes jouées",
   "radio.byGenre": "Par Genre",
   "radio.activeRadio": "Radio active",
+  "radio.error": "Impossible de lancer la radio. Veuillez réessayer.",
+  "radio.heroTitle": "Votre Radio",
+  "radio.heroSubtitle": "Musique infinie adaptée à vos goûts",
+  "radio.mixSubtitle": "Un mix personnalisé basé sur votre historique d'écoute et vos favoris",
+  "radio.mixImproveHint": "Votre mix s'améliore au fil de vos écoutes",
+  "radio.startGenreRadio": "Lancer la radio",
+  "radio.tryAgain": "Réessayer",
+  "radio.nowPlayingFrom": "En cours depuis",
+  "radio.stationEmpty": "Cette station n'a plus de pistes. Essayez un autre point de départ !",
 } as const;

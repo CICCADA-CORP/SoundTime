@@ -5,6 +5,7 @@
   import { t } from "$lib/i18n/index.svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
+  import { getRadioStore } from "$lib/stores/radio.svelte";
   import { Music, Disc3, Users, Radio, Shuffle, Play, X } from "lucide-svelte";
   import SectionCarousel from "$lib/components/SectionCarousel.svelte";
   import HeroBanner from "$lib/components/HeroBanner.svelte";
@@ -18,6 +19,7 @@
 
   const player = getPlayerStore();
   const queue = getQueueStore();
+  const radio = getRadioStore();
 
   // ─── State ─────────────────────────────────────────────────────────
   let loading = $state(true);
@@ -237,6 +239,19 @@
                 <div class="w-6 h-6 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full animate-spin"></div>
               </div>
             {:else if genreTracks.length > 0}
+              <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold text-[hsl(var(--muted-foreground))]">
+                  {activeGenre}
+                </h3>
+                <button
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[hsl(var(--primary))]/10 text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary))]/20 transition text-xs font-medium"
+                  onclick={() => radio.startRadio("genre", { genre: activeGenre!, label: activeGenre! })}
+                  disabled={radio.loading}
+                >
+                  <Radio class="w-3.5 h-3.5" />
+                  {t('radio.startGenreRadio')}
+                </button>
+              </div>
               <TrackList tracks={genreTracks} />
             {:else}
               <p class="text-sm text-[hsl(var(--muted-foreground))] py-4">{t('explore.noTracks')}</p>

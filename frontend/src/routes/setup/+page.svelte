@@ -371,7 +371,7 @@
                   {t('setup.maxUploadSizeHint')}
                 </p>
               </div>
-              <span class="text-sm font-mono text-[hsl(var(--primary))]">{maxUploadSizeMb} Mo</span>
+              <span class="text-sm font-mono text-[hsl(var(--primary))]">{maxUploadSizeMb} {t('common.megabytes')}</span>
             </div>
             <input
               type="range"
@@ -382,8 +382,8 @@
               class="w-full h-2 bg-[hsl(var(--border))] rounded-lg appearance-none cursor-pointer accent-[hsl(var(--primary))]"
             />
             <div class="flex justify-between text-xs text-[hsl(var(--muted-foreground))] mt-1">
-              <span>50 Mo</span>
-              <span>2 Go</span>
+              <span>50 {t('common.megabytes')}</span>
+              <span>2 {t('common.gigabytes')}</span>
             </div>
           </div>
         </div>
@@ -439,7 +439,7 @@
             <span class="font-medium">{openRegistrations ? t('setup.open') : t('setup.closed')}</span>
 
             <span class="text-[hsl(var(--muted-foreground))]">{t('setup.summaryMaxUpload')}</span>
-            <span class="font-medium">{maxUploadSizeMb} Mo</span>
+            <span class="font-medium">{maxUploadSizeMb} {t('common.megabytes')}</span>
           </div>
         </div>
 
