@@ -10,7 +10,13 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+pgvector = { version = "0.4", features = ["sqlx", "serde"] }
 dotenvy = "0.15"
 tracing = "0.1"
 log = "0.4"
+deadpool-redis = { version = "0.18", optional = true }
 soundtime-audio = { path = "../soundtime-audio" }
+
+[features]
+default = []
+redis = ["deadpool-redis"]

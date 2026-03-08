@@ -136,7 +136,7 @@ describe('TrackCard', () => {
     const button = screen.getByRole('button');
     await fireEvent.click(button);
     expect(mockPlayQueue).toHaveBeenCalledTimes(1);
-    expect(mockPlayQueue).toHaveBeenCalledWith(tracks, 1);
+    expect(mockPlayQueue).toHaveBeenCalledWith(tracks, 1, "collection");
     expect(mockPlay).not.toHaveBeenCalled();
   });
 
@@ -158,7 +158,7 @@ describe('TrackCard', () => {
     const button = screen.getByRole('button');
     await fireEvent.click(button);
     expect(mockPlayQueue).toHaveBeenCalledTimes(1);
-    expect(mockPlayQueue).toHaveBeenCalledWith(tracks, 0);
+    expect(mockPlayQueue).toHaveBeenCalledWith(tracks, 0, "collection");
     expect(mockPlay).not.toHaveBeenCalled();
   });
 });

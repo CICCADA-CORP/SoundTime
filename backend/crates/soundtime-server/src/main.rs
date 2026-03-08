@@ -24,10 +24,13 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 mod api;
 mod auth;
+#[allow(dead_code)] // Public API for future recommendation endpoints (Phase 4.5+)
+mod embeddings;
 mod listing_worker;
 pub mod metadata_lookup;
 mod p2p_logs;
 mod storage_worker;
+mod trending;
 
 #[derive(Serialize)]
 struct ApiStatus {
@@ -194,6 +197,33 @@ async fn main() {
     // Plugins require a server restart to toggle, so this is safe at startup.
     let has_plugin_ui = plugins.is_some();
 
+    // ─── Redis (optional) ────────────────────────────────────────────
+    #[cfg(feature = "redis")]
+    let redis_pool = {
+        match std::env::var("REDIS_URL") {
+            Ok(url) => {
+                match deadpool_redis::Config::from_url(&url)
+                    .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+                {
+                    Ok(pool) => {
+                        tracing::info!("Redis connection pool created");
+                        Some(pool)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to create Redis pool: {e}, falling back to PostgreSQL"
+                        );
+                        None
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::info!("REDIS_URL not set, Redis features disabled");
+                None
+            }
+        }
+    };
+
     let state = Arc::new(AppState {
         db,
         jwt_secret,
@@ -201,6 +231,8 @@ async fn main() {
         storage,
         p2p,
         plugins,
+        #[cfg(feature = "redis")]
+        redis: redis_pool,
     });
 
     // Spawn the editorial playlist auto-regeneration scheduler
@@ -212,9 +244,32 @@ async fn main() {
     // Spawn the listing heartbeat worker (announces to public directory)
     listing_worker::spawn(state.clone());
 
+    // Backfill track embeddings (best-effort background task)
+    {
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            // Small delay to let the server start first
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            match embeddings::backfill_embeddings(&db).await {
+                Ok(count) => {
+                    if count > 0 {
+                        tracing::info!(count, "Background embedding backfill completed");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Background embedding backfill failed (pgvector may not be available)");
+                }
+            }
+        });
+    }
+
     // Task tracker for async storage operations (sync, integrity check)
     let storage_task_tracker = storage_worker::new_tracker();
     let sync_task_tracker = soundtime_p2p::new_sync_tracker();
+    // Shared tracker for the background metadata enrichment task.
+    // Installed as an Axum Extension on the /admin/metadata routes so
+    // the spawned tokio task and HTTP handlers share the same state.
+    let metadata_task_tracker = metadata_lookup::new_metadata_tracker();
 
     // Rate limiter for auth endpoints: 10 requests per 60 seconds per IP
     let auth_governor_conf = Arc::new(
@@ -272,6 +327,7 @@ async fn main() {
         .route("/tos", get(api::reports::get_tos))
         .route("/tracks", get(api::tracks::list_tracks))
         .route("/tracks/popular", get(api::tracks::list_popular_tracks))
+        .route("/tracks/trending", get(api::tracks::list_trending_tracks))
         .route("/tracks/random", get(api::tracks::list_random_tracks))
         .route(
             "/tracks/recently-added",
@@ -432,6 +488,16 @@ async fn main() {
                     "/metadata/enrich-all",
                     post(api::admin::enrich_all_metadata),
                 )
+                .route(
+                    "/metadata/task-status",
+                    get(api::admin::metadata_task_status),
+                )
+                .route(
+                    "/metadata/task-dismiss",
+                    post(api::admin::metadata_task_dismiss),
+                )
+                // Extension: metadata task tracker shared between enrich-all, task-status, and task-dismiss
+                .layer(Extension(metadata_task_tracker))
                 .route("/remote-tracks", get(api::admin::list_remote_tracks))
                 .route("/users", get(api::admin::list_users))
                 .route(

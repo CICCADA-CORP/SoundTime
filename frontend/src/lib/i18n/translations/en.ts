@@ -406,6 +406,9 @@ export default {
   "admin.metadata.statusNotFound": "Not found",
   "admin.metadata.statusAlreadyEnriched": "Already enriched",
   "admin.metadata.statusError": "Error",
+  "admin.metadata.enrichmentComplete": "Enrichment complete",
+  "admin.metadata.taskFailed": "Metadata enrichment task failed",
+  "common.dismiss": "Dismiss",
 
   // Admin — remote tracks
   "admin.remote.description": "Tracks discovered from P2P peers. Duplicates are automatically detected and the best bitrate is preferred.",
@@ -576,6 +579,10 @@ export default {
   "admin.editorial.generatePlaylists": "Generate playlists",
   "admin.editorial.generationHint": "Generation will delete existing editorial playlists and create new ones via AI. Playlists are automatically regenerated every Saturday.",
   "admin.editorial.generationError": "Error during generation",
+  "admin.editorial.maxTracks": "Max tracks for AI prompt",
+  "admin.editorial.maxTracksDesc": "Maximum number of tracks to include in the AI prompt (default: 500). Lower values use less tokens.",
+  "admin.editorial.instanceLanguage": "Playlist language",
+  "admin.editorial.instanceLanguageDesc": "Language for AI-generated playlist names and descriptions.",
 
   // Admin — lyrics
   "admin.lyrics.configTitle": "Lyrics configuration",
@@ -668,6 +675,7 @@ export default {
   "admin.integrity.missing": "Missing",
   "admin.integrity.missingTracks": "Missing tracks",
   "admin.integrity.errors": "Errors",
+  "admin.integrity.taskFailed": "Integrity check task failed",
 
   // Admin — sync
   "admin.sync.title": "Storage synchronization",
@@ -678,6 +686,7 @@ export default {
   "admin.sync.imported": "Imported",
   "admin.sync.alreadyReferenced": "Already referenced",
   "admin.sync.importErrors": "Import errors",
+  "admin.sync.taskFailed": "Synchronization task failed",
 
   // Admin — task banner (persistent progress indicator)
   "admin.taskBanner.syncInProgress": "Storage sync in progress…",
@@ -798,6 +807,9 @@ export default {
   "explore.genres": "Genres",
   "explore.moods": "Moods",
   "explore.trending": "Trending",
+  "explore.trendingHour": "1 Hour",
+  "explore.trendingDay": "24 Hours",
+  "explore.trendingWeek": "7 Days",
   "explore.newThisWeek": "New This Week",
   "explore.discoverArtists": "Discover Artists",
   "explore.fromTheNetwork": "From The Network",
@@ -833,6 +845,7 @@ export default {
   "radio.nowPlaying": "Radio",
   "radio.stop": "Stop Radio",
   "radio.startFromTrack": "Start Radio",
+  "radio.playSimilar": "Play Similar",
   "radio.startFromArtist": "Artist Radio",
   "radio.startFromGenre": "Genre Radio",
   "radio.personalMix": "My Mix",

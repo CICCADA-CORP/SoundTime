@@ -228,7 +228,7 @@ describe('TrackList', () => {
     const { container } = render(TrackList, { props: { tracks } });
     const row = container.querySelector('[role="button"]')!;
     await fireEvent.click(row);
-    expect(mockQueueStore.playQueue).toHaveBeenCalledWith(tracks, 0);
+    expect(mockQueueStore.playQueue).toHaveBeenCalledWith(tracks, 0, "collection");
   });
 
   it('plays track on Enter key', async () => {
@@ -236,7 +236,7 @@ describe('TrackList', () => {
     const { container } = render(TrackList, { props: { tracks } });
     const row = container.querySelector('[role="button"]')!;
     await fireEvent.keyDown(row, { key: 'Enter' });
-    expect(mockQueueStore.playQueue).toHaveBeenCalledWith(tracks, 0);
+    expect(mockQueueStore.playQueue).toHaveBeenCalledWith(tracks, 0, "collection");
   });
 
   it('highlights currently playing track', () => {

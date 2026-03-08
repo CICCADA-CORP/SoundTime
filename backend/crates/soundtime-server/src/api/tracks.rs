@@ -766,6 +766,150 @@ pub async fn list_popular_tracks(
     }))
 }
 
+// ─── Explore: Trending Tracks ───────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct TrendingParams {
+    pub window: Option<String>,
+    pub limit: Option<u64>,
+}
+
+/// GET /api/tracks/trending — time-windowed trending tracks.
+///
+/// Uses Redis sorted sets when available for real-time trending data,
+/// falling back to PostgreSQL `listen_history` aggregation otherwise.
+///
+/// Query params:
+/// - `window`: `"1h"`, `"24h"` (default), or `"7d"`
+/// - `limit`: max tracks to return (default 20, max 100)
+pub async fn list_trending_tracks(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<TrendingParams>,
+) -> Result<Json<Vec<TrackResponse>>, (StatusCode, String)> {
+    use crate::trending::{self, TrendingWindow};
+
+    let window = match params.window.as_deref() {
+        Some("1h") => TrendingWindow::OneHour,
+        Some("7d") => TrendingWindow::SevenDays,
+        _ => TrendingWindow::TwentyFourHours, // default
+    };
+    let limit = params.limit.unwrap_or(20).min(100);
+
+    // Try Redis first, fall back to PostgreSQL
+    let entries = {
+        #[cfg(feature = "redis")]
+        {
+            let redis_result = if let Some(ref pool) = state.redis {
+                trending::fetch_trending_redis(pool, window, limit as usize).await
+            } else {
+                None
+            };
+
+            match redis_result {
+                Some(entries) => entries,
+                None => trending::fetch_trending_postgres(&state.db, window, limit)
+                    .await
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?,
+            }
+        }
+
+        #[cfg(not(feature = "redis"))]
+        {
+            trending::fetch_trending_postgres(&state.db, window, limit)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
+        }
+    };
+
+    if entries.is_empty() {
+        return Ok(Json(vec![]));
+    }
+
+    // Fetch full track data for the trending IDs
+    let track_ids: Vec<Uuid> = entries.iter().map(|e| e.track_id).collect();
+    let tracks_map: HashMap<Uuid, track::Model> = track::Entity::find()
+        .filter(track::Column::Id.is_in(track_ids.clone()))
+        .all(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
+        .into_iter()
+        .map(|t| (t.id, t))
+        .collect();
+
+    // Batch-fetch artists and albums
+    let artist_ids: Vec<Uuid> = tracks_map
+        .values()
+        .map(|t| t.artist_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let album_ids: Vec<Uuid> = tracks_map
+        .values()
+        .filter_map(|t| t.album_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
+        artist::Entity::find()
+            .filter(artist::Column::Id.is_in(artist_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let albums: HashMap<Uuid, album::Model> = if !album_ids.is_empty() {
+        album::Entity::find()
+            .filter(album::Column::Id.is_in(album_ids))
+            .all(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    // Preserve the trending order (by score desc)
+    let data: Vec<TrackResponse> = track_ids
+        .iter()
+        .filter_map(|id| {
+            let t = tracks_map.get(id)?;
+            let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
+            let (album_title, cover_url) = t
+                .album_id
+                .and_then(|aid| albums.get(&aid))
+                .map(|a| {
+                    (
+                        Some(a.title.clone()),
+                        a.cover_url.clone().map(|url| {
+                            if url.starts_with("/api/media/") || url.starts_with("http") {
+                                url
+                            } else {
+                                format!("/api/media/{url}")
+                            }
+                        }),
+                    )
+                })
+                .unwrap_or((None, None));
+
+            let mut resp = TrackResponse::from(t.clone());
+            resp.artist_name = artist_name;
+            resp.album_title = album_title;
+            resp.cover_url = cover_url;
+            Some(resp)
+        })
+        .collect();
+
+    Ok(Json(data))
+}
+
 // ─── Explore: Random Tracks ─────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]

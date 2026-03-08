@@ -15,6 +15,8 @@ pub mod plugin_events_log;
 pub mod remote_track;
 pub mod theme;
 pub mod track;
+pub mod track_embedding;
 pub mod track_report;
 pub mod user;
 pub mod user_setting;
+pub mod user_taste_vector;

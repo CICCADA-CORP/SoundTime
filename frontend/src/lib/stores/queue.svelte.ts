@@ -5,14 +5,25 @@ import { getRadioStore } from "./radio.svelte";
 let queue = $state<Track[]>([]);
 let currentIndex = $state(-1);
 let originalQueue = $state<Track[]>([]);
+/** Where the current queue originated from (e.g. "album", "playlist", "radio").
+ *  Attached to every listen event so the recommendation engine can weigh
+ *  intentional plays differently from auto-queued ones. Reset on `clearQueue()`. */
+let sourceContext = $state<import("$lib/types").PlaybackSource | null>(null);
 
-function playQueue(tracks: Track[], startIndex = 0) {
+/**
+ * Replace the queue with `tracks`, start playback at `startIndex`, and
+ * optionally record the `source` context (e.g. "album", "playlist") so
+ * that subsequent listen events include where the playback originated.
+ * Stops radio mode if it was active.
+ */
+function playQueue(tracks: Track[], startIndex = 0, source?: import("$lib/types").PlaybackSource) {
   // Stop radio if active — user is manually choosing what to play
   try {
     const radio = getRadioStore();
     if (radio.active) radio.stopRadio();
   } catch {}
 
+  sourceContext = source ?? null;
   queue = [...tracks];
   originalQueue = [...tracks];
   currentIndex = startIndex;
@@ -59,6 +70,7 @@ function clearQueue() {
   queue = [];
   originalQueue = [];
   currentIndex = -1;
+  sourceContext = null;
 }
 
 function next() {
@@ -135,6 +147,8 @@ export function getQueueStore() {
     get currentTrack() { return queue[currentIndex] ?? null; },
     get hasNext() { return currentIndex < queue.length - 1; },
     get hasPrevious() { return currentIndex > 0; },
+    /** Current playback source context (e.g. "album", "playlist", "radio"), or `null` if unset. */
+    get sourceContext() { return sourceContext; },
     get radioMode() {
       try { return getRadioStore().active; } catch { return false; }
     },

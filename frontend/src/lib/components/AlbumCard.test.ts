@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 
 const mockPlayQueue = vi.fn();
 vi.mock('$lib/stores/queue.svelte', () => ({
@@ -17,6 +17,13 @@ vi.mock('$lib/stores/queue.svelte', () => ({
     next: vi.fn(),
     previous: vi.fn(),
   }),
+}));
+
+const mockApiGet = vi.fn();
+vi.mock('$lib/api', () => ({
+  api: {
+    get: mockApiGet,
+  },
 }));
 
 import AlbumCard from './AlbumCard.svelte';
@@ -105,14 +112,25 @@ describe('AlbumCard', () => {
     render(AlbumCard, { props: { album: albumWithTracks } });
     const playButton = screen.getByLabelText('Play album');
     await fireEvent.click(playButton);
-    expect(mockPlayQueue).toHaveBeenCalledWith(trackData);
+    expect(mockPlayQueue).toHaveBeenCalledWith(trackData, 0, "album");
   });
 
   it('does not call playQueue when album has no tracks', async () => {
     const albumNoTracks = { ...album, tracks: undefined };
     render(AlbumCard, { props: { album: albumNoTracks } });
     const playButton = screen.getByLabelText('Play album');
+    
+    // Mock to prevent actual API call during testing
+    mockApiGet.mockResolvedValue({ ...album, tracks: [] });
+    
     await fireEvent.click(playButton);
+    
+    // Should attempt to fetch tracks via API
+    await waitFor(() => {
+      expect(mockApiGet).toHaveBeenCalledWith('/albums/album-1');
+    });
+    
+    // But should not call playQueue since no tracks returned
     expect(mockPlayQueue).not.toHaveBeenCalled();
   });
 
@@ -121,6 +139,9 @@ describe('AlbumCard', () => {
     render(AlbumCard, { props: { album: albumEmptyTracks } });
     const playButton = screen.getByLabelText('Play album');
     await fireEvent.click(playButton);
+    
+    // Should not call API since tracks array is present (but empty)
+    expect(mockApiGet).not.toHaveBeenCalled();
     expect(mockPlayQueue).not.toHaveBeenCalled();
   });
 
@@ -135,5 +156,107 @@ describe('AlbumCard', () => {
     const albumArtistOnly = { ...album, year: null, artist_name: 'Some Artist' };
     render(AlbumCard, { props: { album: albumArtistOnly } });
     expect(screen.getByText('Some Artist')).toBeInTheDocument();
+  });
+
+  // New tests for async loading behavior
+
+  it('fetches tracks and plays when tracks are not available', async () => {
+    const trackData = [{
+      id: 't1', title: 'Track 1', artist_id: 'a1', album_id: 'album-1',
+      track_number: 1, disc_number: null, duration_secs: 200, genre: null,
+      year: null, file_path: '/t1.mp3', file_size: 1000, format: 'mp3',
+      bitrate: 320, sample_rate: 44100, musicbrainz_id: null, waveform_data: null,
+      uploaded_by: null, play_count: 0, created_at: '2025-01-01',
+    }];
+    const albumWithTracksFromApi = { ...album, tracks: trackData };
+    
+    mockApiGet.mockResolvedValue(albumWithTracksFromApi);
+
+    render(AlbumCard, { props: { album } });
+    const playButton = screen.getByLabelText('Play album');
+    await fireEvent.click(playButton);
+
+    await waitFor(() => {
+      expect(mockApiGet).toHaveBeenCalledWith('/albums/album-1');
+      expect(mockPlayQueue).toHaveBeenCalledWith(trackData, 0, 'album');
+    });
+  });
+
+  it('shows loading spinner while fetching tracks', async () => {
+    let resolvePromise: (value: any) => void;
+    const promise = new Promise((resolve) => {
+      resolvePromise = resolve;
+    });
+    mockApiGet.mockReturnValue(promise);
+
+    render(AlbumCard, { props: { album } });
+    const playButton = screen.getByLabelText('Play album');
+    await fireEvent.click(playButton);
+
+    // Should show loading state on button
+    expect(playButton).toBeDisabled();
+    // The Loader2 component should be in the DOM but we'll check by class
+    expect(screen.getByRole('button', { name: 'Play album' })).toHaveClass('disabled:opacity-50');
+
+    // Resolve the API call
+    resolvePromise!({ ...album, tracks: [] });
+
+    await waitFor(() => {
+      expect(playButton).not.toBeDisabled();
+    });
+  });
+
+  it('handles API errors gracefully', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    
+    mockApiGet.mockRejectedValue(new Error('API Error'));
+
+    render(AlbumCard, { props: { album } });
+    const playButton = screen.getByLabelText('Play album');
+    await fireEvent.click(playButton);
+
+    await waitFor(() => {
+      expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to fetch album tracks for playback:', expect.any(Error));
+      expect(mockPlayQueue).not.toHaveBeenCalled();
+    });
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('prevents double clicks while loading', async () => {
+    let resolvePromise: (value: any) => void;
+    const promise = new Promise((resolve) => {
+      resolvePromise = resolve;
+    });
+    mockApiGet.mockReturnValue(promise);
+
+    render(AlbumCard, { props: { album } });
+    const playButton = screen.getByLabelText('Play album');
+    
+    // Click multiple times quickly
+    await fireEvent.click(playButton);
+    await fireEvent.click(playButton);
+    await fireEvent.click(playButton);
+
+    // API should only be called once
+    expect(mockApiGet).toHaveBeenCalledTimes(1);
+
+    // Resolve to clean up
+    resolvePromise!({ ...album, tracks: [] });
+    await waitFor(() => expect(playButton).not.toBeDisabled());
+  });
+
+  it('does nothing if fetched album has no tracks', async () => {
+    const albumWithoutTracks = { ...album, tracks: [] };
+    mockApiGet.mockResolvedValue(albumWithoutTracks);
+
+    render(AlbumCard, { props: { album } });
+    const playButton = screen.getByLabelText('Play album');
+    await fireEvent.click(playButton);
+
+    await waitFor(() => {
+      expect(mockApiGet).toHaveBeenCalledWith('/albums/album-1');
+      expect(mockPlayQueue).not.toHaveBeenCalled();
+    });
   });
 });

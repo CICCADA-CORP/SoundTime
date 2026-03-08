@@ -19,7 +19,7 @@
   });
 
   function playAll() {
-    if (album?.tracks) queue.playQueue(album.tracks);
+    if (album?.tracks) queue.playQueue(album.tracks, 0, "album");
   }
 
   let totalDuration = $derived(album?.tracks?.reduce((sum: number, tr: Track) => sum + tr.duration_secs, 0) ?? 0);

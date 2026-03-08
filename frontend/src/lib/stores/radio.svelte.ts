@@ -59,7 +59,7 @@ async function startRadio(
 
     // Start playback through queue
     const queue = getQueueStore();
-    queue.playQueue(res.tracks, 0);
+    queue.playQueue(res.tracks, 0, "radio");
   } catch (e) {
     active = false;
     error = e instanceof Error ? e.message : "Failed to start radio";

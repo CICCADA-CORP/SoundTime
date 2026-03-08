@@ -92,6 +92,41 @@ export interface ListenHistory {
   track?: Track;
 }
 
+// ─── Behavioral Signals ─────────────────────────────────────────────
+
+/**
+ * Source context describing where a track was played from.
+ *
+ * Valid values:
+ * - `"album"` — user played from an album page
+ * - `"playlist"` — user played from a playlist
+ * - `"radio"` — auto-queued by the radio feature
+ * - `"search"` — played directly from search results
+ * - `"queue"` — played from the up-next queue
+ * - `"collection"` — played from the user's library / collection
+ * - `"explore"` — played from the explore / discover page
+ */
+export type PlaybackSource = "album" | "playlist" | "radio" | "search" | "queue" | "collection" | "explore";
+
+/**
+ * Request body for `POST /history` — logs a listen event with optional
+ * behavioral signals used by the recommendation engine.
+ */
+export interface LogListenRequest {
+  /** UUID of the track that was played. */
+  track_id: string;
+  /** How many seconds the user actually listened. */
+  duration_listened: number;
+  /** Where the track was played from (see {@link PlaybackSource}). */
+  source_context?: PlaybackSource;
+  /** `true` if the track played to the end naturally. */
+  completed?: boolean;
+  /** `true` if the user skipped before the track finished. */
+  skipped?: boolean;
+  /** Playback position (seconds) when the user skipped. Only set when `skipped` is `true`. */
+  skip_position?: number;
+}
+
 export interface Favorite {
   user_id: string;
   track_id: string;
@@ -461,6 +496,32 @@ export type StorageTaskStatus =
   | { status: "completed"; result: { kind: "sync" } & SyncReport | { kind: "integrity" } & IntegrityReport }
   | { status: "error"; message: string };
 
+// ─── Metadata Task Types ────────────────────────────────────────────
+
+export interface MetadataTaskProgress {
+  processed: number;
+  total: number;
+  enriched: number;
+  not_found: number;
+  errors: number;
+  current_track: string | null;
+}
+
+export interface MetadataTaskResult {
+  total_processed: number;
+  enriched: number;
+  not_found: number;
+  errors: number;
+  already_enriched: number;
+}
+
+export interface MetadataTaskStatus {
+  status: "idle" | "running" | "completed" | "error";
+  progress?: MetadataTaskProgress;
+  result?: MetadataTaskResult;
+  message?: string;
+}
+
 // ─── Batch Upload ───────────────────────────────────────────────────
 
 export interface BatchUploadItem {
@@ -647,7 +708,7 @@ export interface LastfmConnectResponse {
 
 // ─── Radio ───────────────────────────────────────────────────────────
 
-export type RadioSeedType = "track" | "artist" | "genre" | "personal_mix";
+export type RadioSeedType = "track" | "artist" | "genre" | "personal_mix" | "similar";
 
 export interface RadioNextRequest {
   seed_type: RadioSeedType;

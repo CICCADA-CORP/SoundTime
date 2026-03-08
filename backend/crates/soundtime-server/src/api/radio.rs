@@ -1,8 +1,22 @@
 //! Radio feature — generates continuous track recommendations.
 //!
 //! A single stateless endpoint (`POST /api/radio/next`) returns a batch of
-//! tracks based on a seed (track, artist, genre, or personal mix). The
-//! frontend sends previously played track IDs to avoid duplicates.
+//! tracks based on a seed (track, artist, genre, similar, or personal mix).
+//! The frontend sends previously played track IDs to avoid duplicates.
+//!
+//! Each seed algorithm uses a multi-phase approach with **quota enforcement**:
+//! phases fetch a pool of candidates (`count * 2`) but are then truncated to
+//! their target quota before merging, so the final mix respects the intended
+//! ratio (e.g. 50/30/20). The merged results are deduplicated, shuffled, and
+//! trimmed to the requested `count`.
+//!
+//! The personal-mix algorithm uses **completion-ratio weighting** — tracks
+//! that were listened to more completely receive higher weight than skips,
+//! so the radio favours music the user genuinely enjoys.
+//!
+//! The similar algorithm uses **pgvector cosine distance** over 32-dimensional
+//! track embeddings to find tracks with similar audio/metadata characteristics.
+//! It falls back to the track-based algorithm when no embedding is available.
 
 use axum::{extract::State, http::StatusCode, Json};
 use sea_orm::{
@@ -23,10 +37,18 @@ use soundtime_db::AppState;
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum RadioSeedType {
+    /// Seed from a specific track — same artist, genre, and era.
     Track,
+    /// Seed from an artist — their tracks plus same-genre tracks by others.
     Artist,
+    /// Seed from a genre string — random tracks matching that genre.
     Genre,
+    /// Personal mix — weighted blend of the user's listening history and favorites.
     PersonalMix,
+    /// Embedding-based similarity — uses pgvector cosine distance to find
+    /// tracks with similar metadata characteristics. Falls back to `Track`
+    /// when the seed has no embedding.
+    Similar,
 }
 
 /// Request body for `POST /api/radio/next`.
@@ -137,8 +159,16 @@ async fn enrich_tracks(
 
 /// Seed algorithm: track-based radio.
 ///
-/// Phase 1 — Same artist (50%), Phase 2 — Same genre (30%),
-/// Phase 3 — Same era ±5 years (20%), merged and shuffled.
+/// Builds a mix from three phases, each fetching up to `count * 2` candidates
+/// then truncating to its quota before merging:
+///
+/// - **Phase 1** — Same artist (quota: 50% of `count`)
+/// - **Phase 2** — Same genre, different artist (quota: 30% of `count`)
+/// - **Phase 3** — Same era ±5 years (quota: remaining, up to `count`)
+///
+/// After merging, results are deduplicated by track ID, shuffled, and trimmed
+/// to `count`. The quota enforcement ensures each phase contributes its
+/// intended proportion even when one phase has abundant candidates.
 async fn seed_track(
     db: &sea_orm::DatabaseConnection,
     seed_id: Uuid,
@@ -151,22 +181,28 @@ async fn seed_track(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
         .ok_or((StatusCode::NOT_FOUND, "Seed track not found".to_string()))?;
 
-    let pool_size = count * 3;
+    let pool_size = count * 2;
     let exclude_vec: Vec<Uuid> = exclude.iter().copied().collect();
 
-    // Phase 1 — Same artist
+    // Phase quotas to enforce the 50/30/20 ratio
+    let phase1_quota = (count as f64 * 0.5).ceil() as usize;
+    let phase2_quota = (count as f64 * 0.3).ceil() as usize;
+    let phase3_quota = count as usize; // remainder, trimmed by final take
+
+    // Phase 1 — Same artist (50%)
     let mut phase1_query = track::Entity::find().filter(track::Column::ArtistId.eq(seed.artist_id));
     if !exclude_vec.is_empty() {
         phase1_query = phase1_query.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
     }
-    let phase1 = phase1_query
+    let phase1: Vec<track::Model> = phase1_query
         .order_by(Expr::cust("RANDOM()"), Order::Asc)
         .limit(pool_size)
         .all(db)
         .await
         .unwrap_or_default();
+    let phase1: Vec<track::Model> = phase1.into_iter().take(phase1_quota).collect();
 
-    // Phase 2 — Same genre, different artist
+    // Phase 2 — Same genre, different artist (30%)
     let mut phase2 = Vec::new();
     if let Some(ref genre) = seed.genre {
         let mut q = track::Entity::find()
@@ -182,8 +218,9 @@ async fn seed_track(
             .await
             .unwrap_or_default();
     }
+    let phase2: Vec<track::Model> = phase2.into_iter().take(phase2_quota).collect();
 
-    // Phase 3 — Same era ±5 years
+    // Phase 3 — Same era ±5 years (20%)
     let mut phase3 = Vec::new();
     if let Some(year) = seed.year {
         let mut q = track::Entity::find()
@@ -199,6 +236,7 @@ async fn seed_track(
             .await
             .unwrap_or_default();
     }
+    let phase3: Vec<track::Model> = phase3.into_iter().take(phase3_quota).collect();
 
     // Merge, deduplicate, shuffle, take count
     let mut pool: Vec<track::Model> = Vec::new();
@@ -218,16 +256,26 @@ async fn seed_track(
 
 /// Seed algorithm: artist-based radio.
 ///
-/// Phase 1 — Tracks by this artist (60%), Phase 2 — Same genre(s) by
-/// other artists (40%).
+/// Builds a mix from two phases, each fetching up to `count * 2` candidates
+/// then truncating to its quota before merging:
+///
+/// - **Phase 1** — Tracks by this artist (quota: 60% of `count`)
+/// - **Phase 2** — Same genre(s) by other artists (quota: 40% of `count`)
+///
+/// The artist's existing tracks are scanned to determine their genres, which
+/// are then used to find similar music from other artists in Phase 2.
 async fn seed_artist(
     db: &sea_orm::DatabaseConnection,
     seed_id: Uuid,
     count: u64,
     exclude: &HashSet<Uuid>,
 ) -> Result<Vec<track::Model>, (StatusCode, String)> {
-    let pool_size = count * 3;
+    let pool_size = count * 2;
     let exclude_vec: Vec<Uuid> = exclude.iter().copied().collect();
+
+    // Phase quotas to enforce the 60/40 ratio
+    let phase1_quota = (count as f64 * 0.6).ceil() as usize;
+    let phase2_quota = (count as f64 * 0.4).ceil() as usize;
 
     // Get artist's tracks to determine genres
     let artist_tracks = track::Entity::find()
@@ -254,19 +302,20 @@ async fn seed_artist(
         .into_iter()
         .collect();
 
-    // Phase 1 — Artist's own tracks
+    // Phase 1 — Artist's own tracks (60%)
     let mut phase1_query = track::Entity::find().filter(track::Column::ArtistId.eq(seed_id));
     if !exclude_vec.is_empty() {
         phase1_query = phase1_query.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
     }
-    let phase1 = phase1_query
+    let phase1: Vec<track::Model> = phase1_query
         .order_by(Expr::cust("RANDOM()"), Order::Asc)
         .limit(pool_size)
         .all(db)
         .await
         .unwrap_or_default();
+    let phase1: Vec<track::Model> = phase1.into_iter().take(phase1_quota).collect();
 
-    // Phase 2 — Same genre, other artists
+    // Phase 2 — Same genre, other artists (40%)
     let mut phase2 = Vec::new();
     if !genres.is_empty() {
         let mut q = track::Entity::find()
@@ -282,6 +331,7 @@ async fn seed_artist(
             .await
             .unwrap_or_default();
     }
+    let phase2: Vec<track::Model> = phase2.into_iter().take(phase2_quota).collect();
 
     // Merge, deduplicate, shuffle, take count
     let mut pool: Vec<track::Model> = Vec::new();
@@ -301,14 +351,16 @@ async fn seed_artist(
 
 /// Seed algorithm: genre-based radio.
 ///
-/// Simple genre filter with shuffle.
+/// Single-phase: fetches up to `count * 3` (capped at 200) tracks matching
+/// the given genre, shuffles them, and returns `count`. No quota enforcement
+/// needed since there is only one phase.
 async fn seed_genre(
     db: &sea_orm::DatabaseConnection,
     genre: &str,
     count: u64,
     exclude: &HashSet<Uuid>,
 ) -> Result<Vec<track::Model>, (StatusCode, String)> {
-    let pool_size = (count * 5).min(500);
+    let pool_size = (count * 3).min(200);
     let exclude_vec: Vec<Uuid> = exclude.iter().copied().collect();
 
     let mut query = track::Entity::find().filter(track::Column::Genre.eq(genre));
@@ -332,16 +384,42 @@ async fn seed_genre(
 
 /// Seed algorithm: personal mix.
 ///
-/// Draws from listen history and favorites: 40% favorite artists, 40%
-/// favorite genres (different artists), 20% random (discovery).
+/// Draws from listen history and favorites across three phases, each
+/// fetching up to `count * 2` candidates then truncating to its quota:
+///
+/// - **Phase 1** — Tracks from top 10 weighted artists (quota: 40%)
+/// - **Phase 2** — Tracks from top 5 weighted genres, excluding Phase 1
+///   artists (quota: 40%)
+/// - **Phase 3** — Random tracks for discovery (quota: 20%)
+///
+/// ## Completion-ratio weighting
+///
+/// Instead of counting raw listens, each listen is weighted by how much
+/// of the track was actually heard:
+///
+/// - **Full/partial listens** (≥25% completion): weight = `min(duration_listened / duration_secs, 1.0)`
+/// - **Skips** (<25% completion): weight = `0.1` (still registers engagement)
+/// - **Favorites**: weight = `1.0` each (additive with listen weights)
+///
+/// These per-track weights are aggregated by artist and genre to determine
+/// the top artists and genres. This ensures the radio prioritises music
+/// the user genuinely enjoys over tracks that were merely started and skipped.
+///
+/// Falls back to fully random tracks when the user has no listening history
+/// or favorites.
 async fn seed_personal_mix(
     db: &sea_orm::DatabaseConnection,
     user_id: Uuid,
     count: u64,
     exclude: &HashSet<Uuid>,
 ) -> Result<Vec<track::Model>, (StatusCode, String)> {
-    let pool_size = count * 3;
+    let pool_size = count * 2;
     let exclude_vec: Vec<Uuid> = exclude.iter().copied().collect();
+
+    // Phase quotas to enforce the 40/40/20 ratio
+    let phase1_quota = (count as f64 * 0.4).ceil() as usize;
+    let phase2_quota = (count as f64 * 0.4).ceil() as usize;
+    let phase3_quota = (count as f64 * 0.2).ceil() as usize;
 
     // Get the 50 most recent listens
     let recent_listens = listen_history::Entity::find()
@@ -375,7 +453,7 @@ async fn seed_personal_mix(
         // Fallback: random tracks
         let mut pool = track::Entity::find()
             .order_by(Expr::cust("RANDOM()"), Order::Asc)
-            .limit((count * 5).min(500))
+            .limit((count * 3).min(200))
             .all(db)
             .await
             .unwrap_or_default();
@@ -399,23 +477,59 @@ async fn seed_personal_mix(
         .await
         .unwrap_or_default();
 
-    // Count artist and genre frequency
-    let mut artist_freq: HashMap<Uuid, usize> = HashMap::new();
-    let mut genre_freq: HashMap<String, usize> = HashMap::new();
-    for t in &referenced_tracks {
-        *artist_freq.entry(t.artist_id).or_insert(0) += 1;
-        if let Some(ref g) = t.genre {
-            *genre_freq.entry(g.clone()).or_insert(0) += 1;
+    // Build a map of track_id -> track for lookups
+    let track_map: HashMap<Uuid, &track::Model> =
+        referenced_tracks.iter().map(|t| (t.id, t)).collect();
+
+    // Accumulate listen weights per track from history.
+    // Weight = min(duration_listened / max(duration_secs, 1.0), 1.0) to cap at 1.0.
+    // Skips (<25% listened) count as 0.1 to still register engagement.
+    let mut track_weights: HashMap<Uuid, f64> = HashMap::new();
+    for listen in &recent_listens {
+        if let Some(t) = track_map.get(&listen.track_id) {
+            let duration = t.duration_secs as f64;
+            let completion = if duration > 0.0 {
+                (listen.duration_listened as f64 / duration).min(1.0)
+            } else {
+                1.0
+            };
+            let weight = if completion < 0.25 { 0.1 } else { completion };
+            *track_weights.entry(listen.track_id).or_insert(0.0) += weight;
         }
     }
 
-    // Sort by frequency (most frequent first)
+    // Also give weight to favorites (count as 1.0 each)
+    for fav_id in &fav_track_ids {
+        *track_weights.entry(*fav_id).or_insert(0.0) += 1.0;
+    }
+
+    // Aggregate weights by artist and genre
+    let mut artist_freq: HashMap<Uuid, f64> = HashMap::new();
+    let mut genre_freq: HashMap<String, f64> = HashMap::new();
+    for (track_id, weight) in &track_weights {
+        if let Some(t) = track_map.get(track_id) {
+            *artist_freq.entry(t.artist_id).or_insert(0.0) += weight;
+            if let Some(ref g) = t.genre {
+                *genre_freq.entry(g.clone()).or_insert(0.0) += weight;
+            }
+        }
+    }
+
+    // Sort by weighted frequency (highest first)
     let mut top_artists: Vec<Uuid> = artist_freq.keys().copied().collect();
-    top_artists.sort_by(|a, b| artist_freq[b].cmp(&artist_freq[a]));
+    top_artists.sort_by(|a, b| {
+        artist_freq[b]
+            .partial_cmp(&artist_freq[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let top_artists: Vec<Uuid> = top_artists.into_iter().take(10).collect();
 
     let mut top_genres: Vec<String> = genre_freq.keys().cloned().collect();
-    top_genres.sort_by(|a, b| genre_freq[b].cmp(&genre_freq[a]));
+    top_genres.sort_by(|a, b| {
+        genre_freq[b]
+            .partial_cmp(&genre_freq[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let top_genres: Vec<String> = top_genres.into_iter().take(5).collect();
 
     // Phase 1 — Tracks from favorite artists (40%)
@@ -433,6 +547,7 @@ async fn seed_personal_mix(
             .await
             .unwrap_or_default();
     }
+    let phase1: Vec<track::Model> = phase1.into_iter().take(phase1_quota).collect();
 
     // Phase 2 — Tracks from favorite genres, different artists (40%)
     let mut phase2 = Vec::new();
@@ -451,18 +566,20 @@ async fn seed_personal_mix(
             .await
             .unwrap_or_default();
     }
+    let phase2: Vec<track::Model> = phase2.into_iter().take(phase2_quota).collect();
 
     // Phase 3 — Random tracks for discovery (20%)
     let mut phase3_query = track::Entity::find();
     if !exclude_vec.is_empty() {
         phase3_query = phase3_query.filter(track::Column::Id.is_not_in(exclude_vec));
     }
-    let phase3 = phase3_query
+    let phase3: Vec<track::Model> = phase3_query
         .order_by(Expr::cust("RANDOM()"), Order::Asc)
         .limit(pool_size)
         .all(db)
         .await
         .unwrap_or_default();
+    let phase3: Vec<track::Model> = phase3.into_iter().take(phase3_quota).collect();
 
     // Merge, deduplicate, shuffle, take count
     let mut pool: Vec<track::Model> = Vec::new();
@@ -478,6 +595,95 @@ async fn seed_personal_mix(
     pool.shuffle(&mut rng);
 
     Ok(pool.into_iter().take(count as usize).collect())
+}
+
+/// Seed algorithm: similarity-based radio using vector embeddings.
+///
+/// Uses pgvector cosine distance to find tracks with similar audio
+/// characteristics to the seed track. Falls back to `seed_track()` if
+/// the seed track has no embedding (e.g. during backfill).
+///
+/// The embedding captures genre, era, duration, audio quality, popularity,
+/// and artist characteristics in a 32-dimensional vector, so "similar"
+/// tracks share multiple metadata attributes — not just one dimension.
+async fn seed_similar(
+    db: &sea_orm::DatabaseConnection,
+    seed_id: Uuid,
+    count: u64,
+    exclude: &HashSet<Uuid>,
+) -> Result<Vec<track::Model>, (StatusCode, String)> {
+    // Get or generate the seed track's embedding
+    let embedding = match crate::embeddings::get_track_embedding(db, seed_id).await {
+        Ok(Some(emb)) => emb,
+        Ok(None) => {
+            // No embedding yet — try to generate one on the fly
+            let seed = track::Entity::find_by_id(seed_id)
+                .one(db)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
+                .ok_or((StatusCode::NOT_FOUND, "Seed track not found".to_string()))?;
+
+            if let Err(e) = crate::embeddings::generate_and_store_embedding(db, &seed).await {
+                tracing::warn!(error = %e, track_id = %seed_id, "failed to generate embedding on the fly, falling back to seed_track");
+                return seed_track(db, seed_id, count, exclude).await;
+            }
+
+            match crate::embeddings::get_track_embedding(db, seed_id).await {
+                Ok(Some(emb)) => emb,
+                _ => return seed_track(db, seed_id, count, exclude).await,
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, track_id = %seed_id, "failed to fetch embedding, falling back to seed_track");
+            return seed_track(db, seed_id, count, exclude).await;
+        }
+    };
+
+    // Query pgvector for similar tracks (fetch extra to account for excludes)
+    let exclude_vec: Vec<Uuid> = exclude.iter().copied().collect();
+    let similar_ids = crate::embeddings::find_similar_tracks(
+        db,
+        &embedding,
+        count * 3, // over-fetch to have room after filtering
+        &exclude_vec,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "pgvector similarity search failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("Similarity search failed: {e}"))
+    })?;
+
+    if similar_ids.is_empty() {
+        tracing::info!(track_id = %seed_id, "no similar tracks found via embeddings, falling back to seed_track");
+        return seed_track(db, seed_id, count, exclude).await;
+    }
+
+    // Fetch full track models for the returned IDs, preserving similarity order
+    let ids: Vec<Uuid> = similar_ids.iter().map(|(id, _)| *id).collect();
+    let tracks = track::Entity::find()
+        .filter(track::Column::Id.is_in(ids.clone()))
+        .all(db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+
+    // Re-order tracks by similarity (closest first), then shuffle slightly
+    let track_map: HashMap<Uuid, track::Model> = tracks.into_iter().map(|t| (t.id, t)).collect();
+    let mut ordered: Vec<track::Model> = ids
+        .into_iter()
+        .filter_map(|id| track_map.get(&id).cloned())
+        .collect();
+
+    // Light shuffle — swap adjacent pairs with 30% probability for variety
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let len = ordered.len();
+    for i in (0..len.saturating_sub(1)).step_by(2) {
+        if rng.random::<f32>() < 0.3 {
+            ordered.swap(i, i + 1);
+        }
+    }
+
+    Ok(ordered.into_iter().take(count as usize).collect())
 }
 
 // ─── Handler ────────────────────────────────────────────────────────────
@@ -567,6 +773,22 @@ pub async fn radio_next(
                 result
             }
         }
+        RadioSeedType::Similar => {
+            let seed_id = body.seed_id.ok_or((
+                StatusCode::BAD_REQUEST,
+                "seed_id is required for seed_type=similar".to_string(),
+            ))?;
+            let result = seed_similar(&state.db, seed_id, count, &exclude).await?;
+            if result.is_empty() {
+                tracing::info!(
+                    seed_type = %seed_type_debug,
+                    "radio wrapped around — clearing exclude list and retrying"
+                );
+                seed_similar(&state.db, seed_id, count, &HashSet::new()).await?
+            } else {
+                result
+            }
+        }
     };
 
     let exhausted = selected.is_empty();
@@ -627,6 +849,15 @@ mod tests {
     }
 
     #[test]
+    fn test_deserialize_radio_next_request_similar() {
+        let json = r#"{"seed_type":"similar","seed_id":"550e8400-e29b-41d4-a716-446655440000","count":10}"#;
+        let req: RadioNextRequest = serde_json::from_str(json).unwrap();
+        assert!(matches!(req.seed_type, RadioSeedType::Similar));
+        assert!(req.seed_id.is_some());
+        assert_eq!(req.count, Some(10));
+    }
+
+    #[test]
     fn test_radio_next_request_defaults() {
         let json = r#"{"seed_type":"genre","genre":"Pop"}"#;
         let req: RadioNextRequest = serde_json::from_str(json).unwrap();
@@ -641,6 +872,7 @@ mod tests {
             (r#""artist""#, "Artist"),
             (r#""genre""#, "Genre"),
             (r#""personal_mix""#, "PersonalMix"),
+            (r#""similar""#, "Similar"),
         ];
         for (json, expected_debug) in variants {
             let st: RadioSeedType = serde_json::from_str(json).unwrap();

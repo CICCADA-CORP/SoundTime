@@ -650,12 +650,102 @@ pub async fn enrich_track_metadata(
     Ok(Json(result))
 }
 
-/// POST /api/admin/metadata/enrich-all — batch enrich all tracks without MusicBrainz IDs
+/// POST /api/admin/metadata/enrich-all — start background batch enrichment.
+///
+/// Spawns a tokio task that enriches all tracks lacking a MusicBrainz ID.
+/// The task runs asynchronously and reports progress through the shared
+/// [`MetadataTaskTrackerHandle`] (injected as an `Extension`).
+///
+/// Returns `409 CONFLICT` if an enrichment task is already running —
+/// only one batch enrichment can be active at a time.
+///
+/// On success returns `{"status": "started", "task": "metadata-enrichment"}`.
+/// The frontend should then poll `GET /api/admin/metadata/task-status`
+/// to track progress, and call `POST /api/admin/metadata/task-dismiss`
+/// once the result has been acknowledged.
 pub async fn enrich_all_metadata(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<metadata_lookup::MetadataResult>>, StatusCode> {
-    let results = metadata_lookup::enrich_all_tracks(&state.db, &*state.storage).await;
-    Ok(Json(results))
+    Extension(tracker): Extension<metadata_lookup::MetadataTaskTrackerHandle>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Reject if a task is already running
+    {
+        let lock = tracker.lock().await;
+        if let Some(metadata_lookup::MetadataTaskStatus::Running { .. }) = &*lock {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "Metadata enrichment is already running" })),
+            ));
+        }
+    }
+
+    // Mark as running
+    {
+        let mut lock = tracker.lock().await;
+        *lock = Some(metadata_lookup::MetadataTaskStatus::Running {
+            progress: metadata_lookup::MetadataTaskProgress {
+                processed: 0,
+                total: 0,
+                enriched: 0,
+                not_found: 0,
+                errors: 0,
+                current_track: None,
+            },
+        });
+    }
+
+    let tracker_clone = tracker.clone();
+    tokio::spawn(async move {
+        let result = metadata_lookup::enrich_all_tracks_background(
+            &state.db,
+            &*state.storage,
+            &tracker_clone,
+        )
+        .await;
+
+        let mut lock = tracker_clone.lock().await;
+        *lock = Some(metadata_lookup::MetadataTaskStatus::Completed { result });
+    });
+
+    Ok(Json(
+        serde_json::json!({ "status": "started", "task": "metadata-enrichment" }),
+    ))
+}
+
+/// GET /api/admin/metadata/task-status — poll metadata enrichment progress.
+///
+/// Returns a JSON object whose `"status"` field is one of:
+/// - `"idle"` — no task has been started (or it was dismissed).
+/// - `"running"` — task in progress, includes a `progress` object with
+///   `processed`, `total`, `enriched`, `not_found`, `errors`, and
+///   `current_track` fields.
+/// - `"completed"` — task finished, includes a `result` summary.
+/// - `"error"` — task failed, includes a `message` string.
+///
+/// Designed for polling: the frontend typically calls this every 2-3 s
+/// while a task is active.
+pub async fn metadata_task_status(
+    Extension(tracker): Extension<metadata_lookup::MetadataTaskTrackerHandle>,
+) -> Json<serde_json::Value> {
+    let lock = tracker.lock().await;
+    let result = match &*lock {
+        Some(status) => Json(serde_json::json!(status)),
+        None => Json(serde_json::json!({ "status": "idle" })),
+    };
+    tracing::debug!("metadata_task_status polled");
+    result
+}
+
+/// POST /api/admin/metadata/task-dismiss — dismiss completed/errored metadata task.
+///
+/// Resets the tracker to `None` (idle), allowing a new enrichment task to
+/// be started. Should be called by the frontend after the admin has
+/// reviewed the completed or errored task result.
+pub async fn metadata_task_dismiss(
+    Extension(tracker): Extension<metadata_lookup::MetadataTaskTrackerHandle>,
+) -> Json<serde_json::Value> {
+    let mut lock = tracker.lock().await;
+    *lock = None;
+    Json(serde_json::json!({ "status": "dismissed" }))
 }
 
 /// GET /api/admin/metadata/status — metadata enrichment status overview
@@ -826,11 +916,14 @@ pub struct StorageStatusResponse {
 /// GET /api/admin/storage/status
 pub async fn storage_status(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<StorageStatusResponse>, StatusCode> {
-    let total_tracks = track::Entity::find()
-        .count(&state.db)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Json<StorageStatusResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let total_tracks = track::Entity::find().count(&state.db).await.map_err(|e| {
+        tracing::error!(error = %e, "storage_status: failed to count tracks");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "Failed to query track count" })),
+        )
+    })?;
 
     #[derive(Debug, FromQueryResult)]
     struct SizeSum {
@@ -839,11 +932,17 @@ pub async fn storage_status(
 
     let size_result = track::Entity::find()
         .select_only()
-        .column_as(Expr::cust("COALESCE(SUM(file_size), 0)"), "total_size")
+        .column_as(Expr::cust("COALESCE(SUM(file_size)::bigint, 0)"), "total_size")
         .into_model::<SizeSum>()
         .one(&state.db)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(error = %e, "storage_status: failed to sum file sizes");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Failed to query storage size" })),
+            )
+        })?;
 
     let total_size: i64 = size_result.map(|r| r.total_size.unwrap_or(0)).unwrap_or(0);
 
@@ -913,6 +1012,7 @@ pub async fn run_integrity_check(
                 });
             }
             Err(e) => {
+                tracing::error!(error = %e, "integrity check background task failed");
                 let mut lock = tracker_clone.lock().await;
                 *lock = Some(crate::storage_worker::TaskStatus::Error { message: e });
             }
@@ -963,6 +1063,7 @@ pub async fn run_storage_sync(
                 });
             }
             Err(e) => {
+                tracing::error!(error = %e, "storage sync background task failed");
                 let mut lock = tracker_clone.lock().await;
                 *lock = Some(crate::storage_worker::TaskStatus::Error { message: e });
             }
@@ -981,10 +1082,12 @@ pub async fn storage_task_status(
     Extension(tracker): Extension<crate::storage_worker::TaskTrackerHandle>,
 ) -> Json<serde_json::Value> {
     let lock = tracker.lock().await;
-    match &*lock {
+    let result = match &*lock {
         Some(status) => Json(serde_json::json!(status)),
         None => Json(serde_json::json!({ "status": "idle" })),
-    }
+    };
+    tracing::debug!("storage_task_status polled");
+    result
 }
 
 #[cfg(test)]
@@ -1211,6 +1314,8 @@ mod tests {
                 storage: Arc::new(soundtime_audio::AudioStorage::new("/tmp/test")),
                 p2p: None,
                 plugins: None,
+                #[cfg(feature = "redis")]
+                redis: None,
             })
         }
 
@@ -1267,6 +1372,8 @@ mod tests {
             storage: Arc::new(soundtime_audio::AudioStorage::new("/tmp/test")),
             p2p: None,
             plugins: None,
+            #[cfg(feature = "redis")]
+            redis: None,
         };
         assert!(get_p2p_node(&state).is_none());
     }

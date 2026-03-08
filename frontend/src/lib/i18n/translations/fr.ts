@@ -406,6 +406,9 @@ export default {
   "admin.metadata.statusNotFound": "Non trouvé",
   "admin.metadata.statusAlreadyEnriched": "Déjà enrichi",
   "admin.metadata.statusError": "Erreur",
+  "admin.metadata.enrichmentComplete": "Enrichissement terminé",
+  "admin.metadata.taskFailed": "L'enrichissement des métadonnées a échoué",
+  "common.dismiss": "Fermer",
 
   // Admin — remote tracks
   "admin.remote.description": "Pistes découvertes via les pairs P2P. Les doublons sont automatiquement détectés et le meilleur bitrate est préféré.",
@@ -576,6 +579,10 @@ export default {
   "admin.editorial.generatePlaylists": "Générer les playlists",
   "admin.editorial.generationHint": "La génération supprimera les playlists éditoriales existantes et en créera de nouvelles via l'IA. Les playlists sont automatiquement regénérées chaque samedi.",
   "admin.editorial.generationError": "Erreur lors de la génération",
+  "admin.editorial.maxTracks": "Nombre max de pistes pour le prompt IA",
+  "admin.editorial.maxTracksDesc": "Nombre maximum de pistes à inclure dans le prompt IA (défaut : 500). Des valeurs plus basses utilisent moins de tokens.",
+  "admin.editorial.instanceLanguage": "Langue des playlists",
+  "admin.editorial.instanceLanguageDesc": "Langue pour les noms et descriptions des playlists générées par l'IA.",
 
   // Admin — lyrics
   "admin.lyrics.configTitle": "Configuration des paroles",
@@ -668,6 +675,7 @@ export default {
   "admin.integrity.missing": "Manquantes",
   "admin.integrity.missingTracks": "Pistes manquantes",
   "admin.integrity.errors": "Erreurs",
+  "admin.integrity.taskFailed": "La vérification d'intégrité a échoué",
 
   // Admin — sync
   "admin.sync.title": "Synchronisation du stockage",
@@ -678,6 +686,7 @@ export default {
   "admin.sync.imported": "Importés",
   "admin.sync.alreadyReferenced": "Déjà référencés",
   "admin.sync.importErrors": "Erreurs d'import",
+  "admin.sync.taskFailed": "La synchronisation a échoué",
 
   // Admin — task banner (persistent progress indicator)
   "admin.taskBanner.syncInProgress": "Synchronisation du stockage en cours…",
@@ -798,6 +807,9 @@ export default {
   "explore.genres": "Genres",
   "explore.moods": "Ambiances",
   "explore.trending": "Tendances",
+  "explore.trendingHour": "1 heure",
+  "explore.trendingDay": "24 heures",
+  "explore.trendingWeek": "7 jours",
   "explore.newThisWeek": "Nouveautés de la semaine",
   "explore.discoverArtists": "Artistes à découvrir",
   "explore.fromTheNetwork": "Depuis le réseau",
@@ -833,6 +845,7 @@ export default {
   "radio.nowPlaying": "Radio",
   "radio.stop": "Arrêter la radio",
   "radio.startFromTrack": "Lancer la radio",
+  "radio.playSimilar": "Écouter similaires",
   "radio.startFromArtist": "Radio de l'artiste",
   "radio.startFromGenre": "Radio du genre",
   "radio.personalMix": "Mon Mix",

@@ -2,13 +2,28 @@
 //!
 //! Queries MusicBrainz recording search to enrich track/album/artist metadata,
 //! and Cover Art Archive to fetch cover images.
+//!
+//! ## Background task API
+//!
+//! The [`enrich_all_tracks_background`] function runs batch enrichment as an
+//! async task, reporting progress through a [`MetadataTaskTrackerHandle`].
+//! Admin handlers poll and dismiss the tracker via the `/admin/metadata/`
+//! endpoints (see `api::admin`).
+//!
+//! ## Rate limiting
+//!
+//! MusicBrainz enforces a 1 request/second policy. All external API calls in
+//! this module sleep [`MB_RATE_LIMIT_MS`] (1100 ms) before each request to
+//! stay safely under the limit.
 
 use reqwest::Client;
 use sea_orm::DatabaseConnection;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set};
 use serde::{Deserialize, Serialize};
 use soundtime_audio::StorageBackend;
 use soundtime_db::entities::{album, artist, instance_setting, track};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 /// MusicBrainz user-agent (required by their API policy) — defaults, overridden by instance settings
@@ -1023,23 +1038,215 @@ pub async fn enrich_all_tracks(
     db: &DatabaseConnection,
     storage: &dyn StorageBackend,
 ) -> Vec<MetadataResult> {
-    let tracks = track::Entity::find()
-        .filter(track::Column::MusicbrainzId.is_null())
-        .all(db)
-        .await
-        .unwrap_or_default();
+    let mut results = Vec::new();
+    let mut page = 0u64;
+    let batch_size = 100u64;
 
-    let mut results = Vec::with_capacity(tracks.len());
+    loop {
+        let batch = track::Entity::find()
+            .filter(track::Column::MusicbrainzId.is_null())
+            .paginate(db, batch_size)
+            .fetch_page(page)
+            .await
+            .unwrap_or_default();
 
-    for t in tracks {
-        let result = enrich_track(db, storage, t.id).await;
-        results.push(result);
+        if batch.is_empty() {
+            break;
+        }
 
-        // Extra rate limit between tracks to stay well under MusicBrainz limits
-        tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
+        for t in batch {
+            let result = enrich_track(db, storage, t.id).await;
+            results.push(result);
+            tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
+        }
+
+        page += 1;
     }
 
     results
+}
+
+// ─── Metadata enrichment task tracker ──────────────────────────────
+
+/// Status of the background metadata enrichment task.
+///
+/// Serialized as a tagged union (`#[serde(tag = "status")]`) so the JSON
+/// response always contains a `"status"` field (`"running"`, `"completed"`,
+/// or `"error"`) alongside variant-specific data. This lets the frontend
+/// discriminate on a single key when polling `/admin/metadata/task-status`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status")]
+pub enum MetadataTaskStatus {
+    /// Task is currently running — includes live progress counters.
+    #[serde(rename = "running")]
+    Running { progress: MetadataTaskProgress },
+    /// Task completed successfully — includes final summary counters.
+    #[serde(rename = "completed")]
+    Completed { result: MetadataTaskResult },
+    /// Task failed with an unrecoverable error.
+    #[serde(rename = "error")]
+    Error { message: String },
+}
+
+/// Live progress snapshot for a running metadata enrichment task.
+///
+/// Updated in the tracker before each track is processed, so the admin
+/// frontend can display a progress bar and per-category counters.
+#[derive(Debug, Clone, Serialize)]
+pub struct MetadataTaskProgress {
+    /// Number of tracks processed so far (0-indexed at the start of each track).
+    pub processed: u64,
+    /// Total number of tracks that will be processed in this batch.
+    pub total: u64,
+    /// Tracks successfully enriched via MusicBrainz (or AI, if enabled).
+    pub enriched: u64,
+    /// Tracks for which no MusicBrainz match was found.
+    pub not_found: u64,
+    /// Tracks that encountered an error during enrichment.
+    pub errors: u64,
+    /// Title of the track currently being processed, if any.
+    pub current_track: Option<String>,
+}
+
+/// Final summary returned when a background metadata enrichment task completes.
+///
+/// Stored in the tracker until the admin dismisses it, so the result can
+/// be displayed even after the task has finished.
+#[derive(Debug, Clone, Serialize)]
+pub struct MetadataTaskResult {
+    /// Total number of tracks that were evaluated (including already-enriched ones).
+    pub total_processed: u64,
+    /// Tracks successfully enriched from MusicBrainz (or AI).
+    pub enriched: u64,
+    /// Tracks for which no external match was found.
+    pub not_found: u64,
+    /// Tracks that failed due to network or DB errors.
+    pub errors: u64,
+    /// Tracks skipped because they already had a MusicBrainz ID.
+    pub already_enriched: u64,
+}
+
+/// Shared handle for tracking the metadata enrichment background task.
+///
+/// Wraps an `Option<MetadataTaskStatus>` behind `Arc<Mutex<>>` so the
+/// spawned tokio task can update progress while admin handlers read it
+/// concurrently. `None` means no task has been started (or it was dismissed).
+///
+/// Injected into the Axum router as an `Extension` layer so both the
+/// background task and the HTTP handlers share the same instance.
+pub type MetadataTaskTrackerHandle = Arc<Mutex<Option<MetadataTaskStatus>>>;
+
+/// Create a new metadata task tracker, initialized to `None` (idle).
+///
+/// Called once at server startup in `main.rs` and installed as an
+/// Axum `Extension` on the admin router.
+pub fn new_metadata_tracker() -> MetadataTaskTrackerHandle {
+    Arc::new(Mutex::new(None))
+}
+
+/// Run metadata enrichment as a background task, updating the tracker with progress.
+///
+/// ## Flow
+///
+/// 1. Queries all tracks without a `musicbrainz_id` (not yet enriched).
+/// 2. Iterates each track, calling [`enrich_track`] to search MusicBrainz
+///    and optionally download cover art from Cover Art Archive.
+/// 3. Before processing each track, writes a `Running` snapshot into the
+///    tracker so the admin can poll real-time progress.
+/// 4. After all tracks are processed, returns a [`MetadataTaskResult`]
+///    summary. The caller (admin handler) writes `Completed` into the
+///    tracker.
+///
+/// ## Rate limiting
+///
+/// Sleeps [`MB_RATE_LIMIT_MS`] between tracks (on top of the per-request
+/// sleep inside `search_recording` / `fetch_cover_art_url`) to stay well
+/// under the MusicBrainz 1 req/sec policy.
+pub async fn enrich_all_tracks_background(
+    db: &DatabaseConnection,
+    storage: &dyn StorageBackend,
+    tracker: &MetadataTaskTrackerHandle,
+) -> MetadataTaskResult {
+    let batch_size = 100u64;
+
+    // Get total count first for progress tracking
+    let total = track::Entity::find()
+        .filter(track::Column::MusicbrainzId.is_null())
+        .count(db)
+        .await
+        .unwrap_or(0);
+
+    let mut enriched = 0u64;
+    let mut not_found = 0u64;
+    let mut errors = 0u64;
+    let mut already_enriched = 0u64;
+    let mut processed = 0u64;
+
+    tracing::info!(total, "starting background metadata enrichment");
+
+    loop {
+        // Re-query each page because tracks get enriched (musicbrainz_id set)
+        // and drop out of the IS NULL filter — so always fetch page 0
+        let batch = track::Entity::find()
+            .filter(track::Column::MusicbrainzId.is_null())
+            .limit(batch_size)
+            .all(db)
+            .await
+            .unwrap_or_default();
+
+        if batch.is_empty() {
+            break;
+        }
+
+        for t in &batch {
+            // Update progress
+            {
+                let mut lock = tracker.lock().await;
+                *lock = Some(MetadataTaskStatus::Running {
+                    progress: MetadataTaskProgress {
+                        processed,
+                        total,
+                        enriched,
+                        not_found,
+                        errors,
+                        current_track: Some(t.title.clone()),
+                    },
+                });
+            }
+
+            let result = enrich_track(db, storage, t.id).await;
+
+            match result.status {
+                MetadataStatus::Enriched | MetadataStatus::EnrichedByAi => enriched += 1,
+                MetadataStatus::NotFound => not_found += 1,
+                MetadataStatus::Error => errors += 1,
+                MetadataStatus::AlreadyEnriched => already_enriched += 1,
+            }
+
+            processed += 1;
+
+            // Rate limit between tracks
+            tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
+        }
+    }
+
+    let result = MetadataTaskResult {
+        total_processed: processed,
+        enriched,
+        not_found,
+        errors,
+        already_enriched,
+    };
+
+    tracing::info!(
+        total_processed = result.total_processed,
+        enriched = result.enriched,
+        not_found = result.not_found,
+        errors = result.errors,
+        "background metadata enrichment completed"
+    );
+
+    result
 }
 
 // ─── Instance health check ──────────────────────────────────────────

@@ -902,6 +902,8 @@ mod tests {
             storage: Arc::new(AudioStorage::new("/tmp/test")),
             p2p: None,
             plugins: None,
+            #[cfg(feature = "redis")]
+            redis: None,
         })
     }
 

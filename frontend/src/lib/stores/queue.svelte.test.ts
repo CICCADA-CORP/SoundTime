@@ -361,4 +361,22 @@ describe('Queue Store', () => {
       expect(queue.queue).toEqual([track1, track3]);
     });
   });
+
+  describe('source context', () => {
+    it('stores source context when provided', () => {
+      queue.playQueue([track1, track2], 0, 'album' as any);
+      expect(queue.sourceContext).toBe('album');
+    });
+
+    it('defaults to null when no source provided', () => {
+      queue.playQueue([track1]);
+      expect(queue.sourceContext).toBeNull();
+    });
+
+    it('clears source context on clearQueue', () => {
+      queue.playQueue([track1], 0, 'playlist' as any);
+      queue.clearQueue();
+      expect(queue.sourceContext).toBeNull();
+    });
+  });
 });

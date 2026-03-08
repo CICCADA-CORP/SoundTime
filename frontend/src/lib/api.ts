@@ -267,6 +267,10 @@ export const homeApi = {
   popularTracks: (perPage = 10) =>
     api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/tracks/popular?per_page=${perPage}`),
 
+  /** Get trending tracks (time-windowed, Redis-backed with PostgreSQL fallback) */
+  trendingTracks: (limit = 10, window: "1h" | "24h" | "7d" = "24h") =>
+    api.get<import("./types").Track[]>(`/tracks/trending?limit=${limit}&window=${window}`),
+
   /** Get all genres as a string array */
   genres: () => api.get<string[]>("/genres"),
 

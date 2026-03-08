@@ -24,6 +24,8 @@
   // ─── State ─────────────────────────────────────────────────────────
   let loading = $state(true);
   let tracks: Track[] = $state([]);
+  let trendingTracks: Track[] = $state([]);
+  let trendingWindow: "1h" | "24h" | "7d" = $state("24h");
   let albums: Album[] = $state([]);
   let artists: Artist[] = $state([]);
   let editorialPlaylists: EditorialPlaylist[] = $state([]);
@@ -58,13 +60,14 @@
   // ─── Data Fetching ────────────────────────────────────────────────
   onMount(async () => {
     try {
-      const [popularRes, albumsRes, artistsRes, editorial, genreList, statsRes] = await Promise.all([
+      const [popularRes, albumsRes, artistsRes, editorial, genreList, statsRes, trendingRes] = await Promise.all([
         homeApi.popularTracks(10),
         homeApi.recentAlbums(12),
         homeApi.topArtists(12),
         homeApi.editorialPlaylists(),
         homeApi.genres(),
         homeApi.statsOverview(),
+        homeApi.trendingTracks(10),
       ]);
       tracks = popularRes.data ?? [];
       albums = albumsRes.data ?? [];
@@ -72,6 +75,7 @@
       editorialPlaylists = editorial ?? [];
       genres = genreList ?? [];
       stats = statsRes ?? null;
+      trendingTracks = trendingRes ?? [];
 
       // Start hero rotation if there are items
       if (heroItems.length > 1) {
@@ -136,12 +140,21 @@
     try {
       const randomTracks = await homeApi.randomTracks(20);
       if (randomTracks.length > 0) {
-        queue.playQueue(randomTracks);
+        queue.playQueue(randomTracks, 0, "explore");
       }
     } catch (e) {
       console.error('Failed to load random tracks:', e);
     } finally {
       surpriseLoading = false;
+    }
+  }
+
+  async function loadTrending(window: "1h" | "24h" | "7d") {
+    trendingWindow = window;
+    try {
+      trendingTracks = await homeApi.trendingTracks(10, window) ?? [];
+    } catch {
+      // Fall back to existing tracks
     }
   }
 </script>
@@ -402,11 +415,33 @@
     {/if}
 
     <!-- ─── 5. Trending Top-10 ─────────────────────────────────────── -->
-    {#if tracks.length > 0}
+    {#if trendingTracks.length > 0 || tracks.length > 0}
       <section>
-        <h2 class="text-xl font-bold mb-4">{t('explore.trending')}</h2>
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-xl font-bold">{t('explore.trending')}</h2>
+          <div class="flex gap-1 bg-[hsl(var(--secondary))] rounded-lg p-1">
+            <button
+              class="px-3 py-1 text-xs font-medium rounded-md transition {trendingWindow === '1h' ? 'bg-[hsl(var(--background))] shadow-sm' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}"
+              onclick={() => loadTrending("1h")}
+            >
+              {t('explore.trendingHour')}
+            </button>
+            <button
+              class="px-3 py-1 text-xs font-medium rounded-md transition {trendingWindow === '24h' ? 'bg-[hsl(var(--background))] shadow-sm' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}"
+              onclick={() => loadTrending("24h")}
+            >
+              {t('explore.trendingDay')}
+            </button>
+            <button
+              class="px-3 py-1 text-xs font-medium rounded-md transition {trendingWindow === '7d' ? 'bg-[hsl(var(--background))] shadow-sm' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}"
+              onclick={() => loadTrending("7d")}
+            >
+              {t('explore.trendingWeek')}
+            </button>
+          </div>
+        </div>
         <div class="space-y-1">
-          {#each tracks.slice(0, 10) as track, i}
+          {#each (trendingTracks.length > 0 ? trendingTracks : tracks).slice(0, 10) as track, i}
             <button
               class="w-full flex items-center gap-4 p-3 rounded-lg hover:bg-[hsl(var(--secondary))] transition group text-left"
               onclick={() => player.play(track)}

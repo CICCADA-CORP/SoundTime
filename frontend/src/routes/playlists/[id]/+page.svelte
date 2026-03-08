@@ -49,7 +49,7 @@
 
   function playAll() {
     if (playlist?.tracks) {
-      queue.playQueue(playlist.tracks);
+      queue.playQueue(playlist.tracks, 0, "playlist");
     }
   }
 

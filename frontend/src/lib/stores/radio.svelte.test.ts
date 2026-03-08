@@ -92,7 +92,7 @@ describe('Radio Store', () => {
 			expect(radio.loading).toBe(false);
 			expect(radio.exhausted).toBe(false);
 			expect(radio.playedCount).toBe(3);
-			expect(mockQueueStore.playQueue).toHaveBeenCalledWith(tracks, 0);
+			expect(mockQueueStore.playQueue).toHaveBeenCalledWith(tracks, 0, "radio");
 		});
 
 		it('should call radioApi.next with correct params for track seed', async () => {

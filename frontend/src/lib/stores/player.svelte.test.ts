@@ -14,6 +14,26 @@ vi.mock('$lib/api', () => ({
   },
 }));
 
+vi.mock('./queue.svelte', () => ({
+  getQueueStore: () => ({
+    sourceContext: null,
+    queue: [],
+    currentIndex: -1,
+    currentTrack: null,
+    hasNext: false,
+    hasPrevious: false,
+    radioMode: false,
+    playQueue: vi.fn(),
+    addToQueue: vi.fn(),
+    addNext: vi.fn(),
+    removeFromQueue: vi.fn(),
+    moveInQueue: vi.fn(),
+    clearQueue: vi.fn(),
+    next: vi.fn(),
+    previous: vi.fn(),
+  }),
+}));
+
 import { getPlayerStore } from './player.svelte';
 import { api } from '$lib/api';
 
@@ -288,10 +308,12 @@ describe('Player Store', () => {
       player.play(track1);
       player.seek(10); // progress > 5
       player.play(track2);
-      expect(api.post).toHaveBeenCalledWith('/history', {
+      expect(api.post).toHaveBeenCalledWith('/history', expect.objectContaining({
         track_id: 'track-first',
         duration_listened: 10,
-      });
+        completed: false,
+        skipped: true,
+      }));
     });
 
     it('does not log history when switching tracks with progress <= 5', () => {
@@ -327,10 +349,12 @@ describe('Player Store', () => {
 
       lastAudioInstance!.trigger('ended');
 
-      expect(api.post).toHaveBeenCalledWith('/history', {
+      expect(api.post).toHaveBeenCalledWith('/history', expect.objectContaining({
         track_id: 'track-audio',
         duration_listened: 200,
-      });
+        completed: true,
+        skipped: false,
+      }));
     });
 
     it('ended event with repeat=one restarts playback', () => {
@@ -508,10 +532,12 @@ describe('Player Store', () => {
       (lastAudioInstance as any).duration = 180;
       lastAudioInstance!.trigger('loadedmetadata');
       lastAudioInstance!.trigger('ended');
-      expect(api.post).toHaveBeenCalledWith('/history', {
+      expect(api.post).toHaveBeenCalledWith('/history', expect.objectContaining({
         track_id: 'edge-1',
         duration_listened: 180,
-      });
+        completed: true,
+        skipped: false,
+      }));
     });
 
     it('play event on audio updates isPlaying and mediaSession', () => {

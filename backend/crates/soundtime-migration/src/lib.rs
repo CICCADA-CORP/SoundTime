@@ -28,6 +28,10 @@ mod m20240101_000025_create_themes;
 mod m20240101_000026_fix_album_dedup;
 mod m20240101_000027_create_user_settings;
 mod m20240101_000028_normalize_genres;
+mod m20240101_000029_add_radio_indexes;
+mod m20240101_000030_add_behavioral_signals;
+mod m20240101_000031_add_track_embeddings;
+mod m20240101_000032_add_performance_indexes;
 
 pub struct Migrator;
 
@@ -63,6 +67,10 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000026_fix_album_dedup::Migration),
             Box::new(m20240101_000027_create_user_settings::Migration),
             Box::new(m20240101_000028_normalize_genres::Migration),
+            Box::new(m20240101_000029_add_radio_indexes::Migration),
+            Box::new(m20240101_000030_add_behavioral_signals::Migration),
+            Box::new(m20240101_000031_add_track_embeddings::Migration),
+            Box::new(m20240101_000032_add_performance_indexes::Migration),
         ]
     }
 }

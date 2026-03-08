@@ -12,7 +12,7 @@
 
   function handlePlay() {
     if (tracks && index !== undefined) {
-      queue.playQueue(tracks, index);
+      queue.playQueue(tracks, index, "collection");
     } else {
       player.play(track);
     }

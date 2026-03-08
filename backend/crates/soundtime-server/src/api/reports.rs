@@ -789,6 +789,8 @@ mod tests {
                 storage: Arc::new(soundtime_audio::AudioStorage::new("/tmp/test")),
                 p2p: None,
                 plugins: None,
+                #[cfg(feature = "redis")]
+                redis: None,
             })
         }
 
@@ -835,6 +837,8 @@ mod tests {
                 storage: Arc::new(soundtime_audio::AudioStorage::new("/tmp/test")),
                 p2p: None,
                 plugins: None,
+                #[cfg(feature = "redis")]
+                redis: None,
             })
         }
 
@@ -883,6 +887,8 @@ mod tests {
                 storage: Arc::new(soundtime_audio::AudioStorage::new("/tmp/test")),
                 p2p: None,
                 plugins: None,
+                #[cfg(feature = "redis")]
+                redis: None,
             })
         }
 

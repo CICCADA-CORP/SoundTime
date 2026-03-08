@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-soundtime}
@@ -16,6 +16,21 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: soundtime-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   backend:
     image: ghcr.io/ciccada-corp/soundtime-backend:latest
@@ -37,6 +52,7 @@ services:
       S3_PREFIX: ${S3_PREFIX:-}
       S3_CACHE_PATH: ${S3_CACHE_PATH:-/tmp/soundtime-s3-cache}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      REDIS_URL: redis://redis:6379
       # P2P configuration (iroh)
       P2P_ENABLED: ${P2P_ENABLED:-true}
       P2P_BLOBS_DIR: /data/p2p-blobs
@@ -46,6 +62,8 @@ services:
       P2P_SEED_PEERS: ${P2P_SEED_PEERS:-}
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     ports:
       - "8080:8080"
@@ -75,5 +93,6 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
   music_data:
   p2p_data:

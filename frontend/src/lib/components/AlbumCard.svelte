@@ -1,17 +1,40 @@
 <script lang="ts">
-  import { Play } from "lucide-svelte";
+  import { Play, Loader2 } from "lucide-svelte";
   import type { Album } from "$lib/types";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { t } from "$lib/i18n/index.svelte";
+  import { api } from "$lib/api";
 
   let { album }: { album: Album } = $props();
   const queue = getQueueStore();
+  let loading = $state(false);
 
-  function handlePlay(e: Event) {
+  async function handlePlay(e: Event) {
     e.preventDefault();
     e.stopPropagation();
+    
+    // If tracks are already available, play immediately
     if (album.tracks && album.tracks.length > 0) {
-      queue.playQueue(album.tracks);
+      queue.playQueue(album.tracks, 0, "album");
+      return;
+    }
+    
+    // Prevent double-clicks while loading
+    if (loading) return;
+    
+    try {
+      loading = true;
+      
+      // Fetch the full album details with tracks
+      const fullAlbum = await api.get<Album>(`/albums/${album.id}`);
+      
+      if (fullAlbum.tracks && fullAlbum.tracks.length > 0) {
+        queue.playQueue(fullAlbum.tracks, 0, "album");
+      }
+    } catch (err) {
+      console.error("Failed to fetch album tracks for playback:", err);
+    } finally {
+      loading = false;
     }
   }
 </script>
@@ -32,9 +55,14 @@
       <button
         aria-label={t('a11y.playAlbum')}
         onclick={handlePlay}
-        class="absolute bottom-2 right-2 w-10 h-10 rounded-full bg-[hsl(var(--primary))] text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0 shadow-lg"
+        disabled={loading}
+        class="absolute bottom-2 right-2 w-10 h-10 rounded-full bg-[hsl(var(--primary))] text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0 shadow-lg disabled:opacity-50"
       >
-        <Play class="w-5 h-5 ml-0.5" fill="currentColor" />
+        {#if loading}
+          <Loader2 class="w-5 h-5 animate-spin" />
+        {:else}
+          <Play class="w-5 h-5 ml-0.5" fill="currentColor" />
+        {/if}
       </button>
     </div>
     <h3 class="text-sm font-medium truncate">{album.title}</h3>

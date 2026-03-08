@@ -58,6 +58,10 @@ pub struct AppState {
     /// Plugin registry handle (type-erased to avoid circular dependency).
     /// Downcast to `Arc<soundtime_plugin::PluginRegistry>` in handlers.
     pub plugins: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// Optional Redis connection pool for caching.
+    /// Falls back to PostgreSQL when not available.
+    #[cfg(feature = "redis")]
+    pub redis: Option<deadpool_redis::Pool>,
 }
 
 /// Connect to the database and return a connection pool

@@ -37,11 +37,17 @@ hkdf = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 
+deadpool-redis = { version = "0.18", optional = true }
+
 soundtime-audio = { path = "../soundtime-audio" }
 soundtime-db = { path = "../soundtime-db" }
 soundtime-migration = { path = "../soundtime-migration" }
 soundtime-p2p = { path = "../soundtime-p2p" }
 soundtime-plugin = { path = "../soundtime-plugin" }
+
+[features]
+default = []
+redis = ["deadpool-redis", "soundtime-db/redis"]
 
 [dev-dependencies]
 axum-test = "16"

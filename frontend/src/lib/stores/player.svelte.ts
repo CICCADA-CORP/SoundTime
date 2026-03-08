@@ -1,5 +1,6 @@
 import type { Track } from "$lib/types";
 import { streamUrl, api, API_BASE, lastfmApi } from "$lib/api";
+import { getQueueStore } from "./queue.svelte";
 
 let currentTrack = $state<Track | null>(null);
 let isPlaying = $state(false);
@@ -161,12 +162,11 @@ function initAudio() {
     });
 
     audio.addEventListener("ended", () => {
-      // Log listen when track ends naturally
+      // Track finished naturally — log as completed (not skipped).
+      // Uses the full duration as the listen length because the track
+      // played to the end; falls back to progress if duration is unknown.
       if (currentTrack) {
-        api.post("/history", {
-          track_id: currentTrack.id,
-          duration_listened: duration > 0 ? duration : progress,
-        }).catch(() => {});
+        logListen(currentTrack, duration > 0 ? duration : progress, true);
       }
 
       if (repeat === "one") {
@@ -203,16 +203,50 @@ function initAudio() {
   }
 }
 
+/**
+ * Log a listen event with behavioral signals to `POST /history`.
+ *
+ * Sends the track's `duration_listened`, whether it `completed` naturally,
+ * and whether it was `skipped` (i.e. the user moved to another track before
+ * the current one finished). The `source_context` is read from the queue
+ * store (set when `playQueue()` is called) so the backend knows *where*
+ * the track was played from (album, playlist, radio, etc.).
+ *
+ * When the track was skipped (`completed === false`) and the user listened
+ * for more than 0 seconds, `skip_position` is included so the recommendation
+ * engine can distinguish early skips from near-completion skips.
+ *
+ * Failures are silently swallowed — listen logging is best-effort.
+ */
+function logListen(track: Track, durationListened: number, completed: boolean) {
+  let source: string | undefined;
+  try {
+    const q = getQueueStore();
+    source = q.sourceContext ?? undefined;
+  } catch {}
+
+  const body: Record<string, unknown> = {
+    track_id: track.id,
+    duration_listened: durationListened,
+    completed,
+    skipped: !completed,
+  };
+
+  if (source) body.source_context = source;
+  if (!completed && durationListened > 0) body.skip_position = durationListened;
+
+  api.post("/history", body).catch(() => {});
+}
+
 function play(track: Track) {
   initAudio();
   if (!audio) return;
 
-  // Log listen for the previous track if it played long enough
+  // Log a skip for the previous track if it played for at least 5 seconds.
+  // The 5-second threshold avoids logging spurious skips from rapid
+  // next-track taps or accidental plays.
   if (currentTrack && progress > 5) {
-    api.post("/history", {
-      track_id: currentTrack.id,
-      duration_listened: progress,
-    }).catch(() => {});
+    logListen(currentTrack, progress, false);
   }
 
   currentTrack = track;

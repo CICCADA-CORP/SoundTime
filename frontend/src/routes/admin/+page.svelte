@@ -20,6 +20,9 @@
     User,
     MetadataStatus,
     MetadataResult,
+    MetadataTaskStatus,
+    MetadataTaskProgress,
+    MetadataTaskResult,
     RemoteTrack,
     HealthCheckResult,
     EditorialStatus,
@@ -59,6 +62,8 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let enriching = $state(false);
+  let metadataTaskProgress = $state<MetadataTaskProgress | null>(null);
+  let metadataTaskResult = $state<MetadataTaskResult | null>(null);
   let healthChecking = $state(false);
   let p2pStatus = $state<P2pStatus | null>(null);
   let p2pPeers = $state<P2pPeer[]>([]);
@@ -74,6 +79,8 @@
   let editorialApiKey = $state("");
   let editorialBaseUrl = $state("https://api.openai.com/v1");
   let editorialModel = $state("gpt-4o-mini");
+  let editorialMaxTracks = $state("500");
+  let editorialInstanceLanguage = $state("English");
 
   // Lyrics state
   let lyricsProvider = $state("none");
@@ -182,6 +189,42 @@
   let blockDomainInput = $state("");
   let blockReasonInput = $state("");
 
+  /** Poll /admin/metadata/task-status until the background enrichment finishes. */
+  async function pollMetadataTaskStatus() {
+    const POLL_INTERVAL = 2000; // 2s (enrichment is slower than sync)
+    while (true) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+      try {
+        const status = await api.get<MetadataTaskStatus>("/admin/metadata/task-status");
+        if (status.status === "running") {
+          metadataTaskProgress = status.progress ?? null;
+          continue;
+        }
+        if (status.status === "completed") {
+          metadataTaskProgress = null;
+          if (status.result) {
+            metadataResults = []; // Clear individual results — show summary instead
+            metadataTaskResult = status.result;
+          }
+          // Reload metadata status to reflect new enrichment counts
+          metadataStatus = await api.get<MetadataStatus>("/admin/metadata/status");
+          return;
+        }
+        if (status.status === "error") {
+          metadataTaskProgress = null;
+          error = status.message ?? t("admin.metadata.taskFailed");
+          return;
+        }
+        // idle or unknown → done
+        metadataTaskProgress = null;
+        return;
+      } catch {
+        metadataTaskProgress = null;
+        return;
+      }
+    }
+  }
+
   /** Poll /admin/p2p/library-sync/task-status until the background sync finishes. */
   async function pollLibrarySyncTask() {
     if (librarySyncPolling) return;
@@ -271,6 +314,21 @@
           const mbUaSetting = mbSettings.find(s => s.key === "musicbrainz_user_agent");
           if (mbUrlSetting && mbUrlSetting.value) mbBaseUrl = mbUrlSetting.value;
           if (mbUaSetting && mbUaSetting.value) mbUserAgent = mbUaSetting.value;
+          // Check if enrichment task is already running
+          try {
+            const taskStatus = await api.get<MetadataTaskStatus>("/admin/metadata/task-status");
+            if (taskStatus.status === "running") {
+              enriching = true;
+              metadataTaskProgress = taskStatus.progress ?? null;
+              pollMetadataTaskStatus().finally(() => { enriching = false; metadataTaskProgress = null; });
+            } else if (taskStatus.status === "completed" && taskStatus.result) {
+              metadataTaskResult = taskStatus.result;
+            } else if (taskStatus.status === "error") {
+              error = taskStatus.message ?? t("admin.metadata.taskFailed");
+            }
+          } catch (e: unknown) {
+            console.warn("Failed to check metadata task status:", e);
+          }
           break;
         case "remote-tracks":
           remoteTracks = await api.get<RemoteTrack[]>("/admin/remote-tracks");
@@ -302,6 +360,9 @@
         case "library-sync":
           librarySyncOverview = await api.get<LibrarySyncOverview>("/admin/p2p/library-sync");
           librarySyncTask = await api.get<LibrarySyncTaskStatus>("/admin/p2p/library-sync/task-status");
+          if (librarySyncTask?.status === "running") {
+            pollLibrarySyncTask();
+          }
           break;
         case "users":
           users = await api.get<User[]>("/admin/users");
@@ -316,6 +377,10 @@
           if (keySetting) editorialApiKey = keySetting.value;
           if (urlSetting) editorialBaseUrl = urlSetting.value;
           if (modelSetting) editorialModel = modelSetting.value;
+          const maxTracksSetting = allSettings.find(s => s.key === "ai_max_tracks");
+          const langSetting = allSettings.find(s => s.key === "instance_language");
+          if (maxTracksSetting) editorialMaxTracks = maxTracksSetting.value;
+          if (langSetting) editorialInstanceLanguage = langSetting.value;
           break;
         case "lyrics":
           const lyricsSettings = await api.get<InstanceSetting[]>("/admin/settings");
@@ -349,8 +414,13 @@
               taskProgress = taskStatus.progress ?? null;
               tasks.startPolling("integrity");
               pollTaskStatus("integrity").finally(() => { storageChecking = false; taskProgress = null; });
+            } else if (taskStatus.status === "error") {
+              error = taskStatus.message ?? t("admin.integrity.taskFailed");
             }
-          } catch { /* ignore */ }
+          } catch (e: unknown) {
+            // Log but don't block the page — task-status unavailability is non-fatal
+            console.warn("Failed to check integrity task status:", e);
+          }
           break;
         case "sync":
           storageStatus = await api.get<StorageStatus>("/admin/storage/status");
@@ -362,8 +432,13 @@
               taskProgress = taskStatus.progress ?? null;
               tasks.startPolling("sync");
               pollTaskStatus("sync").finally(() => { storageSyncing = false; taskProgress = null; });
+            } else if (taskStatus.status === "error") {
+              error = taskStatus.message ?? t("admin.sync.taskFailed");
             }
-          } catch { /* ignore */ }
+          } catch (e: unknown) {
+            // Log but don't block the page — task-status unavailability is non-fatal
+            console.warn("Failed to check sync task status:", e);
+          }
           break;
         case "plugins":
           try {
@@ -498,14 +573,27 @@
   async function enrichAllMetadata() {
     enriching = true;
     error = null;
+    metadataTaskProgress = null;
+    metadataTaskResult = null;
     try {
-      metadataResults = await api.post<MetadataResult[]>("/admin/metadata/enrich-all");
-      // Reload status after enrichment
-      metadataStatus = await api.get<MetadataStatus>("/admin/metadata/status");
+      await api.post("/admin/metadata/enrich-all");
+      // Start polling for progress
+      await pollMetadataTaskStatus();
     } catch (e: unknown) {
+      // The POST may have returned 409 (already running) or other error
+      // Check if a task is actually running
+      try {
+        const status = await api.get<MetadataTaskStatus>("/admin/metadata/task-status");
+        if (status.status === "running") {
+          metadataTaskProgress = status.progress ?? null;
+          await pollMetadataTaskStatus();
+          return;
+        }
+      } catch { /* truly failed */ }
       error = e instanceof Error ? e.message : String(e);
     } finally {
       enriching = false;
+      metadataTaskProgress = null;
     }
   }
 
@@ -541,6 +629,8 @@
       await api.put("/admin/settings/ai_api_key", { value: editorialApiKey });
       await api.put("/admin/settings/ai_base_url", { value: editorialBaseUrl || "https://api.openai.com/v1" });
       await api.put("/admin/settings/ai_model", { value: editorialModel || "gpt-4o-mini" });
+      await api.put("/admin/settings/ai_max_tracks", { value: editorialMaxTracks || "500" });
+      await api.put("/admin/settings/instance_language", { value: editorialInstanceLanguage || "English" });
       editorialStatus = await api.get<EditorialStatus>("/admin/editorial/status");
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
@@ -1013,7 +1103,70 @@
             </button>
           </div>
 
-          <!-- Enrichment Results -->
+          <!-- Enrichment Progress (background task) -->
+          {#if enriching && metadataTaskProgress}
+            <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-5">
+              <div class="flex items-center justify-between text-sm text-[hsl(var(--muted-foreground))] mb-2">
+                <span class="flex items-center gap-2">
+                  <div class="w-4 h-4 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full animate-spin"></div>
+                  {t('admin.metadata.enriching')}
+                  {#if metadataTaskProgress.current_track}
+                    — {metadataTaskProgress.current_track}
+                  {/if}
+                </span>
+                <span>{metadataTaskProgress.processed} / {metadataTaskProgress.total}</span>
+              </div>
+              <div class="w-full bg-[hsl(var(--secondary))] rounded-full h-2 mb-3">
+                <div
+                  class="bg-[hsl(var(--primary))] h-2 rounded-full transition-all duration-300"
+                  style="width: {metadataTaskProgress.total > 0 ? (metadataTaskProgress.processed / metadataTaskProgress.total * 100) : 0}%"
+                ></div>
+              </div>
+              <div class="flex gap-4 text-xs text-[hsl(var(--muted-foreground))]">
+                <span class="text-green-400">{t('admin.metadata.statusEnrichedMB')}: {metadataTaskProgress.enriched}</span>
+                <span class="text-yellow-400">{t('admin.metadata.statusNotFound')}: {metadataTaskProgress.not_found}</span>
+                <span class="text-red-400">{t('admin.metadata.statusError')}: {metadataTaskProgress.errors}</span>
+              </div>
+            </div>
+          {/if}
+
+          <!-- Enrichment Task Result (completed background task) -->
+          {#if metadataTaskResult}
+            <div class="bg-[hsl(var(--card))] rounded-lg border border-green-500/30 p-5">
+              <div class="flex items-center justify-between mb-3">
+                <h3 class="font-medium text-green-400">{t('admin.metadata.enrichmentComplete')}</h3>
+                <button
+                  class="text-xs text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition"
+                  onclick={async () => {
+                    metadataTaskResult = null;
+                    try { await api.post("/admin/metadata/task-dismiss"); } catch { /* ignore */ }
+                  }}
+                >
+                  {t('common.dismiss')}
+                </button>
+              </div>
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div class="bg-[hsl(var(--secondary))] rounded-lg p-3 text-center">
+                  <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.metadata.totalTracks')}</p>
+                  <p class="text-xl font-bold mt-1">{metadataTaskResult.total_processed}</p>
+                </div>
+                <div class="bg-green-500/10 rounded-lg p-3 text-center">
+                  <p class="text-xs text-green-400">{t('admin.metadata.statusEnrichedMB')}</p>
+                  <p class="text-xl font-bold mt-1 text-green-400">{metadataTaskResult.enriched}</p>
+                </div>
+                <div class="bg-yellow-500/10 rounded-lg p-3 text-center">
+                  <p class="text-xs text-yellow-400">{t('admin.metadata.statusNotFound')}</p>
+                  <p class="text-xl font-bold mt-1 text-yellow-400">{metadataTaskResult.not_found}</p>
+                </div>
+                <div class="rounded-lg p-3 text-center {metadataTaskResult.errors > 0 ? 'bg-red-500/10' : 'bg-[hsl(var(--secondary))]'}">
+                  <p class="text-xs {metadataTaskResult.errors > 0 ? 'text-red-400' : 'text-[hsl(var(--muted-foreground))]'}">{t('admin.metadata.statusError')}</p>
+                  <p class="text-xl font-bold mt-1 {metadataTaskResult.errors > 0 ? 'text-red-400' : ''}">{metadataTaskResult.errors}</p>
+                </div>
+              </div>
+            </div>
+          {/if}
+
+          <!-- Individual Enrichment Results (from single-track enrichments) -->
           {#if metadataResults.length > 0}
             <div class="bg-[hsl(var(--card))] rounded-lg overflow-x-auto">
               <div class="p-4 border-b border-[hsl(var(--border))]">
@@ -2044,7 +2197,7 @@
                     {/if}
                   </td>
                   <td class="p-3 text-right text-xs text-[hsl(var(--muted-foreground))]">
-                    {new Date(u.created_at).toLocaleDateString("fr-FR")}
+                    {new Date(u.created_at).toLocaleDateString(undefined)}
                   </td>
                 </tr>
               {/each}
@@ -2097,6 +2250,30 @@
                 class="w-full bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-lg px-3 py-2 text-sm border border-[hsl(var(--border))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]"
               />
             </div>
+            <div>
+              <label class="block text-sm font-medium mb-1" for="ai-max-tracks">{t('admin.editorial.maxTracks')}</label>
+              <p class="text-xs text-[hsl(var(--muted-foreground))] mb-1">{t('admin.editorial.maxTracksDesc')}</p>
+              <input
+                id="ai-max-tracks"
+                type="number"
+                bind:value={editorialMaxTracks}
+                placeholder="500"
+                min="10"
+                max="5000"
+                class="w-full bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-lg px-3 py-2 text-sm border border-[hsl(var(--border))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]"
+              />
+            </div>
+            <div>
+              <label class="block text-sm font-medium mb-1" for="ai-language">{t('admin.editorial.instanceLanguage')}</label>
+              <p class="text-xs text-[hsl(var(--muted-foreground))] mb-1">{t('admin.editorial.instanceLanguageDesc')}</p>
+              <input
+                id="ai-language"
+                type="text"
+                bind:value={editorialInstanceLanguage}
+                placeholder="English"
+                class="w-full bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-lg px-3 py-2 text-sm border border-[hsl(var(--border))] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]"
+              />
+            </div>
             <button
               class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition"
               onclick={() => saveEditorialSettings()}
@@ -2119,7 +2296,7 @@
               <div class="bg-[hsl(var(--secondary))] rounded-lg p-4 text-center">
                 <p class="text-sm font-medium">
                   {editorialStatus.last_generated
-                    ? new Date(editorialStatus.last_generated).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })
+                    ? new Date(editorialStatus.last_generated).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })
                     : t('admin.editorial.never')}
                 </p>
                 <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.editorial.lastGenerated')}</p>
@@ -2305,7 +2482,7 @@
                     {/if}
                   </td>
                   <td class="p-3 text-xs text-[hsl(var(--muted-foreground))]">
-                    {new Date(report.created_at).toLocaleDateString("fr-FR")}
+                    {new Date(report.created_at).toLocaleDateString(undefined)}
                   </td>
                   <td class="p-3 text-right">
                     {#if report.status === "pending"}

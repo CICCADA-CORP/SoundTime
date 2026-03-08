@@ -42,16 +42,29 @@ pub async fn list_favorites(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let mut data = Vec::new();
-    for fav in favs {
-        if let Some(t) = track::Entity::find_by_id(fav.track_id)
-            .one(&state.db)
+    // PERF: Batch-fetch all referenced tracks in a single query using `IS IN`,
+    // instead of querying each track individually (N+1 → 1 query).
+    let track_ids: Vec<Uuid> = favs.iter().map(|f| f.track_id).collect();
+    let tracks_map: std::collections::HashMap<Uuid, track::Model> = if !track_ids.is_empty() {
+        track::Entity::find()
+            .filter(track::Column::Id.is_in(track_ids.clone()))
+            .all(&state.db)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
-        {
-            data.push(super::tracks::TrackResponse::from(t));
-        }
-    }
+            .into_iter()
+            .map(|t| (t.id, t))
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    // Preserve original favorite order (most recent first)
+    let data: Vec<super::tracks::TrackResponse> = favs
+        .iter()
+        .filter_map(|fav| {
+            tracks_map.get(&fav.track_id).map(|t| super::tracks::TrackResponse::from(t.clone()))
+        })
+        .collect();
 
     let total_pages = total.div_ceil(per_page);
 
