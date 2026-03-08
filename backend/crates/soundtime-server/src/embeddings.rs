@@ -240,8 +240,8 @@ pub async fn upsert_track_embedding(
     metadata: Option<serde_json::Value>,
 ) -> Result<(), sea_orm::DbErr> {
     let vec_str = vec_to_pgvector(embedding);
-    let metadata_str = serde_json::to_string(&metadata.unwrap_or(serde_json::json!({})))
-        .unwrap_or_default();
+    let metadata_str =
+        serde_json::to_string(&metadata.unwrap_or(serde_json::json!({}))).unwrap_or_default();
 
     db.execute(Statement::from_sql_and_values(
         sea_orm::DatabaseBackend::Postgres,

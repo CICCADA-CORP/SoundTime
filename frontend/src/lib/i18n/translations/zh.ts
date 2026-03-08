@@ -93,6 +93,8 @@ export default {
   "player.previous": "上一首",
   "player.next": "下一首",
   "player.repeat": "循环播放",
+  "player.autoplay": "自动播放",
+  "player.autoplayActive": "自动播放",
   "player.volume": "音量",
   "player.expand": "展开",
   "player.noLyrics": "暂无歌词",

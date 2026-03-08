@@ -28,6 +28,7 @@ const mockTrack = {
 let mockPlayerStore: any;
 let mockQueueStore: any;
 let mockAuthStore: any;
+let mockRadioStore: any;
 
 function resetMocks() {
   mockPlayerStore = {
@@ -53,6 +54,7 @@ function resetMocks() {
     currentTrack: null,
     hasNext: false,
     hasPrevious: false,
+    autoplay: false,
     playQueue: vi.fn(),
     addToQueue: vi.fn(),
     addNext: vi.fn(),
@@ -60,11 +62,27 @@ function resetMocks() {
     clearQueue: vi.fn(),
     next: vi.fn(),
     previous: vi.fn(),
+    toggleAutoplay: vi.fn(),
   };
   mockAuthStore = {
     isAuthenticated: false,
     user: null,
     isAdmin: false,
+  };
+  mockRadioStore = {
+    active: false,
+    seedType: null,
+    seedLabel: '',
+    loading: false,
+    exhausted: false,
+    error: null,
+    playedCount: 0,
+    autoplayMode: false,
+    startRadio: vi.fn(),
+    stopRadio: vi.fn(),
+    fetchMoreTracks: vi.fn(),
+    markPlayed: vi.fn(),
+    clearError: vi.fn(),
   };
 }
 
@@ -82,6 +100,10 @@ vi.mock('$lib/stores/auth.svelte', () => ({
   getAuthStore: () => mockAuthStore,
 }));
 
+vi.mock('$lib/stores/radio.svelte', () => ({
+  getRadioStore: () => mockRadioStore,
+}));
+
 vi.mock('$lib/api', () => ({
   api: { get: vi.fn().mockResolvedValue([]), post: vi.fn(), delete: vi.fn() },
   API_BASE: '/api',
@@ -96,7 +118,7 @@ import AudioPlayer from './AudioPlayer.svelte';
 
 describe('AudioPlayer', () => {
   beforeEach(() => {
-    resetMocks();
+resetMocks();
     vi.clearAllMocks();
   });
 
@@ -288,5 +310,40 @@ describe('AudioPlayer', () => {
       if (style.includes('width:') && style.includes('0%')) found = true;
     }
     expect(found).toBe(true);
+  });
+
+  it('renders autoplay toggle button', () => {
+    mockPlayerStore.currentTrack = { ...mockTrack };
+    const { container } = render(AudioPlayer);
+    const autoplayBtn = container.querySelector('button[title="player.autoplay"]');
+    expect(autoplayBtn).toBeInTheDocument();
+  });
+
+  it('calls toggleAutoplay when autoplay button is clicked', async () => {
+    mockPlayerStore.currentTrack = { ...mockTrack };
+    const { container } = render(AudioPlayer);
+    const autoplayBtn = container.querySelector('button[title="player.autoplay"]');
+    if (autoplayBtn) {
+      await fireEvent.click(autoplayBtn);
+      expect(mockQueueStore.toggleAutoplay).toHaveBeenCalled();
+    }
+  });
+
+  it('shows autoplay label instead of radio label when autoplayMode is true', () => {
+    mockPlayerStore.currentTrack = { ...mockTrack };
+    mockRadioStore.active = true;
+    mockRadioStore.autoplayMode = true;
+    render(AudioPlayer);
+    // The mobile label should show autoplayActive instead of radio.label
+    expect(screen.getAllByText('player.autoplayActive').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('shows radio label when radio active but not autoplay mode', () => {
+    mockPlayerStore.currentTrack = { ...mockTrack };
+    mockRadioStore.active = true;
+    mockRadioStore.autoplayMode = false;
+    render(AudioPlayer);
+    // Should show radio labels, not autoplay
+    expect(screen.getAllByText('radio.nowPlaying').length).toBeGreaterThanOrEqual(1);
   });
 });

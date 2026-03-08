@@ -10,6 +10,20 @@ let originalQueue = $state<Track[]>([]);
  *  intentional plays differently from auto-queued ones. Reset on `clearQueue()`. */
 let sourceContext = $state<import("$lib/types").PlaybackSource | null>(null);
 
+const AUTOPLAY_STORAGE_KEY = "soundtime_autoplay";
+
+/** Read autoplay preference from localStorage (defaults to false). */
+function loadAutoplay(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(AUTOPLAY_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+let autoplay = $state(loadAutoplay());
+
 /**
  * Replace the queue with `tracks`, start playback at `startIndex`, and
  * optionally record the `source` context (e.g. "album", "playlist") so
@@ -73,6 +87,18 @@ function clearQueue() {
   sourceContext = null;
 }
 
+/** Toggle autoplay preference and persist to localStorage. */
+function toggleAutoplay() {
+  autoplay = !autoplay;
+  if (typeof window !== "undefined") {
+    try {
+      localStorage.setItem(AUTOPLAY_STORAGE_KEY, String(autoplay));
+    } catch {
+      // Silent fail in testing environments
+    }
+  }
+}
+
 function next() {
   const player = getPlayerStore();
   if (queue.length === 0) return;
@@ -83,6 +109,22 @@ function next() {
       if (player.repeat === "all") {
         currentIndex = 0;
         player.play(queue[0]);
+      } else if (autoplay) {
+        // Autoplay: start similar radio from the last track
+        try {
+          const radio = getRadioStore();
+          if (!radio.active) {
+            const lastTrack = queue[currentIndex];
+            if (lastTrack) {
+              radio.startRadio("similar", {
+                seedId: lastTrack.id,
+                label: lastTrack.title,
+                autoplay: true,
+              });
+              sourceContext = "autoplay";
+            }
+          }
+        } catch {}
       }
       return;
     }
@@ -96,6 +138,22 @@ function next() {
     } else if (player.repeat === "all") {
       currentIndex = 0;
       player.play(queue[0]);
+    } else if (autoplay) {
+      // Autoplay: start similar radio from the last track
+      try {
+        const radio = getRadioStore();
+        if (!radio.active) {
+          const lastTrack = queue[currentIndex];
+          if (lastTrack) {
+            radio.startRadio("similar", {
+              seedId: lastTrack.id,
+              label: lastTrack.title,
+              autoplay: true,
+            });
+            sourceContext = "autoplay";
+          }
+        }
+      } catch {}
     }
   }
 
@@ -152,12 +210,14 @@ export function getQueueStore() {
     get radioMode() {
       try { return getRadioStore().active; } catch { return false; }
     },
+    get autoplay() { return autoplay; },
     playQueue,
     addToQueue,
     addNext,
     removeFromQueue,
     moveInQueue,
     clearQueue,
+    toggleAutoplay,
     next,
     previous,
   };

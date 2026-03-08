@@ -149,10 +149,9 @@ pub async fn fetch_trending_redis(
     let entries: Vec<TrendingEntry> = results
         .into_iter()
         .filter_map(|(id_str, score)| {
-            Uuid::parse_str(&id_str).ok().map(|track_id| TrendingEntry {
-                track_id,
-                score,
-            })
+            Uuid::parse_str(&id_str)
+                .ok()
+                .map(|track_id| TrendingEntry { track_id, score })
         })
         .collect();
 

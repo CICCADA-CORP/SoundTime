@@ -932,7 +932,10 @@ pub async fn storage_status(
 
     let size_result = track::Entity::find()
         .select_only()
-        .column_as(Expr::cust("COALESCE(SUM(file_size)::bigint, 0)"), "total_size")
+        .column_as(
+            Expr::cust("COALESCE(SUM(file_size)::bigint, 0)"),
+            "total_size",
+        )
         .into_model::<SizeSum>()
         .one(&state.db)
         .await

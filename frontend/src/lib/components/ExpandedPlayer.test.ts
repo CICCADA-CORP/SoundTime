@@ -28,6 +28,7 @@ const mockTrack = {
 let mockPlayerStore: any;
 let mockQueueStore: any;
 let mockAuthStore: any;
+let mockRadioStore: any;
 const mockApiGet = vi.fn().mockResolvedValue({ lyrics: null, source: null });
 
 function resetMocks() {
@@ -54,6 +55,7 @@ function resetMocks() {
     currentTrack: null,
     hasNext: false,
     hasPrevious: false,
+    autoplay: false,
     playQueue: vi.fn(),
     addToQueue: vi.fn(),
     addNext: vi.fn(),
@@ -61,11 +63,27 @@ function resetMocks() {
     clearQueue: vi.fn(),
     next: vi.fn(),
     previous: vi.fn(),
+    toggleAutoplay: vi.fn(),
   };
   mockAuthStore = {
     isAuthenticated: false,
     user: null,
     isAdmin: false,
+  };
+  mockRadioStore = {
+    active: false,
+    seedType: null,
+    seedLabel: '',
+    loading: false,
+    exhausted: false,
+    error: null,
+    playedCount: 0,
+    autoplayMode: false,
+    startRadio: vi.fn(),
+    stopRadio: vi.fn(),
+    fetchMoreTracks: vi.fn(),
+    markPlayed: vi.fn(),
+    clearError: vi.fn(),
   };
 }
 
@@ -81,6 +99,10 @@ vi.mock('$lib/stores/queue.svelte', () => ({
 
 vi.mock('$lib/stores/auth.svelte', () => ({
   getAuthStore: () => mockAuthStore,
+}));
+
+vi.mock('$lib/stores/radio.svelte', () => ({
+  getRadioStore: () => mockRadioStore,
 }));
 
 vi.mock('$lib/api', () => ({
@@ -99,7 +121,7 @@ vi.mock('$lib/i18n/index.svelte', () => ({
 // Mock lucide-svelte icons
 vi.mock('lucide-svelte', () => {
   const noop = function($$anchor: any, $$props?: any) {};
-  return { X: noop, ChevronDown: noop, Music: noop, ListMusic: noop, Mic2: noop };
+  return { X: noop, ChevronDown: noop, Music: noop, ListMusic: noop, Mic2: noop, Radio: noop, Square: noop };
 });
 
 import { render, screen, fireEvent } from '@testing-library/svelte';
@@ -107,7 +129,7 @@ import ExpandedPlayer from './ExpandedPlayer.svelte';
 
 describe('ExpandedPlayer', () => {
   beforeEach(() => {
-    resetMocks();
+resetMocks();
     vi.clearAllMocks();
     mockApiGet.mockResolvedValue({ lyrics: null, source: null });
   });
@@ -394,5 +416,41 @@ describe('ExpandedPlayer', () => {
     if (progressFill) {
       expect(progressFill.getAttribute('style')).toContain('0%');
     }
+  });
+
+  it('renders autoplay toggle button', () => {
+    mockPlayerStore.currentTrack = { ...mockTrack };
+    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
+    const autoplayBtn = container.querySelector('button[title="player.autoplay"]');
+    expect(autoplayBtn).toBeInTheDocument();
+  });
+
+  it('calls toggleAutoplay when autoplay button is clicked', async () => {
+    mockPlayerStore.currentTrack = { ...mockTrack };
+    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
+    const autoplayBtn = container.querySelector('button[title="player.autoplay"]');
+    if (autoplayBtn) {
+      await fireEvent.click(autoplayBtn);
+      expect(mockQueueStore.toggleAutoplay).toHaveBeenCalled();
+    }
+  });
+
+  it('shows autoplay label in header when autoplayMode is true', () => {
+    mockPlayerStore.currentTrack = { ...mockTrack };
+    mockRadioStore.active = true;
+    mockRadioStore.autoplayMode = true;
+    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
+    expect(screen.getAllByText('player.autoplayActive').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('shows radio header when radio active but not autoplay mode', () => {
+    mockPlayerStore.currentTrack = { ...mockTrack };
+    mockRadioStore.active = true;
+    mockRadioStore.autoplayMode = false;
+    mockRadioStore.seedLabel = 'Test Seed';
+    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
+    // Should show "radio.nowPlayingFrom" text
+    const text = screen.getByText(/radio\.nowPlayingFrom/);
+    expect(text).toBeInTheDocument();
   });
 });

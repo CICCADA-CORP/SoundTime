@@ -368,7 +368,11 @@ async fn generate_editorial_inner(state: &AppState) -> Result<usize, String> {
         let target_count = track_list.len() * 120_000 / estimated_tokens;
         let truncated: Vec<_> = track_list.into_iter().take(target_count.max(10)).collect();
         let json = serde_json::to_string(&truncated).unwrap_or_default();
-        tracing::warn!(original_tokens = estimated_tokens, truncated_to = truncated.len(), "Track list truncated to fit token budget");
+        tracing::warn!(
+            original_tokens = estimated_tokens,
+            truncated_to = truncated.len(),
+            "Track list truncated to fit token budget"
+        );
         (truncated, json)
     } else {
         (track_list, track_json)
@@ -438,7 +442,10 @@ Respond ONLY with valid JSON in this exact format:
     let resp = match send_request().await {
         Ok(r) => r,
         Err(first_err) => {
-            tracing::warn!("AI API request failed, retrying in 2s: {:?}", first_err.without_url());
+            tracing::warn!(
+                "AI API request failed, retrying in 2s: {:?}",
+                first_err.without_url()
+            );
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             send_request().await.map_err(|e| {
                 tracing::debug!("AI API retry also failed: {:?}", e.without_url());

@@ -19,6 +19,12 @@
       return;
     }
     
+    // If tracks array is present but empty, don't do anything
+    if (Array.isArray(album.tracks) && album.tracks.length === 0) {
+      return;
+    }
+    
+    // If tracks is undefined/null, fetch from API
     // Prevent double-clicks while loading
     if (loading) return;
     

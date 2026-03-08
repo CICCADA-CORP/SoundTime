@@ -61,8 +61,10 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
-        db.execute_unprepared("DROP INDEX IF EXISTS idx_tracks_musicbrainz_id").await?;
-        db.execute_unprepared("DROP INDEX IF EXISTS idx_tracks_musicbrainz_id_null").await?;
+        db.execute_unprepared("DROP INDEX IF EXISTS idx_tracks_musicbrainz_id")
+            .await?;
+        db.execute_unprepared("DROP INDEX IF EXISTS idx_tracks_musicbrainz_id_null")
+            .await?;
 
         manager
             .drop_index(
@@ -73,7 +75,8 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        db.execute_unprepared("DROP INDEX IF EXISTS idx_tracks_bitrate_notnull").await?;
+        db.execute_unprepared("DROP INDEX IF EXISTS idx_tracks_bitrate_notnull")
+            .await?;
 
         Ok(())
     }

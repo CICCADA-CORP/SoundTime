@@ -93,6 +93,8 @@ export default {
   "player.previous": "Предыдущий",
   "player.next": "Следующий",
   "player.repeat": "Повтор",
+  "player.autoplay": "Автовоспроизведение",
+  "player.autoplayActive": "Автовоспроизведение",
   "player.volume": "Громкость",
   "player.expand": "Развернуть",
   "player.noLyrics": "Текст недоступен",

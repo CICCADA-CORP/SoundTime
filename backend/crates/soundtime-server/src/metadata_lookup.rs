@@ -18,7 +18,9 @@
 
 use reqwest::Client;
 use sea_orm::DatabaseConnection;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set,
+};
 use serde::{Deserialize, Serialize};
 use soundtime_audio::StorageBackend;
 use soundtime_db::entities::{album, artist, instance_setting, track};

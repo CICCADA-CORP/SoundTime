@@ -13,6 +13,7 @@ let playedIds = $state<Set<string>>(new Set());
 let loading = $state(false);
 let exhausted = $state(false);
 let error = $state<string | null>(null);
+let autoplayMode = $state(false);
 
 // ─── Functions ──────────────────────────────────────────────────────
 
@@ -22,7 +23,7 @@ let error = $state<string | null>(null);
  */
 async function startRadio(
   type: RadioSeedType,
-  opts: { seedId?: string; genre?: string; label: string }
+  opts: { seedId?: string; genre?: string; label: string; autoplay?: boolean }
 ) {
   // Reset state
   active = true;
@@ -34,6 +35,7 @@ async function startRadio(
   playedIds = new Set();
   loading = true;
   exhausted = false;
+  autoplayMode = opts.autoplay ?? false;
 
   try {
     const res = await radioApi.next({
@@ -59,7 +61,7 @@ async function startRadio(
 
     // Start playback through queue
     const queue = getQueueStore();
-    queue.playQueue(res.tracks, 0, "radio");
+    queue.playQueue(res.tracks, 0, autoplayMode ? "autoplay" : "radio");
   } catch (e) {
     active = false;
     error = e instanceof Error ? e.message : "Failed to start radio";
@@ -79,6 +81,7 @@ function stopRadio() {
   seedLabel = "";
   exhausted = false;
   error = null;
+  autoplayMode = false;
 }
 
 /**
@@ -165,6 +168,7 @@ export function getRadioStore() {
     get exhausted() { return exhausted; },
     get error() { return error; },
     get playedCount() { return playedIds.size; },
+    get autoplayMode() { return autoplayMode; },
     startRadio,
     stopRadio,
     fetchMoreTracks,

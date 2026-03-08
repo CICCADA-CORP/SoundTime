@@ -1,5 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// Mock localStorage globally
+const localStorageMock = {
+  getItem: vi.fn(() => null),
+  setItem: vi.fn(),
+  removeItem: vi.fn(),
+};
+Object.defineProperty(global, 'localStorage', {
+  value: localStorageMock,
+  writable: true,
+});
+
 // Mock player store
 const mockPlayerStore = {
   currentTrack: null as any,
@@ -13,6 +24,21 @@ const mockPlayerStore = {
 
 vi.mock('./player.svelte', () => ({
   getPlayerStore: () => mockPlayerStore,
+}));
+
+// Mock radio store
+const mockRadioStore = {
+  active: false,
+  startRadio: vi.fn(),
+  stopRadio: vi.fn(),
+  markPlayed: vi.fn(),
+  fetchMoreTracks: vi.fn(),
+  loading: false,
+  exhausted: false,
+};
+
+vi.mock('./radio.svelte', () => ({
+  getRadioStore: () => mockRadioStore,
 }));
 
 import { getQueueStore } from './queue.svelte';
@@ -47,8 +73,14 @@ describe('Queue Store', () => {
     mockPlayerStore.shuffle = false;
     mockPlayerStore.repeat = 'none';
     mockPlayerStore.progress = 0;
+    mockRadioStore.active = false;
     queue = getQueueStore();
     queue.clearQueue();
+    // Reset autoplay if it was enabled by a previous test
+    if (queue.autoplay) {
+      queue.toggleAutoplay();
+    }
+    vi.clearAllMocks(); // Clear mocks again after toggleAutoplay localStorage calls
   });
 
   describe('initial state', () => {
@@ -377,6 +409,116 @@ describe('Queue Store', () => {
       queue.playQueue([track1], 0, 'playlist' as any);
       queue.clearQueue();
       expect(queue.sourceContext).toBeNull();
+    });
+  });
+
+  describe('autoplay', () => {
+    it('autoplay is false by default', () => {
+      expect(queue.autoplay).toBe(false);
+    });
+
+    it('toggleAutoplay toggles state to true', () => {
+      queue.toggleAutoplay();
+      expect(queue.autoplay).toBe(true);
+    });
+
+    it('toggleAutoplay toggles state back to false', () => {
+      queue.toggleAutoplay(); // true
+      queue.toggleAutoplay(); // false
+      expect(queue.autoplay).toBe(false);
+    });
+
+    it('toggleAutoplay persists to localStorage', () => {
+      queue.toggleAutoplay();
+      expect(localStorageMock.setItem).toHaveBeenCalledWith('soundtime_autoplay', 'true');
+      queue.toggleAutoplay();
+      expect(localStorageMock.setItem).toHaveBeenCalledWith('soundtime_autoplay', 'false');
+    });
+
+    it('next() does NOT start radio when autoplay is off and queue ends', () => {
+      queue.playQueue([track1]);
+      vi.clearAllMocks();
+      // autoplay is false by default
+      queue.next();
+      expect(mockRadioStore.startRadio).not.toHaveBeenCalled();
+    });
+
+    it('next() starts similar radio when autoplay is on and queue ends (non-shuffle)', () => {
+      queue.toggleAutoplay(); // enable autoplay
+      queue.playQueue([track1]);
+      vi.clearAllMocks();
+      mockRadioStore.active = false;
+
+      queue.next();
+
+      expect(mockRadioStore.startRadio).toHaveBeenCalledWith('similar', {
+        seedId: track1.id,
+        label: track1.title,
+        autoplay: true,
+      });
+    });
+
+    it('next() starts similar radio when autoplay is on and queue ends (shuffle)', () => {
+      queue.toggleAutoplay(); // enable autoplay
+      queue.playQueue([track1]);
+      mockPlayerStore.shuffle = true;
+      vi.clearAllMocks();
+      mockRadioStore.active = false;
+
+      queue.next();
+
+      expect(mockRadioStore.startRadio).toHaveBeenCalledWith('similar', {
+        seedId: track1.id,
+        label: track1.title,
+        autoplay: true,
+      });
+    });
+
+    it('next() does NOT start radio when repeat=all (repeat takes precedence)', () => {
+      queue.toggleAutoplay(); // enable autoplay
+      queue.playQueue([track1]);
+      mockPlayerStore.repeat = 'all';
+      vi.clearAllMocks();
+
+      queue.next();
+
+      expect(mockRadioStore.startRadio).not.toHaveBeenCalled();
+      // Instead, repeat-all should loop
+      expect(mockPlayerStore.play).toHaveBeenCalledWith(track1);
+    });
+
+    it('next() does NOT start radio when radio is already active', () => {
+      queue.toggleAutoplay(); // enable autoplay
+      queue.playQueue([track1]);
+      vi.clearAllMocks();
+      mockRadioStore.active = true; // radio already running
+
+      queue.next();
+
+      expect(mockRadioStore.startRadio).not.toHaveBeenCalled();
+    });
+
+    it('autoplay sets sourceContext to "autoplay"', () => {
+      queue.toggleAutoplay(); // enable autoplay
+      queue.playQueue([track1]);
+      vi.clearAllMocks();
+      mockRadioStore.active = false;
+
+      queue.next();
+
+      expect(queue.sourceContext).toBe('autoplay');
+    });
+
+    it('next() does not trigger autoplay when there are more tracks in queue', () => {
+      queue.toggleAutoplay(); // enable autoplay
+      queue.playQueue([track1, track2, track3]);
+      vi.clearAllMocks();
+      mockRadioStore.active = false;
+
+      queue.next(); // moves to track2, still has track3
+
+      expect(mockRadioStore.startRadio).not.toHaveBeenCalled();
+      expect(mockPlayerStore.play).toHaveBeenCalledWith(track2);
     });
   });
 });

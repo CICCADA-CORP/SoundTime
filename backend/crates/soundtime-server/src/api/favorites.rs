@@ -62,7 +62,9 @@ pub async fn list_favorites(
     let data: Vec<super::tracks::TrackResponse> = favs
         .iter()
         .filter_map(|fav| {
-            tracks_map.get(&fav.track_id).map(|t| super::tracks::TrackResponse::from(t.clone()))
+            tracks_map
+                .get(&fav.track_id)
+                .map(|t| super::tracks::TrackResponse::from(t.clone()))
         })
         .collect();
 

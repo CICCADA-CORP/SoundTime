@@ -105,8 +105,9 @@ export interface ListenHistory {
  * - `"queue"` — played from the up-next queue
  * - `"collection"` — played from the user's library / collection
  * - `"explore"` — played from the explore / discover page
+ * - `"autoplay"` — auto-queued by the autoplay feature when queue ends
  */
-export type PlaybackSource = "album" | "playlist" | "radio" | "search" | "queue" | "collection" | "explore";
+export type PlaybackSource = "album" | "playlist" | "radio" | "search" | "queue" | "collection" | "explore" | "autoplay";
 
 /**
  * Request body for `POST /history` — logs a listen event with optional

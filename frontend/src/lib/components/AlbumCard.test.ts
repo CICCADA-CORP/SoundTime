@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 
-const mockPlayQueue = vi.fn();
+const { mockPlayQueue, mockApiGet } = vi.hoisted(() => ({
+  mockPlayQueue: vi.fn(),
+  mockApiGet: vi.fn(),
+}));
+
 vi.mock('$lib/stores/queue.svelte', () => ({
   getQueueStore: () => ({
     playQueue: mockPlayQueue,
@@ -19,7 +23,6 @@ vi.mock('$lib/stores/queue.svelte', () => ({
   }),
 }));
 
-const mockApiGet = vi.fn();
 vi.mock('$lib/api', () => ({
   api: {
     get: mockApiGet,

@@ -93,6 +93,8 @@ export default {
   "player.previous": "Previous",
   "player.next": "Next",
   "player.repeat": "Repeat",
+  "player.autoplay": "Autoplay",
+  "player.autoplayActive": "Autoplay",
   "player.volume": "Volume",
   "player.expand": "Expand",
   "player.noLyrics": "No lyrics available",

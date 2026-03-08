@@ -158,13 +158,17 @@
         <ChevronDown class="w-6 h-6" />
       </button>
 
-      {#if radio.active}
-        <div class="flex items-center gap-2">
-          <div class="w-2 h-2 rounded-full bg-[hsl(var(--primary))] animate-pulse"></div>
-          <p class="text-xs font-medium text-[hsl(var(--primary))] uppercase tracking-widest">
-            {t('radio.nowPlayingFrom')} {radio.seedLabel}
-          </p>
-        </div>
+        {#if radio.active}
+          <div class="flex items-center gap-2">
+            <div class="w-2 h-2 rounded-full bg-[hsl(var(--primary))] animate-pulse"></div>
+            <p class="text-xs font-medium text-[hsl(var(--primary))] uppercase tracking-widest">
+              {#if radio.autoplayMode}
+                {t('player.autoplayActive')}
+              {:else}
+                {t('radio.nowPlayingFrom')} {radio.seedLabel}
+              {/if}
+            </p>
+          </div>
       {:else}
         <p class="text-xs font-medium text-[hsl(var(--muted-foreground))] uppercase tracking-widest">
           {t('player.nowPlaying')}
@@ -236,8 +240,15 @@
             {/if}
             {#if radio.active}
               <div class="flex items-center gap-1.5 mt-1">
-                <Radio class="w-3 h-3 text-[hsl(var(--primary))]" />
-                <span class="text-[10px] text-[hsl(var(--primary))] font-medium uppercase tracking-wider">{t('radio.label')}</span>
+                {#if radio.autoplayMode}
+                  <svg class="w-3 h-3 text-[hsl(var(--primary))]" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M18.6 6.62c-1.44 0-2.8.56-3.77 1.53L12 10.66 10.48 12h.01L7.8 14.39c-.64.64-1.49.99-2.4.99-1.87 0-3.39-1.52-3.39-3.39S3.53 8.61 5.4 8.61c.91 0 1.76.35 2.44 1.03l1.13 1 1.51-1.34L9.22 8.2C8.2 7.18 6.84 6.62 5.4 6.62 2.42 6.62 0 9.04 0 12s2.42 5.38 5.4 5.38c1.44 0 2.8-.56 3.77-1.53l2.83-2.5.01.01L13.52 12h-.01l2.69-2.39c.64-.64 1.49-.99 2.4-.99 1.87 0 3.39 1.52 3.39 3.39s-1.52 3.38-3.39 3.38c-.9 0-1.76-.35-2.44-1.03l-1.14-1.01-1.51 1.34 1.27 1.12c1.02 1.01 2.37 1.57 3.82 1.57 2.98 0 5.4-2.41 5.4-5.38s-2.42-5.37-5.4-5.37z"/>
+                  </svg>
+                  <span class="text-[10px] text-[hsl(var(--primary))] font-medium uppercase tracking-wider">{t('player.autoplayActive')}</span>
+                {:else}
+                  <Radio class="w-3 h-3 text-[hsl(var(--primary))]" />
+                  <span class="text-[10px] text-[hsl(var(--primary))] font-medium uppercase tracking-wider">{t('radio.label')}</span>
+                {/if}
               </div>
             {/if}
           </div>
@@ -296,6 +307,16 @@
             {#if player.repeat === 'one'}
               <span class="absolute text-[8px] font-bold">1</span>
             {/if}
+          </button>
+          <button 
+            class="text-[hsl(var(--muted-foreground))] hover:text-white transition" 
+            class:text-[hsl(var(--primary))]={queue.autoplay} 
+            onclick={queue.toggleAutoplay} 
+            title={t('player.autoplay')}
+          >
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M18.6 6.62c-1.44 0-2.8.56-3.77 1.53L12 10.66 10.48 12h.01L7.8 14.39c-.64.64-1.49.99-2.4.99-1.87 0-3.39-1.52-3.39-3.39S3.53 8.61 5.4 8.61c.91 0 1.76.35 2.44 1.03l1.13 1 1.51-1.34L9.22 8.2C8.2 7.18 6.84 6.62 5.4 6.62 2.42 6.62 0 9.04 0 12s2.42 5.38 5.4 5.38c1.44 0 2.8-.56 3.77-1.53l2.83-2.5.01.01L13.52 12h-.01l2.69-2.39c.64-.64 1.49-.99 2.4-.99 1.87 0 3.39 1.52 3.39 3.39s-1.52 3.38-3.39 3.38c-.9 0-1.76-.35-2.44-1.03l-1.14-1.01-1.51 1.34 1.27 1.12c1.02 1.01 2.37 1.57 3.82 1.57 2.98 0 5.4-2.41 5.4-5.38s-2.42-5.37-5.4-5.37z"/>
+            </svg>
           </button>
           {#if radio.active}
             <button

@@ -650,7 +650,10 @@ async fn seed_similar(
     .await
     .map_err(|e| {
         tracing::error!(error = %e, "pgvector similarity search failed");
-        (StatusCode::INTERNAL_SERVER_ERROR, format!("Similarity search failed: {e}"))
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Similarity search failed: {e}"),
+        )
     })?;
 
     if similar_ids.is_empty() {
