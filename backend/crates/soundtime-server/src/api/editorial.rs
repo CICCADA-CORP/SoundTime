@@ -465,7 +465,7 @@ Respond ONLY with valid JSON in this exact format:
         .text()
         .await
         .map_err(|e| format!("Failed to read AI response body: {e}"))?;
-    let ai_body: serde_json::Value = serde_json::from_str(&response_text).map_err(|e| {
+    let ai_body: serde_json::Value = serde_json::from_str(&response_text).map_err(|_e| {
         let preview = if response_text.len() > 200 {
             &response_text[..200]
         } else {
