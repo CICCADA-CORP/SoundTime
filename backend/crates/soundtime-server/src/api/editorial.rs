@@ -131,8 +131,9 @@ pub struct EditorialStatus {
 pub async fn editorial_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<EditorialStatus>, (StatusCode, String)> {
-    let api_key = get_setting(&state, "ai_api_key").await;
-    let ai_configured = api_key.map(|k| !k.is_empty()).unwrap_or(false);
+    let ai_configured = get_setting(&state, "ai_api_key")
+        .await
+        .is_some_and(|k| !k.is_empty());
     let base_url = get_setting(&state, "ai_base_url")
         .await
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
