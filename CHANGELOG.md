@@ -5,9 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2026-03-10]
 
 ### Added
+
+- **Autoplay / Auto-queue** — Continuous playback that automatically queues similar tracks when the queue empties.
+  - Toggle in both mini and expanded player UI with persistent state via `localStorage`.
+  - Uses the radio API (`/api/radio/next`) with `similar` seed type for intelligent track selection.
+  - Excludes recently played tracks (up to 2000) to avoid repetition.
+  - Svelte 5 rune store (`queue.svelte.ts`) with cross-store event communication via `CustomEvent`.
+  - i18n support in all 5 languages (EN, FR, ES, RU, ZH).
+  - 19 unit tests covering queue store, AudioPlayer, and ExpandedPlayer.
+
+- **P2P DHT Discovery** — Mainline DHT peer discovery via the Pkarr protocol.
+  - Uses iroh's `DhtAddressLookup` (feature flag `address-lookup-pkarr-dht`) for global peer discovery without relying solely on DNS/relay infrastructure.
+  - Enabled by default (`P2P_DHT_DISCOVERY=true`); configurable via environment variable.
+  - Read-only DHT status indicator in the admin P2P dashboard (Discovery section).
+  - `P2pStatus.dht_discovery_enabled` field exposed via `GET /api/p2p/status`.
+  - i18n support in all 5 languages.
+  - 3 new backend tests (env parsing: default true, explicit true, case-insensitive false).
+
+- **Database Migration #33** — Collation version refresh (`ALTER DATABASE ... REFRESH COLLATION VERSION`) for compatibility with the pgvector Docker image switch.
 
 - **P2P Track Health Monitoring** (`soundtime-p2p/track_health`)
   - `TrackHealthManager` with per-track health state tracking (Healthy, Recovered, Degraded, Dereferenced).
@@ -51,13 +69,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **iroh upgraded from 0.32 to 0.96** — includes iroh-blobs 0.96 with `FsStore`.
 - **Rust minimum version raised to 1.93** (Docker image: `rust:1.93-slim`).
+- **DHT discovery enabled by default** — `P2P_DHT_DISCOVERY` defaults to `true` (opt-out rather than opt-in).
 - P2P identity types aliased: `NodeId → EndpointId`, `NodeAddr → EndpointAddr` for backward compatibility.
 - `process_health_batch` now checks dereferenced tracks for local blob availability instead of skipping them permanently.
 - `auto_repair_on_failure` attempts recovery for dereferenced tracks instead of short-circuiting.
 
 ### Fixed
 
+- **AlbumCard lazy-fetch** (Issue #3) — Album track count and duration now load lazily from the API instead of requiring upfront data, preventing missing stats on paginated views.
+- **Admin stats storage calculation** (Issue #4) — Fixed `SUM(file_size)` overflow by casting to `::bigint` in the admin stats SQL query.
+- **CI pipeline** — Fixed `cargo fmt` and `clippy` failures across multiple crates; fixed Vitest mock hoisting with `vi.hoisted()`.
+- **CodeQL security alerts** — Resolved cleartext logging (#4), tightened GitHub Actions workflow permissions (#34, #35, #36).
 - Dead code warning for `clean_domain` in listing worker (now `#[cfg(test)]`).
+
+### Security
+
+- Updated npm dependencies to resolve known vulnerabilities (12 of 15 Dependabot alerts resolved; 3 accepted as temporary risk in wasmtime/extism transitive dependencies).
+- Tightened GitHub Actions CI workflow permissions from default to explicit read-only (`contents: read`).
+- Removed cleartext credential logging from editorial playlist handler.
 
 ## [1.0.0] - 2026-02-01
 

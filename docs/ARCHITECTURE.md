@@ -52,7 +52,7 @@ The user interface is a Single Page Application (SPA) powered by SvelteKit.
 
 We use **Iroh 0.96** for secure, direct device-to-device communication.
 
-- **Discovery**: DNS (PkarrPublisher) + optional mDNS + Peer Exchange (PEX)
+- **Discovery**: DNS (PkarrPublisher) + DHT (DhtAddressLookup) + optional mDNS + Peer Exchange (PEX)
 - **Transfer**: BLAKE3 verified streaming via iroh-blobs `FsStore`
 - **Identity**: Ed25519 keypairs per node (`EndpointId`)
 - **Search**: Bloom filter-based distributed search across peers

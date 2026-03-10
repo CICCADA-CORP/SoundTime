@@ -1878,6 +1878,16 @@
               </div>
             </div>
 
+            <!-- Discovery -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
+                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.dhtDiscovery')}</p>
+                <p class="text-xl font-bold mt-1 {p2pStatus.dht_discovery_enabled ? 'text-green-400' : 'text-[hsl(var(--muted-foreground))]'}">
+                  {p2pStatus.dht_discovery_enabled ? t('admin.p2p.dhtEnabled') : t('admin.p2p.dhtDisabled')}
+                </p>
+              </div>
+            </div>
+
             <!-- Peers -->
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">

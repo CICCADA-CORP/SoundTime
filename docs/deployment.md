@@ -85,6 +85,7 @@ P2P_PORT=11204
 P2P_BIND_PORT=11204
 P2P_BLOBS_DIR=/data/p2p/blobs
 P2P_SECRET_KEY_PATH=/data/p2p/secret_key
+P2P_DHT_DISCOVERY=true                  # Mainline DHT peer discovery (default: true)
 P2P_LOCAL_DISCOVERY=false               # disable mDNS in production
 P2P_SEED_PEERS=                         # comma-separated NodeIds of peers to auto-connect
 P2P_CACHE_MAX_SIZE=2GB                  # max disk for cached P2P blobs (default: 2GB)

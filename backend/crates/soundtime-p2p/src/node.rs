@@ -195,6 +195,8 @@ pub struct P2pConfig {
     pub bind_port: u16,
     /// Whether to enable local network (mDNS) discovery
     pub enable_local_discovery: bool,
+    /// Whether to enable DHT (BitTorrent Mainline) discovery for finding peers without seed nodes
+    pub enable_dht_discovery: bool,
     /// Seed peer EndpointIds to connect to on startup (auto-discovery)
     pub seed_peers: Vec<String>,
     /// Path to the audio file storage (for cover art sync)
@@ -210,6 +212,7 @@ impl Default for P2pConfig {
             secret_key_path: PathBuf::from("data/p2p/secret_key"),
             bind_port: 0,
             enable_local_discovery: true,
+            enable_dht_discovery: true,
             seed_peers: Vec::new(),
             audio_storage_path: PathBuf::from("data/music"),
             metadata_storage_path: None,
@@ -237,6 +240,10 @@ impl P2pConfig {
             .unwrap_or_else(|_| "true".to_string())
             .eq_ignore_ascii_case("true");
 
+        let enable_dht_discovery = std::env::var("P2P_DHT_DISCOVERY")
+            .unwrap_or_else(|_| "true".to_string())
+            .eq_ignore_ascii_case("true");
+
         let seed_peers = std::env::var("P2P_SEED_PEERS")
             .unwrap_or_default()
             .split(',')
@@ -257,6 +264,7 @@ impl P2pConfig {
             secret_key_path,
             bind_port,
             enable_local_discovery,
+            enable_dht_discovery,
             seed_peers,
             audio_storage_path,
             metadata_storage_path,
@@ -345,6 +353,15 @@ impl P2pNode {
             builder =
                 builder.address_lookup(iroh::address_lookup::MdnsAddressLookupBuilder::default());
             tracing::info!("mDNS address lookup configured");
+        }
+
+        // Optionally enable DHT (BitTorrent Mainline) discovery
+        if config.enable_dht_discovery {
+            info!("enabling DHT (BitTorrent Mainline) discovery");
+            let dht_builder =
+                iroh::address_lookup::DhtAddressLookup::builder().n0_dns_pkarr_relay();
+            builder = builder.address_lookup(dht_builder);
+            tracing::info!("DHT address lookup configured");
         }
 
         // Bind to the configured port (0 = random)
@@ -655,6 +672,11 @@ impl P2pNode {
         self.node_addr()
             .map(|addr| addr.ip_addrs().count())
             .unwrap_or(0)
+    }
+
+    /// Whether DHT discovery is enabled for this node.
+    pub fn dht_discovery_enabled(&self) -> bool {
+        self._config.enable_dht_discovery
     }
 
     /// Get a reference to the blob cache.
@@ -3059,6 +3081,7 @@ mod tests {
         let cfg = P2pConfig::default();
         assert_eq!(cfg.bind_port, 0);
         assert!(cfg.enable_local_discovery);
+        assert!(cfg.enable_dht_discovery);
         assert!(cfg.seed_peers.is_empty());
         assert_eq!(cfg.blobs_dir, PathBuf::from("data/p2p/blobs"));
     }
@@ -3554,6 +3577,7 @@ mod tests {
         std::env::remove_var("P2P_SECRET_KEY_PATH");
         std::env::remove_var("P2P_BIND_PORT");
         std::env::remove_var("P2P_LOCAL_DISCOVERY");
+        std::env::remove_var("P2P_DHT_DISCOVERY");
         std::env::remove_var("P2P_SEED_PEERS");
         std::env::remove_var("AUDIO_STORAGE_PATH");
         std::env::remove_var("METADATA_STORAGE_PATH");
@@ -3563,6 +3587,7 @@ mod tests {
         assert_eq!(cfg.secret_key_path, PathBuf::from("data/p2p/secret_key"));
         assert_eq!(cfg.bind_port, 0);
         assert!(cfg.enable_local_discovery);
+        assert!(cfg.enable_dht_discovery);
         assert!(cfg.seed_peers.is_empty());
         assert_eq!(cfg.audio_storage_path, PathBuf::from("data/music"));
         assert!(cfg.metadata_storage_path.is_none());
@@ -3617,6 +3642,30 @@ mod tests {
         let cfg = P2pConfig::from_env();
         assert!(cfg.enable_local_discovery);
         std::env::remove_var("P2P_LOCAL_DISCOVERY");
+    }
+
+    #[test]
+    fn test_config_from_env_dht_discovery_true() {
+        std::env::set_var("P2P_DHT_DISCOVERY", "true");
+        let cfg = P2pConfig::from_env();
+        assert!(cfg.enable_dht_discovery);
+        std::env::remove_var("P2P_DHT_DISCOVERY");
+    }
+
+    #[test]
+    fn test_config_from_env_dht_discovery_case_insensitive() {
+        std::env::set_var("P2P_DHT_DISCOVERY", "TRUE");
+        let cfg = P2pConfig::from_env();
+        assert!(cfg.enable_dht_discovery);
+        std::env::remove_var("P2P_DHT_DISCOVERY");
+    }
+
+    #[test]
+    fn test_config_from_env_dht_discovery_false() {
+        std::env::set_var("P2P_DHT_DISCOVERY", "false");
+        let cfg = P2pConfig::from_env();
+        assert!(!cfg.enable_dht_discovery);
+        std::env::remove_var("P2P_DHT_DISCOVERY");
     }
 
     #[test]

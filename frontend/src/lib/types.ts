@@ -237,6 +237,7 @@ export interface P2pStatus {
   direct_addresses: number;
   peer_count: number;
   online_peer_count: number;
+  dht_discovery_enabled: boolean;
 }
 
 export interface P2pPeer {

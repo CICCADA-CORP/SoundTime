@@ -5,7 +5,7 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
-iroh = { version = "0.96", features = ["address-lookup-mdns"] }
+iroh = { version = "0.96", features = ["address-lookup-mdns", "address-lookup-pkarr-dht"] }
 iroh-blobs = "0.96"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs"] }
 tracing = "0.1"

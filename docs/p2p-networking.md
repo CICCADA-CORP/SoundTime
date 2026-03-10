@@ -26,7 +26,7 @@ Each SoundTime instance runs an **iroh node** that communicates over **QUIC** (U
 |-----------|-----------|---------|
 | Transport | iroh 0.96 (QUIC over UDP) | Encrypted peer-to-peer connections |
 | Content storage | iroh-blobs 0.96 (BLAKE3, FsStore) | Content-addressed audio file storage |
-| Discovery | PkarrPublisher + DnsDiscovery + optional mDNS | Finding peers on the network |
+| Discovery | PkarrPublisher + DnsDiscovery + DHT + optional mDNS | Finding peers on the network |
 | Relay | n0.computer production relays | NAT traversal when direct connections fail |
 | Search | Bloom filters (~1.2 MB per peer) | Distributed query routing |
 | Health | TrackHealthManager | Auto-retry, 3-strike dereference, re-referencing |
@@ -104,7 +104,24 @@ The primary discovery method. Your node publishes its NodeId and relay URL to n0
 - Works across NATs via relay servers
 - NodeIds are resolvable globally
 
-### 2. Local Swarm Discovery (mDNS)
+### 2. DHT Discovery (Mainline DHT)
+
+Global peer discovery via the [Mainline DHT](https://en.wikipedia.org/wiki/Mainline_DHT) (the same DHT used by BitTorrent). Enabled by default.
+
+```env
+P2P_DHT_DISCOVERY=true   # default
+```
+
+Uses iroh's `DhtAddressLookup` (feature flag `address-lookup-pkarr-dht`) to publish and resolve node addresses through the Pkarr protocol on the Mainline DHT. This provides a fully decentralized discovery mechanism that does not depend on n0's DNS infrastructure.
+
+- **Enabled by default** — set `P2P_DHT_DISCOVERY=false` to disable
+- Works alongside DNS discovery and relay servers (additive)
+- No additional configuration needed
+- Status visible in the admin P2P dashboard as a read-only indicator
+
+> **Note**: DHT discovery is a compile-time feature. Changing `P2P_DHT_DISCOVERY` requires a server restart — the iroh Endpoint is immutable once bound.
+
+### 3. Local Swarm Discovery (mDNS)
 
 Optional LAN-based discovery for instances on the same network.
 
@@ -114,7 +131,7 @@ P2P_LOCAL_DISCOVERY=true
 
 Uses `iroh::discovery::local_swarm_discovery::LocalSwarmDiscovery` to find peers via multicast DNS. Useful for home lab setups where multiple instances run on the same network.
 
-### 3. Seed Peers
+### 4. Seed Peers
 
 Explicitly configured peers that are connected on startup:
 
@@ -128,7 +145,7 @@ On startup, the node:
 3. Exchanges peer lists (PEX)
 4. Sends a full catalog sync
 
-### 4. Peer Exchange (PEX)
+### 5. Peer Exchange (PEX)
 
 Peers periodically share their known peer lists with each other:
 
@@ -297,6 +314,7 @@ curl -X POST http://localhost:8080/api/admin/blocked-domains \
 | `P2P_BIND_PORT` | `11204` | Bind port (0 = random) |
 | `P2P_BLOBS_DIR` | `data/p2p/blobs` | iroh-blobs persistent storage path |
 | `P2P_SECRET_KEY_PATH` | `data/p2p/secret_key` | Path to the Ed25519 secret key |
+| `P2P_DHT_DISCOVERY` | `true` | Enable Mainline DHT discovery via Pkarr |
 | `P2P_LOCAL_DISCOVERY` | `true` | Enable mDNS local network discovery |
 | `P2P_SEED_PEERS` | — | Comma-separated NodeIds for auto-connect |
 
@@ -314,7 +332,11 @@ Returns:
   "enabled": true,
   "node_id": "abcdef1234...",
   "relay_url": "https://relay.example.com",
-  "peers_count": 3
+  "relay_connected": true,
+  "direct_addresses": 2,
+  "peer_count": 3,
+  "online_peer_count": 2,
+  "dht_discovery_enabled": true
 }
 ```
 

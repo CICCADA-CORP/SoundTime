@@ -473,6 +473,9 @@ export default {
   "admin.p2p.remove": "移除",
   "admin.p2p.peerTracks": "对方曲目",
   "admin.p2p.noPeers": "没有已连接的节点。",
+  "admin.p2p.dhtDiscovery": "DHT 发现",
+  "admin.p2p.dhtEnabled": "已启用",
+  "admin.p2p.dhtDisabled": "未启用",
 
   // Admin — 音乐库同步
   "admin.tab.librarySync": "音乐库同步",

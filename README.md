@@ -44,6 +44,7 @@ Unlike centralized platforms, SoundTime gives you full control over your music. 
 ### 🎵 Music Streaming
 - **Upload & organize** — Drag-and-drop upload with automatic metadata extraction (artist, album, track number, cover art)
 - **Adaptive streaming** — OPUS transcoding at 320/128/64 kbps with server-side caching
+- **Autoplay** — Continuous playback that automatically queues similar tracks when the queue empties, with toggle in mini and expanded player
 - **Waveform visualization** — Real-time audio waveform display powered by Symphonia
 - **Lyrics support** — Fetch and display lyrics from multiple providers (Musixmatch, Lyrics.com)
 - **Full-text search** — Search across tracks, albums, and artists instantly
@@ -57,6 +58,7 @@ Unlike centralized platforms, SoundTime gives you full control over your music. 
 
 ### 🌐 Peer-to-Peer Network
 - **iroh-powered P2P** — Encrypted QUIC connections via [iroh](https://iroh.computer/) 0.96 for peer discovery and track sharing
+- **DHT discovery** — Mainline DHT peer discovery via [Pkarr](https://pkarr.org/) for fully decentralized node resolution (enabled by default)
 - **Relay support** — NAT traversal through [n0.computer](https://n0.computer/) production relay servers
 - **Content-addressed storage** — Tracks identified by BLAKE3 hashes via iroh-blobs
 - **Distributed search** — Bloom filter-based routing sends queries only to relevant peers

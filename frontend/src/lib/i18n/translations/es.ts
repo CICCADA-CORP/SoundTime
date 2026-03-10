@@ -473,6 +473,9 @@ export default {
   "admin.p2p.remove": "Eliminar",
   "admin.p2p.peerTracks": "Sus pistas",
   "admin.p2p.noPeers": "Ningún par conectado.",
+  "admin.p2p.dhtDiscovery": "Descubrimiento DHT",
+  "admin.p2p.dhtEnabled": "Activo",
+  "admin.p2p.dhtDisabled": "Inactivo",
 
   // Admin — Sincronización de librería
   "admin.tab.librarySync": "Sincro Librería",

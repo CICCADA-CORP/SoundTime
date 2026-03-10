@@ -36,6 +36,7 @@ pub struct P2pStatus {
     pub direct_addresses: usize,
     pub peer_count: usize,
     pub online_peer_count: usize,
+    pub dht_discovery_enabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -62,6 +63,7 @@ pub async fn p2p_status(State(state): State<Arc<AppState>>) -> Json<P2pStatus> {
             direct_addresses: 0,
             peer_count: 0,
             online_peer_count: 0,
+            dht_discovery_enabled: false,
         });
     };
 
@@ -77,6 +79,7 @@ pub async fn p2p_status(State(state): State<Arc<AppState>>) -> Json<P2pStatus> {
         direct_addresses,
         peer_count: node.registry().peer_count().await,
         online_peer_count: node.registry().online_peers().await.len(),
+        dht_discovery_enabled: node.dht_discovery_enabled(),
     })
 }
 
@@ -554,10 +557,12 @@ mod tests {
             direct_addresses: 0,
             peer_count: 0,
             online_peer_count: 0,
+            dht_discovery_enabled: false,
         };
         let val = serde_json::to_value(&status).unwrap();
         assert_eq!(val["enabled"], false);
         assert!(val["node_id"].is_null());
+        assert_eq!(val["dht_discovery_enabled"], false);
     }
 
     // 2. P2pStatus serialization (enabled)
@@ -571,11 +576,13 @@ mod tests {
             direct_addresses: 2,
             peer_count: 5,
             online_peer_count: 3,
+            dht_discovery_enabled: true,
         };
         let val = serde_json::to_value(&status).unwrap();
         assert_eq!(val["enabled"], true);
         assert_eq!(val["node_id"], "abc123");
         assert_eq!(val["peer_count"], 5);
+        assert_eq!(val["dht_discovery_enabled"], true);
     }
 
     // 3. AddPeerRequest deserialization
@@ -708,5 +715,6 @@ mod tests {
         let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(val["enabled"], false);
         assert!(val["node_id"].is_null());
+        assert_eq!(val["dht_discovery_enabled"], false);
     }
 }

@@ -473,6 +473,9 @@ export default {
   "admin.p2p.remove": "Удалить",
   "admin.p2p.peerTracks": "Их треки",
   "admin.p2p.noPeers": "Нет подключённых пиров.",
+  "admin.p2p.dhtDiscovery": "Обнаружение DHT",
+  "admin.p2p.dhtEnabled": "Активно",
+  "admin.p2p.dhtDisabled": "Неактивно",
 
   // Admin — Синхронизация библиотеки
   "admin.tab.librarySync": "Синхро библиотеки",

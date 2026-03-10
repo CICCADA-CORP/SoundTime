@@ -258,6 +258,7 @@ See [`.env.example`](../.env.example) for all available variables. Key developme
 | `AUDIO_STORAGE_PATH` | `./data/music` | Where audio files are stored |
 | `P2P_ENABLED` | `true` | Enable P2P node |
 | `P2P_PORT` | `11204` | iroh QUIC port |
+| `P2P_DHT_DISCOVERY` | `true` | Enable Mainline DHT discovery |
 | `P2P_LOCAL_DISCOVERY` | `true` | Enable mDNS local discovery |
 | `P2P_SEED_PEERS` | — | Comma-separated NodeIds to auto-connect |
 | `CORS_ORIGINS` | — | Comma-separated allowed origins |

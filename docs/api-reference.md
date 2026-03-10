@@ -617,7 +617,11 @@ Get the P2P node status.
   "enabled": true,
   "node_id": "abcdef1234...",
   "relay_url": "https://relay.example.com",
-  "peers_count": 3
+  "relay_connected": true,
+  "direct_addresses": 2,
+  "peer_count": 3,
+  "online_peer_count": 2,
+  "dht_discovery_enabled": true
 }
 ```
 
