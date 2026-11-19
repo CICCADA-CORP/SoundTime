@@ -37,7 +37,7 @@ Some endpoints are conditionally authenticated based on instance settings:
 
 ## Webradios
 
-The **Webradios** navigation entry opens `/webradios`. Each instance queries the external directory on demand and keeps bounded, short-lived pages in memory. Station listings and live broadcasts are separate from SoundTime tracks, storage quotas and federation. [Radio Browser API](https://docs.radio-browser.info/)
+The **Webradios** navigation entry opens `/webradios`. Each instance queries the external directory on demand and keeps bounded, short-lived pages in memory. Station listings and live broadcasts are separate from SoundTime tracks, storage quotas and federation. [Radio Browser API](https://api.radio-browser.info/)
 
 | Endpoint | Result |
 | --- | --- |

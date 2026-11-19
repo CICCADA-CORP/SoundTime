@@ -64,7 +64,7 @@ struct Listing {
     country: String,
     countrycode: String,
     language: String,
-    codec: String,
+    codec: Option<String>,
     bitrate: u32,
     hls: u8,
     lastcheckok: u8,
@@ -138,7 +138,10 @@ impl Listing {
             80,
         );
         let language = clean(&self.language, 100);
-        let codec = clean(&self.codec, 24);
+        let mut codec = clean(self.codec.as_deref().unwrap_or_default(), 24);
+        if codec.eq_ignore_ascii_case("unknown") {
+            codec.clear();
+        }
         let mut description = clean(self.description.as_deref().unwrap_or_default(), 400);
         if description.is_empty() {
             let mut fields: Vec<_> = [&country, &language, &codec]

@@ -12,6 +12,27 @@ fn row(id: Uuid) -> Value {
         "bitrate":128,"hls":0,"lastcheckok":1})
 }
 
+#[test]
+fn missing_and_unknown_codecs_are_omitted_from_station_details() {
+    for codec in [
+        None,
+        Some(Value::Null),
+        Some(json!("  ")),
+        Some(json!(" Unknown ")),
+    ] {
+        let mut raw = row(Uuid::new_v4());
+        if let Some(value) = codec {
+            raw["codec"] = value;
+        } else {
+            raw.as_object_mut().unwrap().remove("codec");
+        }
+        let listing: Listing = serde_json::from_value(raw).unwrap();
+        let station = listing.station().unwrap();
+        assert!(station.codec.is_empty());
+        assert_eq!(station.description, "France · french · 128 kbps");
+    }
+}
+
 #[tokio::test]
 async fn paged_search_coalesces_requests_and_uses_the_working_mirror() {
     let down = MockServer::start().await;
