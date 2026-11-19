@@ -13,7 +13,7 @@
     ).join(", ");
   });
 
-  function recover(event: Event & { currentTarget: HTMLImageElement }) {
+  function recover(event: Event & { currentTarget: Element }) {
     const element = event.currentTarget;
     element.classList.remove("ready");
     if (element.hasAttribute("srcset")) element.removeAttribute("srcset");
