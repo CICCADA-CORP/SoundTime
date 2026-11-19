@@ -20,10 +20,6 @@
   <a href="https://discord.gg/UVCZCNcJvM"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&amp;logo=discord&amp;logoColor=white" alt="Join the SoundTime Discord"></a>
 </p>
 
-<p align="center">
-  <img src="frontend/static/soundtime-signature.svg" alt="" width="320" />
-</p>
-
 SoundTime is a self-hosted music server for your own audio collection. Browse by artist or album, build a queue, and listen from a desktop or mobile browser. You decide who can access the web catalog and whether your server shares music with other SoundTime instances.
 
 [Quick start](#quick-start) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md)
