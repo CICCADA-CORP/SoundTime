@@ -488,7 +488,8 @@ export default {
   "admin.p2p.remove": "Remove",
   "admin.p2p.peerTracks": "Their tracks",
   "admin.p2p.noPeers": "No peers connected.",
-  "admin.p2p.dhtDiscovery": "DHT Discovery",
+  "admin.p2p.rendezvous": "Rendezvous discovery",
+  "admin.p2p.dhtDiscovery": "DHT address lookup",
   "admin.p2p.dhtEnabled": "Active",
   "admin.p2p.dhtDisabled": "Inactive",
 
@@ -684,7 +685,13 @@ export default {
 
   // Admin — sync
   "admin.sync.title": "Storage synchronization",
-  "admin.sync.description": "Scans storage ({backend}) to detect and automatically import audio files not referenced in the database. This job runs automatically every 24 hours.",
+  "admin.integrity.reconcile": "Reconcile missing files in Storage synchronization",
+  "admin.sync.description": "Imports new audio, reconnects moved files and removes missing tracks from the catalog. Runs every 24 hours.",
+  "admin.sync.moved": "Moved",
+  "admin.sync.removed": "Removed",
+  "admin.sync.emptyWarning": "No audio was found in {sources}. Check the mounts before removing missing tracks.",
+  "admin.sync.cleanEmpty": "Remove missing tracks",
+  "admin.sync.confirmEmpty": "Remove missing tracks from {sources} and their playlist, favorite and history entries?",
   "admin.sync.syncing": "Synchronizing…",
   "admin.sync.runSync": "Run synchronization",
   "admin.sync.scanned": "Files scanned",

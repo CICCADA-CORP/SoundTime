@@ -2,7 +2,7 @@
 //!
 //! Uses a simple registry of known peer addresses stored in the database.
 //! Peers announce themselves via ping/pong and track announcements.
-//! Future: integrate with iroh's built-in DNS/Pkarr discovery or DHT.
+//! The optional rendezvous directory supplies unknown NodeIds. Iroh resolves their addresses.
 
 use std::collections::HashMap;
 use std::sync::Arc;

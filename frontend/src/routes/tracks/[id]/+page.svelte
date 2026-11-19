@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { page } from "$app/stores";
+  import { page } from "$app/state";
   import { onMount } from "svelte";
   import { api } from "$lib/api";
   import type { TrackCredits } from "$lib/types";
@@ -25,7 +25,7 @@
   let isOwner = $derived(credits?.uploaded_by && auth.user?.id === credits.uploaded_by);
 
   onMount(async () => {
-    const id = $page.params.id;
+    const id = page.params.id;
     try {
       credits = await api.get<TrackCredits>(`/tracks/${id}/credits`);
       if (credits) {

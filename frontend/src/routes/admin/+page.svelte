@@ -172,17 +172,42 @@
         }
         if (status.status === "error") {
           taskProgress = null;
-          error = status.message ?? "Task failed";
+          error = status.message || t(kind === "sync" ? "admin.sync.taskFailed" : "admin.integrity.taskFailed");
           return;
         }
         // idle or unknown → done
         taskProgress = null;
         return;
-      } catch {
+      } catch (e: unknown) {
         taskProgress = null;
+        error = e instanceof Error ? e.message : String(e);
         return;
       }
     }
+  }
+
+  async function runStorageSync(emptySources: string[] = []) {
+    storageSyncing = true;
+    error = null;
+    taskProgress = null;
+    try {
+      await api.post(emptySources.length ? `/admin/storage/sync?prune_empty=${encodeURIComponent(emptySources.join(","))}` : "/admin/storage/sync");
+      tasks.startPolling("sync");
+      await pollTaskStatus("sync");
+    } catch (e: unknown) {
+      // The POST may have timed out (504) but the task was spawned server-side
+      // Check if it's actually running
+      try {
+        const status = await api.get<StorageTaskStatus>("/admin/storage/task-status");
+        if (status.status === "running") {
+          tasks.startPolling("sync");
+          await pollTaskStatus("sync");
+          return;
+        }
+      } catch { /* truly failed */ }
+      error = e instanceof Error ? e.message : String(e);
+    }
+    finally { storageSyncing = false; taskProgress = null; }
   }
 
   // Block domain form
@@ -414,6 +439,8 @@
               taskProgress = taskStatus.progress ?? null;
               tasks.startPolling("integrity");
               pollTaskStatus("integrity").finally(() => { storageChecking = false; taskProgress = null; });
+            } else if (taskStatus.status === "completed" && taskStatus.result.kind === "integrity") {
+              integrityReport = taskStatus.result;
             } else if (taskStatus.status === "error") {
               error = taskStatus.message ?? t("admin.integrity.taskFailed");
             }
@@ -432,6 +459,8 @@
               taskProgress = taskStatus.progress ?? null;
               tasks.startPolling("sync");
               pollTaskStatus("sync").finally(() => { storageSyncing = false; taskProgress = null; });
+            } else if (taskStatus.status === "completed" && taskStatus.result.kind === "sync") {
+              syncReport = taskStatus.result;
             } else if (taskStatus.status === "error") {
               error = taskStatus.message ?? t("admin.sync.taskFailed");
             }
@@ -1886,6 +1915,12 @@
                   {p2pStatus.dht_discovery_enabled ? t('admin.p2p.dhtEnabled') : t('admin.p2p.dhtDisabled')}
                 </p>
               </div>
+              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
+                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.rendezvous')}</p>
+                <p class="text-xl font-bold mt-1 {p2pStatus.rendezvous_configured ? 'text-green-400' : 'text-[hsl(var(--muted-foreground))]'}">
+                  {p2pStatus.rendezvous_configured ? t('admin.p2p.dhtEnabled') : t('admin.p2p.dhtDisabled')}
+                </p>
+              </div>
             </div>
 
             <!-- Peers -->
@@ -2789,6 +2824,9 @@
             {#if integrityReport.missing.length > 0}
               <div class="mt-4">
                 <h3 class="text-sm font-medium mb-2 text-red-400">{t('admin.integrity.missingTracks')}</h3>
+                <button class="mb-3 underline text-sm" onclick={() => switchTab("sync")}>
+                  {t('admin.integrity.reconcile')}
+                </button>
                 <div class="space-y-2 max-h-64 overflow-y-auto">
                   {#each integrityReport.missing as m}
                     <div class="flex items-center gap-3 p-2 bg-red-500/5 rounded text-sm">
@@ -2823,35 +2861,13 @@
             <div>
               <h2 class="text-lg font-semibold">{t('admin.sync.title')}</h2>
               <p class="text-sm text-[hsl(var(--muted-foreground))] mt-1">
-                {t('admin.sync.description', { backend: storageStatus?.backend === "s3" ? "bucket S3" : "dossiers locaux" })}
+                {t('admin.sync.description')}
               </p>
             </div>
             <button
               class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
               disabled={storageSyncing}
-              onclick={async () => {
-                storageSyncing = true;
-                error = null;
-                taskProgress = null;
-                try {
-                  await api.post("/admin/storage/sync");
-                  tasks.startPolling("sync");
-                  await pollTaskStatus("sync");
-                } catch (e: unknown) {
-                  // The POST may have timed out (504) but the task was spawned server-side
-                  // Check if it's actually running
-                  try {
-                    const status = await api.get<StorageTaskStatus>("/admin/storage/task-status");
-                    if (status.status === "running") {
-                      tasks.startPolling("sync");
-                      await pollTaskStatus("sync");
-                      return;
-                    }
-                  } catch { /* truly failed */ }
-                  error = e instanceof Error ? e.message : String(e);
-                }
-                finally { storageSyncing = false; taskProgress = null; }
-              }}
+              onclick={() => runStorageSync()}
             >
               {storageSyncing ? t('admin.sync.syncing') : t('admin.sync.runSync')}
             </button>
@@ -2873,7 +2889,7 @@
           {/if}
 
           {#if syncReport}
-            <div class="grid grid-cols-3 gap-4 mb-4">
+            <div class="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-4">
               <div class="bg-[hsl(var(--secondary))] rounded-lg p-4 text-center">
                 <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.sync.scanned')}</p>
                 <p class="text-2xl font-bold mt-1">{syncReport.scanned}</p>
@@ -2886,7 +2902,24 @@
                 <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.sync.alreadyReferenced')}</p>
                 <p class="text-2xl font-bold mt-1">{syncReport.skipped}</p>
               </div>
+              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4 text-center">
+                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.sync.moved')}</p>
+                <p class="text-2xl font-bold mt-1">{syncReport.moved}</p>
+              </div>
+              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4 text-center">
+                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.sync.removed')}</p>
+                <p class="text-2xl font-bold mt-1">{syncReport.removed}</p>
+              </div>
             </div>
+
+            {#if syncReport.empty_sources?.length}
+              <p class="text-sm mb-2">{t('admin.sync.emptyWarning', { sources: syncReport.empty_sources.join(', ') })}</p>
+              <button
+                class="text-sm text-red-400 underline disabled:opacity-50"
+                disabled={storageSyncing}
+                onclick={() => { if (syncReport && window.confirm(t('admin.sync.confirmEmpty', { sources: syncReport.empty_sources.join(', ') }))) runStorageSync(syncReport.empty_sources); }}
+              >{t('admin.sync.cleanEmpty')}</button>
+            {/if}
 
             {#if syncReport.errors.length > 0}
               <div class="mt-4">

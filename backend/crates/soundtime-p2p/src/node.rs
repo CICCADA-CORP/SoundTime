@@ -15,10 +15,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use iroh::endpoint::Connection;
-use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, Watcher};
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::{Hash, HashAndFormat};
-use rand::SeedableRng;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
     Set,
@@ -195,8 +194,10 @@ pub struct P2pConfig {
     pub bind_port: u16,
     /// Whether to enable local network (mDNS) discovery
     pub enable_local_discovery: bool,
-    /// Whether to enable DHT (BitTorrent Mainline) discovery for finding peers without seed nodes
+    /// Whether to publish and resolve known EndpointIds on the Mainline DHT
     pub enable_dht_discovery: bool,
+    /// Opt-in HTTP endpoint where participating nodes exchange EndpointIds
+    pub rendezvous_url: Option<String>,
     /// Seed peer EndpointIds to connect to on startup (auto-discovery)
     pub seed_peers: Vec<String>,
     /// Path to the audio file storage (for cover art sync)
@@ -213,6 +214,7 @@ impl Default for P2pConfig {
             bind_port: 0,
             enable_local_discovery: true,
             enable_dht_discovery: true,
+            rendezvous_url: None,
             seed_peers: Vec::new(),
             audio_storage_path: PathBuf::from("data/music"),
             metadata_storage_path: None,
@@ -265,6 +267,10 @@ impl P2pConfig {
             bind_port,
             enable_local_discovery,
             enable_dht_discovery,
+            rendezvous_url: std::env::var("P2P_RENDEZVOUS_URL")
+                .ok()
+                .map(|url| url.trim().to_owned())
+                .filter(|url| !url.is_empty()),
             seed_peers,
             audio_storage_path,
             metadata_storage_path,
@@ -317,6 +323,26 @@ pub struct P2pNode {
     conn_pool: Arc<ConnectionPool>,
 }
 
+// redb writes a new allocator layout on open. A rollback also needs any data
+// files subsequently removed by blob GC, so the marker confirms a volume snapshot.
+const BLOB_STORE_MARKER: &str = ".soundtime-blobs-0.105";
+
+async fn check_blob_store_upgrade(root: &std::path::Path) -> Result<(), P2pError> {
+    let marker = root.join(BLOB_STORE_MARKER);
+    if tokio::fs::try_exists(&marker).await? {
+        return Ok(());
+    }
+    if tokio::fs::try_exists(root.join("blobs.db")).await? {
+        return Err(P2pError::BlobStore(format!(
+            "existing P2P store at {} requires a stopped-volume backup before upgrade. \
+             Follow 'Upgrading the P2P store' in docs/p2p-networking.md, then create {BLOB_STORE_MARKER} in its root",
+            root.display()
+        )));
+    }
+    tokio::fs::write(marker, b"").await?;
+    Ok(())
+}
+
 impl P2pNode {
     /// Start a new P2P node with the given config and database.
     pub async fn start(config: P2pConfig, db: DatabaseConnection) -> Result<Arc<Self>, P2pError> {
@@ -324,6 +350,8 @@ impl P2pNode {
         tokio::fs::create_dir_all(&config.blobs_dir)
             .await
             .map_err(P2pError::Io)?;
+
+        check_blob_store_upgrade(&config.blobs_dir).await?;
 
         // Load or generate secret key for stable EndpointId across restarts
         let secret_key = Self::load_or_generate_key(&config).await?;
@@ -335,31 +363,23 @@ impl P2pNode {
             .await
             .map_err(|e| P2pError::BlobStore(e.to_string()))?;
 
-        // Build the iroh endpoint with discovery services and relay
-        //
-        // Endpoint::builder() uses the N0 preset which registers:
-        //   - PkarrPublisher  — publishes our EndpointId + relay URL to n0's DNS server
-        //   - DnsDiscovery    — resolves other EndpointIds via DNS queries to n0's server
-        //
-        // Without these, the node cannot register with relay servers and peers
-        // cannot discover us — this was the root cause of "Relay Disconnected".
-        let mut builder = Endpoint::builder()
-            .secret_key(secret_key.clone())
+        // N0 configures the public relays and DNS/Pkarr address lookups.
+        let mut builder = Endpoint::builder(iroh::endpoint::presets::N0)
+            .secret_key(secret_key)
             .alpns(vec![SOUNDTIME_ALPN.to_vec()]);
 
         // Optionally enable local network discovery (mDNS)
         if config.enable_local_discovery {
             info!("enabling local network discovery (mDNS)");
-            builder =
-                builder.address_lookup(iroh::address_lookup::MdnsAddressLookupBuilder::default());
+            builder = builder
+                .address_lookup(iroh_mdns_address_lookup::MdnsAddressLookupBuilder::default());
             tracing::info!("mDNS address lookup configured");
         }
 
         // Optionally enable DHT (BitTorrent Mainline) discovery
         if config.enable_dht_discovery {
             info!("enabling DHT (BitTorrent Mainline) discovery");
-            let dht_builder =
-                iroh::address_lookup::DhtAddressLookup::builder().n0_dns_pkarr_relay();
+            let dht_builder = iroh_mainline_address_lookup::DhtAddressLookup::builder();
             builder = builder.address_lookup(dht_builder);
             tracing::info!("DHT address lookup configured");
         }
@@ -384,14 +404,8 @@ impl P2pNode {
         // With discovery services registered, the endpoint will automatically
         // connect to one of n0's production relay servers and publish its address.
         info!("waiting for relay connection...");
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            Self::wait_for_relay(&endpoint),
-        )
-        .await
-        {
-            Ok(Some(relay)) => info!(%relay, "connected to relay server"),
-            Ok(None) => warn!("no relay server available — P2P will use direct connections only"),
+        match tokio::time::timeout(std::time::Duration::from_secs(15), endpoint.online()).await {
+            Ok(()) => info!(relay = ?Self::connected_relay(&endpoint), "connected to relay server"),
             Err(_) => warn!("relay connection timed out after 15s — continuing without relay"),
         }
 
@@ -501,6 +515,28 @@ impl P2pNode {
             node_clone.accept_loop().await;
         });
 
+        if let Some(url) = node._config.rendezvous_url.clone() {
+            let node = Arc::clone(&node);
+            let mut shutdown = node.shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                let client = reqwest::Client::new();
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let worker = async {
+                    loop {
+                        interval.tick().await;
+                        if let Err(e) = node.refresh_rendezvous(&client, &url).await {
+                            warn!("rendezvous registration failed; retrying in five minutes: {e}");
+                        }
+                    }
+                };
+                tokio::select! {
+                    _ = worker => {},
+                    _ = shutdown.changed() => {},
+                }
+            });
+        }
+
         // Connect to seed peers in background (after a short delay for relay setup)
         if !node._config.seed_peers.is_empty() {
             let seed_peers = node._config.seed_peers.clone();
@@ -593,9 +629,7 @@ impl P2pNode {
                 loop {
                     tokio::select! {
                         _ = interval.tick() => {
-                            let addr = endpoint_clone.addr();
-                            let relay = addr.relay_urls().next().map(|u| u.to_string());
-                            match relay {
+                            match Self::connected_relay(&endpoint_clone) {
                                 Some(url) => {
                                     if !was_connected {
                                         info!(relay = %url, "relay connection re-established");
@@ -662,9 +696,7 @@ impl P2pNode {
     /// Get the relay URL this node is connected to (if any).
     /// By default, iroh connects to n0.computer production relay servers.
     pub fn relay_url(&self) -> Option<String> {
-        self.node_addr()
-            .ok()
-            .and_then(|addr| addr.relay_urls().next().map(|u| u.to_string()))
+        Self::connected_relay(&self.endpoint)
     }
 
     /// Get the number of direct addresses the endpoint is listening on.
@@ -672,6 +704,10 @@ impl P2pNode {
         self.node_addr()
             .map(|addr| addr.ip_addrs().count())
             .unwrap_or(0)
+    }
+
+    pub fn rendezvous_configured(&self) -> bool {
+        self._config.rendezvous_url.is_some()
     }
 
     /// Whether DHT discovery is enabled for this node.
@@ -904,7 +940,7 @@ impl P2pNode {
             let err_str = format!("{e}");
             if err_str.contains("ALPN") || err_str.contains("protocol") || err_str.contains("timed out") {
                 P2pError::Connection(format!(
-                    "{e} (possible protocol version mismatch — this node uses iroh 0.96 / ALPN 'soundtime/p2p/1')"
+                    "{e} (possible protocol version mismatch — this node uses ALPN 'soundtime/p2p/1')"
                 ))
             } else {
                 e
@@ -935,13 +971,61 @@ impl P2pNode {
             .map_err(|e| P2pError::Connection(e.to_string()))?;
         let msg_len = u32::from_be_bytes(len_buf) as usize;
 
+        if msg_len > 16 * 1024 {
+            return Err(P2pError::Connection("oversized ping response".into()));
+        }
         let response = recv
             .read_to_end(msg_len)
             .await
             .map_err(|e| P2pError::Connection(e.to_string()))?;
 
         let pong: P2pMessage = serde_json::from_slice(&response)?;
+        if !matches!(&pong, P2pMessage::Pong { node_id, .. } if *node_id == peer_addr.id.to_string())
+        {
+            return Err(P2pError::Connection(
+                "invalid pong from authenticated peer".into(),
+            ));
+        }
         Ok(pong)
+    }
+
+    async fn refresh_rendezvous(
+        self: &Arc<Self>,
+        client: &reqwest::Client,
+        url: &str,
+    ) -> anyhow::Result<()> {
+        let peers = crate::rendezvous::discover(client, url, self.endpoint.secret_key()).await?;
+        for id in peers {
+            let peer_id = id.to_string();
+            if self
+                .registry
+                .get_peer(&peer_id)
+                .await
+                .is_some_and(|peer| peer.is_online)
+                || is_peer_blocked(&self.db, &peer_id).await
+            {
+                continue;
+            }
+            let ping = self.ping_peer(EndpointAddr::new(id));
+            let Ok(Ok(P2pMessage::Pong {
+                track_count,
+                version,
+                ..
+            })) = tokio::time::timeout(std::time::Duration::from_secs(15), ping).await
+            else {
+                debug!(peer = %peer_id, "rendezvous peer did not respond to ping");
+                continue;
+            };
+            self.registry
+                .upsert_peer_versioned(&peer_id, None, track_count, version)
+                .await;
+            info!(peer = %peer_id, "discovered SoundTime peer via rendezvous");
+            let node = Arc::clone(self);
+            tokio::spawn(async move {
+                node.announce_all_tracks_to_peer(id).await;
+            });
+        }
+        Ok(())
     }
 
     /// Connect to a list of seed peers by EndpointId.
@@ -997,7 +1081,7 @@ impl P2pNode {
                         warn!(
                             peer = %peer_id_str,
                             "failed to reach seed peer (possible protocol version mismatch — \
-                             this node uses iroh 0.96 / ALPN 'soundtime/p2p/1', the remote peer \
+                             this node uses ALPN 'soundtime/p2p/1', the remote peer \
                              may be running an incompatible version): {e}"
                         );
                     } else {
@@ -2316,6 +2400,7 @@ impl P2pNode {
             sample_rate: Set(ann.sample_rate),
             waveform_data: Set(None),
             uploaded_by: Set(None),
+            file_hash: Set(None),
             content_hash: Set(Some(ann.hash.clone())),
             play_count: Set(0),
             created_at: Set(chrono::Utc::now().into()),
@@ -2675,7 +2760,7 @@ impl P2pNode {
         }
 
         // Generate and save a new key
-        let key = SecretKey::generate(&mut rand::rngs::StdRng::from_os_rng());
+        let key = SecretKey::generate();
         if let Some(parent) = key_path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -2688,18 +2773,14 @@ impl P2pNode {
         Ok(key)
     }
 
-    /// Wait for the relay connection to be established.
-    /// Returns the relay URL once connected, or None if unavailable.
-    async fn wait_for_relay(endpoint: &Endpoint) -> Option<String> {
-        // Poll endpoint addr until relay_url is available
-        for _ in 0..50 {
-            let addr = endpoint.addr();
-            if let Some(url) = addr.relay_urls().next() {
-                return Some(url.to_string());
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        }
-        None
+    /// Report a relay only after the handshake has completed.
+    fn connected_relay(endpoint: &Endpoint) -> Option<String> {
+        endpoint
+            .home_relay_status()
+            .get()
+            .into_iter()
+            .find(|relay| relay.is_connected())
+            .map(|relay| relay.url().to_string())
     }
 
     /// Fetch a cover art blob from a peer, write it to the local audio storage,
@@ -3074,6 +3155,26 @@ mod tests {
         assert_eq!(decoded.cover_hash.as_deref(), Some("cover123"));
     }
 
+    #[tokio::test]
+    async fn blob_store_upgrade_preserves_unconfirmed_store() {
+        let old = tempfile::tempdir().unwrap();
+        let db = old.path().join("blobs.db");
+        tokio::fs::write(&db, b"legacy index").await.unwrap();
+        assert!(check_blob_store_upgrade(old.path()).await.is_err());
+        assert_eq!(tokio::fs::read(&db).await.unwrap(), b"legacy index");
+        tokio::fs::write(old.path().join(BLOB_STORE_MARKER), b"")
+            .await
+            .unwrap();
+        assert!(check_blob_store_upgrade(old.path()).await.is_ok());
+
+        let fresh = tempfile::tempdir().unwrap();
+        check_blob_store_upgrade(fresh.path()).await.unwrap();
+        tokio::fs::write(fresh.path().join("blobs.db"), b"new index")
+            .await
+            .unwrap();
+        check_blob_store_upgrade(fresh.path()).await.unwrap();
+    }
+
     // ── P2pConfig defaults ───────────────────────────────────────────
 
     #[test]
@@ -3127,7 +3228,7 @@ mod tests {
         let key_path = dir.path().join("secret_key");
 
         // Write raw 32 bytes
-        let key = SecretKey::generate(&mut rand::rngs::StdRng::from_os_rng());
+        let key = SecretKey::generate();
         tokio::fs::write(&key_path, key.to_bytes()).await.unwrap();
 
         let config = P2pConfig {
@@ -3143,7 +3244,7 @@ mod tests {
 
     #[test]
     fn test_endpoint_addr_construction() {
-        let key = SecretKey::generate(&mut rand::rngs::StdRng::from_os_rng());
+        let key = SecretKey::generate();
         let id = key.public();
         let addr = EndpointAddr::new(id);
         assert_eq!(addr.id, id);
@@ -3153,7 +3254,7 @@ mod tests {
 
     #[test]
     fn test_endpoint_id_display_roundtrip() {
-        let key = SecretKey::generate(&mut rand::rngs::StdRng::from_os_rng());
+        let key = SecretKey::generate();
         let id = key.public();
         let id_str = id.to_string();
         assert!(!id_str.is_empty());

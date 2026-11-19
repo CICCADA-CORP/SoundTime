@@ -488,7 +488,8 @@ export default {
   "admin.p2p.remove": "Supprimer",
   "admin.p2p.peerTracks": "Leurs pistes",
   "admin.p2p.noPeers": "Aucun pair connecté.",
-  "admin.p2p.dhtDiscovery": "Découverte DHT",
+  "admin.p2p.rendezvous": "Découverte par annuaire",
+  "admin.p2p.dhtDiscovery": "Résolution d’adresses DHT",
   "admin.p2p.dhtEnabled": "Active",
   "admin.p2p.dhtDisabled": "Inactive",
 
@@ -684,7 +685,13 @@ export default {
 
   // Admin — sync
   "admin.sync.title": "Synchronisation du stockage",
-  "admin.sync.description": "Analyse le stockage ({backend}) pour détecter et importer automatiquement les fichiers audio non référencés en base de données. Ce job s'exécute automatiquement toutes les 24h.",
+  "admin.integrity.reconcile": "Traiter les fichiers manquants dans Synchronisation",
+  "admin.sync.description": "Importe les nouveaux fichiers audio, retrouve les fichiers déplacés et retire du catalogue les pistes manquantes. Cette opération se lance toutes les 24 heures.",
+  "admin.sync.moved": "Déplacées",
+  "admin.sync.removed": "Retirées",
+  "admin.sync.emptyWarning": "Aucun fichier audio trouvé dans {sources}. Vérifiez les montages avant de retirer les pistes manquantes.",
+  "admin.sync.cleanEmpty": "Retirer les pistes manquantes",
+  "admin.sync.confirmEmpty": "Retirer les pistes manquantes de {sources} ainsi que leurs entrées dans les playlists, les favoris et l’historique ?",
   "admin.sync.syncing": "Synchronisation…",
   "admin.sync.runSync": "Lancer la synchronisation",
   "admin.sync.scanned": "Fichiers scannés",

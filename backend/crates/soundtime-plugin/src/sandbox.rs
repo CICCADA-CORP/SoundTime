@@ -182,6 +182,28 @@ mod tests {
     use std::io::Write;
 
     #[test]
+    fn sandbox_executes_an_echo_plugin() {
+        let echo = br#"(module
+            (import "extism:host/env" "input_offset" (func $offset (result i64)))
+            (import "extism:host/env" "input_length" (func $length (result i64)))
+            (import "extism:host/env" "output_set" (func $output (param i64 i64)))
+            (func (export "echo") (result i32)
+                (call $output (call $offset) (call $length))
+                (i32.const 0)))"#;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(echo).unwrap();
+        let mut sandbox =
+            PluginSandbox::load(file.path(), SandboxConfig::default(), "echo").unwrap();
+        assert!(sandbox.has_function("echo"));
+        for input in ["first track", "next track"] {
+            assert_eq!(
+                sandbox.call("echo", input.as_bytes()).unwrap(),
+                input.as_bytes()
+            );
+        }
+    }
+
+    #[test]
     fn test_sandbox_config_default() {
         let config = SandboxConfig::default();
         assert_eq!(config.memory_limit, 32 * 1024 * 1024);

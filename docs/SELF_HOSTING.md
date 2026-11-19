@@ -5,7 +5,7 @@ Run your own SoundTime node with Docker Compose.
 ## Prerequisites
 
 - **Docker** and **Docker Compose** installed.
-- access to ports 80/443 (for web) and 11204/udp (for P2P).
+- Access to the web proxy port (8880 by default) and 11204/UDP for P2P.
 - A domain name (optional, but recommended for SSL).
 
 ## Quick Start
@@ -22,12 +22,14 @@ Run your own SoundTime node with Docker Compose.
    cp .env.example .env
    ```
    
-   Edit `.env` and set secure passwords:
+   Set a new database password in `.env`. Run `openssl rand -base64 32` and paste its output into `JWT_SECRET`. Set your public hostname, if available.
    ```ini
    POSTGRES_PASSWORD=replace_with_secure_password
    JWT_SECRET=generate_a_long_random_string_here
-   DOMAIN=soundtime.local
+   SOUNDTIME_DOMAIN=soundtime.local
    ```
+
+   To import music from a NAS, enable the SMB or NFS Compose file in `.env`. [Network library setup](deployment.md#read-only-smb-and-nfs-music-libraries)
 
 3. **Start Services**
    ```bash
@@ -35,18 +37,19 @@ Run your own SoundTime node with Docker Compose.
    ```
 
 4. **Access**
-   Open your browser and navigate to `http://localhost:3000` (or your configured domain).
+   Open the web proxy at `http://localhost:8880`, or use the address and `NGINX_PORT` configured for your server.
 
 ## Docker Compose Structure
 
-Our `docker-compose.yml` orchestrates three main services:
+The default Compose file starts five services.
 
 | Service | Description | Internal Port |
 | ------- | ----------- | ------------- |
-| `app` | The main Rust binary (backend). | 8080 |
-| `web` | The compiled SvelteKit frontend (Node.js adapter). | 3000 |
-| `db` | PostgreSQL database. | 5432 |
-| `proxy` | Nginx reverse proxy (handles SSL & routing). | 80/443 |
+| `backend` | Rust API and P2P node | 8080, 11204/UDP |
+| `frontend` | SvelteKit frontend | 3000 |
+| `postgres` | PostgreSQL database with pgvector | 5432 |
+| `redis` | Redis cache | 6379 |
+| `nginx` | HTTP reverse proxy | 80 |
 
 ## Updating
 
@@ -62,10 +65,10 @@ docker image prune -f
 
 **Logs**:
 ```bash
-docker compose logs -f app
+docker compose logs -f backend
 ```
 
 **Database Shell**:
 ```bash
-docker compose exec db psql -U soundtime -d soundtime_db
+docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```

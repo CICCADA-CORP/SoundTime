@@ -6,9 +6,9 @@ Set up SoundTime for local development.
 
 | Tool | Version | Installation |
 |------|---------|-------------|
-| **Rust** | 1.93+ | [rustup.rs](https://rustup.rs) |
-| **Node.js** | 20+ | [nvm](https://github.com/nvm-sh/nvm) or [nodejs.org](https://nodejs.org) |
-| **PostgreSQL** | 16 | Via Docker (recommended) or native install |
+| **Rust** | 1.97+ | [rustup.rs](https://rustup.rs) |
+| **Node.js** | 24 LTS | [nvm](https://github.com/nvm-sh/nvm) or [nodejs.org](https://nodejs.org) |
+| **PostgreSQL** | 16 with pgvector | Via Docker (recommended) or native install |
 | **Docker** | Latest | [docker.com](https://docs.docker.com/get-docker/) |
 
 ## Quick Setup
@@ -22,24 +22,21 @@ cd SoundTime
 
 ### 2. Start PostgreSQL
 
-The easiest way is using Docker:
+For a backend running on the host, uncomment the PostgreSQL loopback port mapping in `docker-compose.yml`. Then run
 
 ```bash
+cp .env.example .env
 docker compose up postgres -d
 ```
 
 This starts a PostgreSQL 16 instance with the credentials from `.env.example`.
 
-### 3. Configure environment
-
-```bash
-cp .env.example .env
-```
+### 3. Configure the .env file
 
 The default `.env.example` values work for local development. Key variables:
 
 ```env
-DATABASE_URL=postgres://soundtime:soundtime@localhost:5432/soundtime
+DATABASE_URL=postgres://soundtime:soundtime_secure_password@localhost:5432/soundtime
 JWT_SECRET=dev-secret-change-in-production
 AUDIO_STORAGE_PATH=./data/music
 P2P_ENABLED=true
@@ -252,13 +249,15 @@ See [`.env.example`](../.env.example) for all available variables. Key developme
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgres://soundtime:soundtime@localhost:5432/soundtime` | PostgreSQL connection string |
+| `DATABASE_URL` | `postgres://soundtime:soundtime_secure_password@localhost:5432/soundtime` | PostgreSQL connection string |
 | `JWT_SECRET` | — | Secret for signing JWTs (required) |
 | `RUST_LOG` | `info` | Log level filter |
 | `AUDIO_STORAGE_PATH` | `./data/music` | Where audio files are stored |
 | `P2P_ENABLED` | `true` | Enable P2P node |
 | `P2P_PORT` | `11204` | iroh QUIC port |
-| `P2P_DHT_DISCOVERY` | `true` | Enable Mainline DHT discovery |
+| `P2P_DHT_DISCOVERY` | `true` | Resolve known NodeIds via the Mainline DHT |
+| `P2P_RENDEZVOUS_URL` | — | Directory endpoint for opt-in peer discovery |
+| `P2P_RENDEZVOUS_SERVER` | `false` | Host a rendezvous directory |
 | `P2P_LOCAL_DISCOVERY` | `true` | Enable mDNS local discovery |
 | `P2P_SEED_PEERS` | — | Comma-separated NodeIds to auto-connect |
 | `CORS_ORIGINS` | — | Comma-separated allowed origins |
@@ -270,7 +269,7 @@ See [`.env.example`](../.env.example) for all available variables. Key developme
 
 - **Database connection failed**: Ensure PostgreSQL is running (`docker compose up postgres -d`)
 - **Port already in use**: Change `PORT` in `.env` or kill the process on port 8080
-- **JWT_SECRET panic**: Only happens when `SOUNDTIME_ENV=production` with the default secret — use a random string
+- If production startup rejects `JWT_SECRET`, generate a random secret of at least 32 bytes with `openssl rand -base64 32`. Changing the secret invalidates existing sessions.
 
 ### Frontend can't reach API
 

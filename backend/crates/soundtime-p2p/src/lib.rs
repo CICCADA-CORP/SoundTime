@@ -14,6 +14,7 @@ pub mod error;
 pub mod library_sync;
 pub mod musicbrainz;
 pub mod node;
+pub mod rendezvous;
 pub mod search_index;
 pub mod track_health;
 

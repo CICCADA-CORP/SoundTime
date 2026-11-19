@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -42,6 +42,8 @@ pub fn generate_token_pair(
     secret: &str,
 ) -> Result<TokenPair, jsonwebtoken::errors::Error> {
     let now = Utc::now();
+    let key = EncodingKey::from_secret(secret.as_bytes())?;
+    let header = Header::new(Algorithm::HS256);
 
     // Access token: 15 minutes
     let access_exp = now + Duration::minutes(15);
@@ -53,11 +55,7 @@ pub fn generate_token_pair(
         iat: now.timestamp(),
         exp: access_exp.timestamp(),
     };
-    let access_token = encode(
-        &Header::default(),
-        &access_claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )?;
+    let access_token = encode(&header, &access_claims, &key)?;
 
     // Refresh token: 7 days
     let refresh_exp = now + Duration::days(7);
@@ -69,11 +67,7 @@ pub fn generate_token_pair(
         iat: now.timestamp(),
         exp: refresh_exp.timestamp(),
     };
-    let refresh_token = encode(
-        &Header::default(),
-        &refresh_claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
-    )?;
+    let refresh_token = encode(&header, &refresh_claims, &key)?;
 
     Ok(TokenPair {
         access_token,
@@ -87,8 +81,8 @@ pub fn generate_token_pair(
 pub fn validate_token(token: &str, secret: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
     let token_data = decode::<Claims>(
         token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &Validation::default(),
+        &DecodingKey::from_secret(secret.as_bytes())?,
+        &Validation::new(Algorithm::HS256),
     )?;
     Ok(token_data.claims)
 }
@@ -98,6 +92,19 @@ mod tests {
     use super::*;
 
     const SECRET: &str = "test-secret-key-for-jwt";
+
+    // Fixed HS256 wire-format fixture signed independently of the configured provider.
+    #[test]
+    fn accepts_existing_refresh_token() {
+        let token = concat!(
+            "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.",
+            "eyJzdWIiOiI1NTBlODQwMC1lMjliLTQxZDQtYTcxNi00NDY2NTU0NDAwMDAiLCJ1c2VybmFtZSI6Imxpc3RlbmVyIiwicm9sZSI6InVzZXIiLCJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjo0MTAyNDQ0ODAwfQ.",
+            "7st7HdV2McxpuObxg_jkaSsTBcGwdYXl-1K-kYMPur4",
+        );
+        let claims = validate_token(token, SECRET).unwrap();
+        assert_eq!(claims.username, "listener");
+        assert_eq!(claims.token_type, TokenType::Refresh);
+    }
 
     #[test]
     fn test_token_generation_and_validation() {

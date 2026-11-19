@@ -337,9 +337,11 @@ Upload a single audio file. Metadata is automatically extracted from the file ta
 |-------|------|-------------|
 | `file` | file | Audio file (FLAC, MP3, OGG, WAV, etc.) |
 
+If an identical file is already present, the server returns HTTP 409. Re-uploading a known missing file restores the original track and its playlist references.
+
 ### `POST /api/upload/batch`
 
-Upload multiple audio files at once. Maximum body size: **500 MB**.
+Upload up to 50 audio files at once. Each duplicate is reported as a failed item and other files continue to import. Maximum body size: **500 MB**.
 
 **Auth**: Required
 
@@ -589,7 +591,7 @@ Report a track for moderation.
 
 ### `GET /api/media/{*path}`
 
-Serve static media files (cover art, waveforms, etc.).
+Serve JPEG, PNG, GIF and WebP cover images from the media directories. The response uses the image format detected from the file contents. Other file types return HTTP 404.
 
 **Auth**: Conditional
 
@@ -621,9 +623,16 @@ Get the P2P node status.
   "direct_addresses": 2,
   "peer_count": 3,
   "online_peer_count": 2,
-  "dht_discovery_enabled": true
+  "dht_discovery_enabled": true,
+  "rendezvous_configured": false
 }
 ```
+
+### `POST /api/p2p/rendezvous`
+
+Instances with `P2P_RENDEZVOUS_SERVER=true` expose this endpoint for participating P2P nodes. Send a JSON object with the lowercase hexadecimal `node_id`, a Unix `timestamp` in seconds, and a `signature` array containing the 64 Ed25519 signature bytes. Sign the UTF-8 string `soundtime/rendezvous/1/{node_id}/{timestamp}`.
+
+A successful response contains a JSON array of up to eight other active NodeIds. Registrations expire 15 minutes after the signed timestamp. Invalid signatures and expired timestamps return `400`. A full directory returns `503` for a new participant.
 
 ### `GET /api/p2p/network-graph`
 
@@ -815,11 +824,17 @@ Get storage backend status and statistics.
 
 #### `POST /api/admin/storage/integrity-check`
 
-Run a storage integrity check (verify all files exist and match database records).
+Check local catalog entries for missing files, read errors and changes to a recorded SHA-256 digest. The response starts a background task.
 
 #### `POST /api/admin/storage/sync`
 
-Trigger a storage sync/import operation.
+Start the same reconciliation that runs automatically every 24 hours. It indexes existing files, imports new audio, recognizes byte-identical copies and updates paths for moved tracks. After a successful scan, it removes catalog entries for files that are still missing. Removing a track also removes its associated playlist, favorite and listening-history entries. Remote P2P tracks are excluded.
+
+If a music source contains no audio, its missing tracks are preserved and the source is listed in `empty_sources`. The primary volume (`/`) and the optional `network-nfs` and `network-smb` mounts are checked independently. After verifying the mount, pass its name in `prune_empty` to authorize cleanup for that source, for example `POST /api/admin/storage/sync?prune_empty=network-nfs`. Multiple confirmed sources may be comma-separated.
+
+#### `GET /api/admin/storage/task-status`
+
+Poll the task status after starting a sync or integrity check. A completed sync reports `scanned`, `imported`, `moved`, `removed`, `skipped`, `errors` and `empty_sources`. Starting another task while one is running returns HTTP 409.
 
 ### P2P Peer Management
 

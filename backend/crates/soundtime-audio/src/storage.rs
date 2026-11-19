@@ -30,7 +30,7 @@ pub trait StorageBackend: Send + Sync {
 
     fn full_path(&self, relative_path: &str) -> PathBuf;
 
-    async fn file_exists(&self, relative_path: &str) -> bool;
+    async fn file_exists(&self, relative_path: &str) -> Result<bool, StorageError>;
 
     async fn delete_file(&self, relative_path: &str) -> Result<(), StorageError>;
 
@@ -44,6 +44,7 @@ pub trait StorageBackend: Send + Sync {
     async fn read_file(&self, relative_path: &str) -> Result<Vec<u8>, StorageError>;
 
     async fn hash_file(&self, relative_path: &str) -> Result<String, StorageError> {
+        validate_storage_path(relative_path)?;
         let data = self.read_file(relative_path).await?;
         let hash = Sha256::digest(&data);
         Ok(format!("{:x}", hash))
@@ -151,11 +152,21 @@ impl StorageBackend for AudioStorage {
         self.base_path.join(relative_path)
     }
 
-    async fn file_exists(&self, relative_path: &str) -> bool {
-        fs::metadata(self.full_path(relative_path)).await.is_ok()
+    async fn file_exists(&self, relative_path: &str) -> Result<bool, StorageError> {
+        validate_storage_path(relative_path)?;
+        match fs::metadata(self.full_path(relative_path)).await {
+            Ok(info) => Ok(info.is_file()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A disappeared storage root must never imply that every track was deleted.
+                fs::metadata(&self.base_path).await?;
+                Ok(false)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     async fn delete_file(&self, relative_path: &str) -> Result<(), StorageError> {
+        validate_storage_path(relative_path)?;
         let path = self.full_path(relative_path);
         if path.exists() {
             fs::remove_file(path).await?;
@@ -190,16 +201,33 @@ impl StorageBackend for AudioStorage {
     }
 
     async fn read_file(&self, relative_path: &str) -> Result<Vec<u8>, StorageError> {
+        validate_storage_path(relative_path)?;
         let path = self.full_path(relative_path);
-        fs::read(&path)
-            .await
-            .map_err(|_| StorageError::NotFound(relative_path.to_string()))
+        fs::read(&path).await.map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => StorageError::NotFound(relative_path.to_string()),
+            _ => StorageError::Io(error),
+        })
+    }
+
+    async fn hash_file(&self, relative_path: &str) -> Result<String, StorageError> {
+        validate_storage_path(relative_path)?;
+        use tokio::io::AsyncReadExt;
+        let mut file = fs::File::open(self.full_path(relative_path)).await?;
+        let mut digest = Sha256::new();
+        let mut buffer = vec![0; 64 * 1024];
+        loop {
+            let n = file.read(&mut buffer).await?;
+            if n == 0 {
+                return Ok(format!("{:x}", digest.finalize()));
+            }
+            digest.update(&buffer[..n]);
+        }
     }
 
     async fn list_files(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
         let dir = self.base_path.join(prefix);
         let mut result = Vec::new();
-        if !dir.exists() {
+        if !prefix.is_empty() && !fs::try_exists(&dir).await? {
             return Ok(result);
         }
         collect_files_recursive(&dir, &self.base_path, &mut result).await?;
@@ -215,9 +243,10 @@ async fn collect_files_recursive(
     let mut entries = fs::read_dir(dir).await?;
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        if path.is_dir() {
+        let kind = entry.file_type().await?;
+        if kind.is_dir() {
             Box::pin(collect_files_recursive(&path, base, result)).await?;
-        } else {
+        } else if kind.is_file() {
             let rel = path
                 .strip_prefix(base)
                 .unwrap_or(&path)
@@ -302,32 +331,22 @@ impl StorageBackend for S3Storage {
         let sanitized_file = sanitize_filename(filename);
 
         let relative = format!("{user_id}/{sanitized_album}/{sanitized_file}");
-        let key = self.s3_key(&relative);
-
-        let final_relative = match self
-            .client
-            .head_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-        {
-            Ok(_) => {
-                let stem = Path::new(&sanitized_file)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("audio");
-                let ext = Path::new(&sanitized_file)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("bin");
-                format!(
-                    "{user_id}/{sanitized_album}/{}_{}.{ext}",
-                    stem,
-                    Uuid::new_v4()
-                )
-            }
-            Err(_) => relative,
+        let final_relative = if self.file_exists(&relative).await? {
+            let stem = Path::new(&sanitized_file)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("audio");
+            let ext = Path::new(&sanitized_file)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("bin");
+            format!(
+                "{user_id}/{sanitized_album}/{}_{}.{ext}",
+                stem,
+                Uuid::new_v4()
+            )
+        } else {
+            relative
         };
 
         let final_key = self.s3_key(&final_relative);
@@ -359,18 +378,25 @@ impl StorageBackend for S3Storage {
         self.cache_path.join(relative_path)
     }
 
-    async fn file_exists(&self, relative_path: &str) -> bool {
+    async fn file_exists(&self, relative_path: &str) -> Result<bool, StorageError> {
+        validate_storage_path(relative_path)?;
         let key = self.s3_key(relative_path);
-        self.client
+        match self
+            .client
             .head_object()
             .bucket(&self.bucket)
             .key(&key)
             .send()
             .await
-            .is_ok()
+        {
+            Ok(_) => Ok(true),
+            Err(e) if e.as_service_error().is_some_and(|err| err.is_not_found()) => Ok(false),
+            Err(e) => Err(StorageError::S3(format!("HeadObject failed: {e}"))),
+        }
     }
 
     async fn delete_file(&self, relative_path: &str) -> Result<(), StorageError> {
+        validate_storage_path(relative_path)?;
         let key = self.s3_key(relative_path);
         self.client
             .delete_object()
@@ -423,6 +449,7 @@ impl StorageBackend for S3Storage {
     }
 
     async fn read_file(&self, relative_path: &str) -> Result<Vec<u8>, StorageError> {
+        validate_storage_path(relative_path)?;
         let cache_file = self.cache_path.join(relative_path);
         if cache_file.exists() {
             return fs::read(&cache_file).await.map_err(StorageError::Io);
@@ -458,6 +485,50 @@ impl StorageBackend for S3Storage {
         Ok(data)
     }
 
+    async fn hash_file(&self, relative_path: &str) -> Result<String, StorageError> {
+        validate_storage_path(relative_path)?;
+        // The cache is not authoritative: an administrator may replace an object
+        // without using SoundTime. Hash the current S3 object and refresh the copy
+        // used for metadata extraction without exposing a partial download.
+        use tokio::io::AsyncWriteExt;
+        let mut body = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(self.s3_key(relative_path))
+            .send()
+            .await
+            .map_err(|e| StorageError::S3(format!("GetObject failed: {e}")))?
+            .body;
+        let target = self.full_path(relative_path);
+        let parent = target
+            .parent()
+            .ok_or_else(|| StorageError::Config("Invalid cache path".into()))?;
+        fs::create_dir_all(parent).await?;
+        let temporary = parent.join(format!(".soundtime-{}.tmp", Uuid::new_v4()));
+        let result = async {
+            let mut file = fs::File::create_new(&temporary).await?;
+            let mut digest = Sha256::new();
+            while let Some(bytes) = body
+                .try_next()
+                .await
+                .map_err(|e| StorageError::S3(format!("Read body: {e}")))?
+            {
+                digest.update(&bytes);
+                file.write_all(&bytes).await?;
+            }
+            file.flush().await?;
+            drop(file);
+            fs::rename(&temporary, target).await?;
+            Ok(format!("{:x}", digest.finalize()))
+        }
+        .await;
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary).await;
+        }
+        result
+    }
+
     async fn list_files(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
         let s3_prefix = self.s3_key(prefix);
         let mut result = Vec::new();
@@ -488,11 +559,22 @@ impl StorageBackend for S3Storage {
                             .unwrap_or(key)
                             .to_string()
                     };
-                    result.push(rel);
+                    // S3 can represent keys which are not valid relative filesystem paths.
+                    // Directory markers carry no file data.
+                    if !rel.ends_with('/') {
+                        validate_storage_path(&rel)?;
+                        result.push(rel);
+                    }
                 }
             }
             if resp.is_truncated() == Some(true) {
-                continuation_token = resp.next_continuation_token().map(|s| s.to_string());
+                let next = resp
+                    .next_continuation_token()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        StorageError::S3("Incomplete listing without a continuation token".into())
+                    })?;
+                continuation_token = Some(next.to_string());
             } else {
                 break;
             }
@@ -504,10 +586,27 @@ impl StorageBackend for S3Storage {
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
+fn validate_storage_path(relative: &str) -> Result<(), StorageError> {
+    if relative.is_empty()
+        || relative
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || !Path::new(relative)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(StorageError::Config(
+            "Expected a relative media file path".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn ensure_local_file(
     storage: &dyn StorageBackend,
     relative_path: &str,
 ) -> Result<PathBuf, StorageError> {
+    validate_storage_path(relative_path)?;
     let local = storage.full_path(relative_path);
     if local.exists() {
         return Ok(local);
@@ -530,17 +629,33 @@ pub fn sanitize_filename(name: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string();
-    // SECURITY: reject path traversal sequences
-    if sanitized == ".." || sanitized == "." || sanitized.contains("..") {
-        return sanitized.replace("..", "__");
+    if sanitized.is_empty() || sanitized == "." {
+        return "_".into();
     }
-    sanitized
+    sanitized.replace("..", "__")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn storage_paths_require_file_components() {
+        assert!(validate_storage_path("music/side A/01.wav").is_ok());
+        for path in [
+            "",
+            "/music",
+            "music/../other",
+            "music/./track",
+            "music//track",
+        ] {
+            assert!(validate_storage_path(path).is_err());
+        }
+        for name in ["", ".", ".."] {
+            assert!(validate_storage_path(&sanitize_filename(name)).is_ok());
+        }
+    }
 
     #[test]
     fn test_sanitize_filename_clean() {
@@ -611,8 +726,28 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(storage.file_exists(&relative).await);
-        assert!(!storage.file_exists("nonexistent/file.mp3").await);
+        assert!(storage.file_exists(&relative).await.unwrap());
+        assert!(!storage.file_exists("nonexistent/file.mp3").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn unavailable_storage_is_not_an_empty_library() {
+        let tmp = TempDir::new().unwrap();
+        let storage = AudioStorage::new(tmp.path().join("unmounted"));
+        assert!(storage.list_files("").await.is_err());
+        assert!(storage.file_exists("missing.wav").await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn scanner_does_not_recurse_into_symlink_cycles() {
+        let tmp = TempDir::new().unwrap();
+        let storage = AudioStorage::new(tmp.path());
+        fs::write(tmp.path().join("song.wav"), b"song")
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(tmp.path(), tmp.path().join("cycle")).unwrap();
+        assert_eq!(storage.list_files("").await.unwrap(), vec!["song.wav"]);
     }
 
     #[tokio::test]
@@ -626,9 +761,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(storage.file_exists(&relative).await);
+        assert!(storage.file_exists(&relative).await.unwrap());
         storage.delete_file(&relative).await.unwrap();
-        assert!(!storage.file_exists(&relative).await);
+        assert!(!storage.file_exists(&relative).await.unwrap());
     }
 
     #[tokio::test]
@@ -767,8 +902,8 @@ mod tests {
 
         // Second file should get a unique name
         assert_ne!(rel1, rel2);
-        assert!(storage.file_exists(&rel1).await);
-        assert!(storage.file_exists(&rel2).await);
+        assert!(storage.file_exists(&rel1).await.unwrap());
+        assert!(storage.file_exists(&rel2).await.unwrap());
     }
 
     #[tokio::test]

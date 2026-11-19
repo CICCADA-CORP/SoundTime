@@ -1,6 +1,6 @@
 <script lang="ts">
   import "../app.css";
-  import { page } from "$app/stores";
+  import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { onMount } from "svelte";
   import AudioPlayer from "$lib/components/AudioPlayer.svelte";
@@ -46,7 +46,7 @@
   onMount(async () => {
     try {
       const status = await api.get<SetupStatus>("/setup/status");
-      if (!status.setup_complete && !$page.url.pathname.startsWith("/setup")) {
+      if (!status.setup_complete && !page.url.pathname.startsWith("/setup")) {
         goto("/setup");
         return;
       }
@@ -66,7 +66,7 @@
 
   // Close sidebar on navigation
   $effect(() => {
-    void $page.url.pathname;
+    void page.url.pathname;
     sidebarOpen = false;
     mobileSearchOpen = false;
   });
@@ -84,7 +84,7 @@
   $effect(() => {
     if (!setupChecked) return;
     if (!instancePrivate) return;
-    const path = $page.url.pathname;
+    const path = page.url.pathname;
     const publicPaths = ["/login", "/register", "/setup"];
     if (publicPaths.some(p => path.startsWith(p))) return;
     if (!auth.isAuthenticated) {
@@ -115,7 +115,7 @@
   ];
 </script>
 
-{#if $page.url.pathname.startsWith("/setup")}
+{#if page.url.pathname.startsWith("/setup")}
   <!-- Setup pages use their own minimal layout -->
   {@render children()}
 {:else if !setupChecked}
@@ -154,7 +154,7 @@
     <!-- Nav -->
     <nav class="px-3 space-y-0.5">
       {#each navItems as item}
-        {@const isActive = $page.url.pathname === item.href}
+        {@const isActive = page.url.pathname === item.href}
         <a
           href={item.href}
           class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
@@ -172,7 +172,7 @@
         <h3 class="px-3 text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-widest mb-2">{t('nav.library')}</h3>
         <nav class="space-y-0.5">
           {#each libraryItems as item}
-            {@const isActive = $page.url.pathname === item.href}
+            {@const isActive = page.url.pathname === item.href}
             <a
               href={item.href}
               class="flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors
@@ -260,11 +260,11 @@
 
 <!-- Mobile bottom navigation -->
 <nav class="fixed bottom-0 left-0 right-0 z-[55] md:hidden bg-[hsl(0,0%,5%)] border-t border-[hsl(var(--border))] safe-area-bottom"
-  class:hidden={!setupChecked || $page.url.pathname.startsWith("/setup")}
+  class:hidden={!setupChecked || page.url.pathname.startsWith("/setup")}
 >
   <div class="flex items-center justify-around h-14">
     {#each mobileNavItems as item}
-      {@const isActive = $page.url.pathname === item.href}
+      {@const isActive = page.url.pathname === item.href}
       <a
         href={item.href}
         class="flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg transition-colors min-w-[60px]

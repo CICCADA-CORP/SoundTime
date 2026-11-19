@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { page } from "$app/stores";
+  import { page } from "$app/state";
   import { onMount } from "svelte";
   import { api } from "$lib/api";
   import type { SearchResults } from "$lib/types";
@@ -11,7 +11,7 @@
   let results: SearchResults = $state({ tracks: [], albums: [], artists: [], total: 0 });
   let loading = $state(true);
 
-  let query = $derived($page.url.searchParams.get("q") ?? "");
+  let query = $derived(page.url.searchParams.get("q") ?? "");
 
   onMount(async () => {
     await doSearch();

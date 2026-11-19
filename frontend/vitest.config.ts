@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 export default defineConfig({
-	plugins: [svelte({ hot: false })],
+	plugins: [svelte({ compilerOptions: { hmr: false } })],
 	resolve: {
 		conditions: ['browser'],
 	},

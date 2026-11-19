@@ -57,8 +57,8 @@ Unlike centralized platforms, SoundTime gives you full control over your music. 
 - **Batch upload** — Upload entire albums or folders at once
 
 ### 🌐 Peer-to-Peer Network
-- **iroh-powered P2P** — Encrypted QUIC connections via [iroh](https://iroh.computer/) 0.96 for peer discovery and track sharing
-- **DHT discovery** — Mainline DHT peer discovery via [Pkarr](https://pkarr.org/) for fully decentralized node resolution (enabled by default)
+- **iroh-powered P2P** — Encrypted QUIC connections via [iroh](https://iroh.computer/) 1.5 for peer discovery and track sharing
+- **Peer discovery** — opt into a shared [SoundTime rendezvous](docs/p2p-networking.md#discover-other-soundtime-instances-through-a-rendezvous) to find other nodes by ID, including relay-only instances. Iroh resolves known IDs via [Pkarr](https://pkarr.org/) on the Mainline DHT by default.
 - **Relay support** — NAT traversal through [n0.computer](https://n0.computer/) production relay servers
 - **Content-addressed storage** — Tracks identified by BLAKE3 hashes via iroh-blobs
 - **Distributed search** — Bloom filter-based routing sends queries only to relevant peers
@@ -107,12 +107,14 @@ Unlike centralized platforms, SoundTime gives you full control over your music. 
 | **Frontend** | [SvelteKit](https://kit.svelte.dev/) 2, Svelte 5, Tailwind CSS, shadcn-svelte |
 | **Auth** | Argon2id, JWT (jsonwebtoken), tower-governor |
 | **Audio** | [Lofty](https://github.com/Serial-ATA/lofty-rs) (metadata), [Symphonia](https://github.com/pdeljanov/Symphonia) (decode/waveform) |
-| **P2P** | [iroh](https://iroh.computer/) 0.96 (QUIC), iroh-blobs 0.96 (content-addressed storage) |
+| **P2P** | [iroh](https://iroh.computer/) 1.5 (QUIC), iroh-blobs 0.105 (content-addressed storage) |
 | **Visualization** | [D3.js](https://d3js.org/) 7 (network graph) |
 | **Storage** | Local filesystem or AWS S3-compatible |
 | **Deployment** | Docker Compose, Nginx reverse proxy |
 
 ## Quick Start
+
+For an existing installation with P2P data, back up the volume before upgrading its index. [P2P upgrade and rollback instructions](docs/p2p-networking.md#upgrading-the-p2p-store).
 
 ### One-Click Install (recommended)
 
@@ -137,7 +139,7 @@ This will automatically:
 
 > **Custom install path?** Set `SOUNDTIME_INSTALL_DIR` before running:
 > ```bash
-> SOUNDTIME_INSTALL_DIR=/opt/soundtime curl -fsSL https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/main/install.sh | bash
+> curl -fsSL https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/main/install.sh | SOUNDTIME_INSTALL_DIR=/opt/soundtime bash
 > ```
 
 ### Docker Compose (manual)
@@ -150,31 +152,24 @@ cd SoundTime
 
 # Configure environment
 cp .env.example .env
-# Edit .env — at minimum, change JWT_SECRET to a random string
+# Set POSTGRES_PASSWORD in .env and use the output of openssl rand -base64 32 for JWT_SECRET
 
 # Launch all services
 docker compose up
 ```
 
-Once started:
-- 🎵 **Frontend**: http://localhost:3000
-- 🔌 **API**: http://localhost:8080
-- 🌐 **Nginx proxy**: http://localhost:8880
-
-The first user to register automatically becomes the **admin**. Open the frontend and create your account to begin the setup wizard.
+Open [SoundTime](http://localhost:8880) to create the administrator account in the setup wizard. Nginx serves both the application and its API on this port. Set `NGINX_PORT` to change it.
 
 ### Local Development
 
 See the [Development Guide](docs/development.md) for a complete setup walkthrough.
 
-**Prerequisites**: Rust 1.93+, Node.js 20+, PostgreSQL 16
+**Prerequisites**: Rust 1.97+, Node.js 24 LTS, PostgreSQL 16 with pgvector
 
 ```bash
-# Start PostgreSQL
-docker compose up postgres -d
-
-# Configure environment
+# Configure the environment and enable the loopback PostgreSQL port in docker-compose.yml
 cp .env.example .env
+docker compose up postgres -d
 
 # Backend (terminal 1)
 cd backend
@@ -188,7 +183,7 @@ npm run dev
 
 ### Production Deployment
 
-See the [Deployment Guide](docs/deployment.md) for production setup with SSL, custom domain, S3 storage, and P2P configuration.
+The deployment guide covers SSL, custom domains, S3 storage, read-only SMB and NFS music libraries, and P2P configuration. [Deployment Guide](docs/deployment.md)
 
 ## Architecture
 
@@ -200,7 +195,7 @@ soundtime/
 │   └── crates/
 │       ├── soundtime-server     # Axum HTTP server, routes, auth, middleware
 │       ├── soundtime-db         # Sea-ORM entities & database connection pool
-│       ├── soundtime-migration  # 22 database migrations (PostgreSQL)
+│       ├── soundtime-migration  # Database migrations (PostgreSQL)
 │       ├── soundtime-audio      # Audio metadata, storage, waveform generation
 │       ├── soundtime-p2p        # P2P networking via iroh (discovery, health, search)
 │       └── soundtime-plugin     # Plugin system (WASM/extism-based extensions)
@@ -223,7 +218,7 @@ soundtime/
                              │                      │
                     ┌────────▼────────┐    ┌────────▼────────┐
                     │    Frontend     │    │     Backend      │
-                    │   SvelteKit 2   │    │    Axum 0.8      │
+                    │   SvelteKit 3   │    │    Axum 0.8      │
                     │   Port 3000     │    │    Port 8080     │
                     └─────────────────┘    └────────┬─────────┘
                                                     │

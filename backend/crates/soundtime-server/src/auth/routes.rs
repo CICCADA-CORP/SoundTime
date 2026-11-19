@@ -258,7 +258,7 @@ pub async fn register(
         Json(AuthResponse {
             user: UserResponse {
                 id: created.id,
-                instance_id: format!("{}@{}", &created.username, &state.domain),
+                instance_id: format!("{}@{}", created.username, state.domain),
                 username: created.username,
                 email: created.email,
                 display_name: created.display_name,
@@ -360,7 +360,7 @@ pub async fn login(
     Ok(Json(AuthResponse {
         user: UserResponse {
             id: user.id,
-            instance_id: format!("{}@{}", &user.username, &state.domain),
+            instance_id: format!("{}@{}", user.username, state.domain),
             username: user.username,
             email: user.email,
             display_name: user.display_name,
@@ -473,7 +473,7 @@ pub async fn me(
 
     Ok(Json(UserResponse {
         id: user.id,
-        instance_id: format!("{}@{}", &user.username, &state.domain),
+        instance_id: format!("{}@{}", user.username, state.domain),
         username: user.username,
         email: user.email,
         display_name: user.display_name,
@@ -603,7 +603,7 @@ pub async fn change_email(
 
     Ok(Json(UserResponse {
         id: updated.id,
-        instance_id: format!("{}@{}", &updated.username, &state.domain),
+        instance_id: format!("{}@{}", updated.username, state.domain),
         username: updated.username,
         email: updated.email,
         display_name: updated.display_name,

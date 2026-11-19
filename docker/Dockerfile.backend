@@ -1,4 +1,4 @@
-FROM rust:1.93-slim AS builder
+FROM rust:1.97-slim AS builder
 
 ARG SOUNDTIME_BUILD_NUMBER=""
 
@@ -24,7 +24,7 @@ RUN mkdir -p crates/soundtime-server/src && echo "fn main() {}" > crates/soundti
     && mkdir -p crates/soundtime-plugin/src && echo "" > crates/soundtime-plugin/src/lib.rs
 
 # 3. Build only dependencies (this layer is cached unless Cargo.toml/lock changes)
-RUN cargo build --release -p soundtime-server 2>/dev/null || true
+RUN cargo build --locked --release -p soundtime-server --features redis
 RUN rm -rf crates/*/src
 
 # 4. Copy real source code
@@ -33,7 +33,7 @@ COPY . ./
 # 5. Touch files so cargo knows they changed, then build with version
 ENV SOUNDTIME_BUILD_NUMBER=${SOUNDTIME_BUILD_NUMBER}
 RUN find crates -name "*.rs" -exec touch {} + \
-    && cargo build --release -p soundtime-server
+    && cargo build --locked --release -p soundtime-server --features redis
 
 FROM debian:trixie-slim
 
@@ -45,6 +45,8 @@ WORKDIR /app
 COPY --from=builder /app/target/release/soundtime-server /app/soundtime-server
 
 RUN mkdir -p /data/music /data/p2p-blobs && chown -R appuser:appuser /data
+
+ENV SOUNDTIME_ENV=production
 
 USER appuser
 

@@ -15,10 +15,10 @@ tower-http = { version = "0.6", features = ["cors", "trace", "set-header"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
-sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
-sea-orm-migration = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+sea-orm.workspace = true
+sea-orm-migration.workspace = true
 argon2 = "0.5"
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_rs"] }
 rand = "0.9"
 tower_governor = "0.8"
 password-hash = { version = "0.5", features = ["std"] }
@@ -29,7 +29,7 @@ urlencoding = "2"
 bytes = "1"
 toml = "0.8"
 regex = "1"
-git2 = "0.20"
+git2 = { version = "0.21", features = ["https", "ssh"] }
 tempfile = "3"
 md5 = "0.7"
 aes-gcm = "0.10"
