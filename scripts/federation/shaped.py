@@ -48,6 +48,10 @@ class Links:
     def command(self, name, *args, cap=None):
         base = ["docker", "run", "--rm", "--network", "container:" + self.nodes[name]["id"],
                 "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges:true"]
+        # iperf3 creates a backing file per stream even without --zerocopy.
+        # Only its disposable helper receives a small writable tmpfs.
+        if args[0] == "iperf3":
+            base += ["--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=4m,mode=1777"]
         if cap:
             base += ["--cap-add=" + cap]
         else:
