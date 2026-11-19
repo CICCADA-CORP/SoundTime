@@ -1,5 +1,8 @@
 """Synthetic observations, no HTTP, Docker or PostgreSQL."""
 import unittest
+from unittest.mock import Mock, patch
+
+from load import churn
 
 from load_capacity import assess
 
@@ -20,7 +23,8 @@ def observation():
         "transport_delta": {site: {"sent": 1} for site in "ABC"},
         "successful_searches_per_reader": {"catalog-http-1": 4400, "catalog-http-2": 4590},
         "container_peak_memory_bytes": {"catalog-http-1": 1, "catalog-http-2": 1},
-        "live_catalogue_change": {}, "search_to_screen_ms": {"samples": 20, "p95": 300},
+        "catalogue_observation_window_ms": {"earliest_end_ms": 89440, "latest_end_ms": 90000},
+        "live_catalogue_change": {"started_ms": 10000, "insert_observed_ms": 11500, "withdraw_observed_ms": 12400}, "search_to_screen_ms": {"samples": 20, "p95": 300},
         "first_media_progress_ms": {"samples": 20, "p95": 800}, "first_sound_ms": {"samples": 21, "p95": 450},
     }
 
@@ -69,6 +73,42 @@ class Capacity(unittest.TestCase):
         self.assertEqual(partial["steady_timing"], "partial")
         self.assertIsNone(partial["steady_event_loop_delay_p99_ms"])
         self.assertIsNone(partial["steady_process_cpu_cores"])
+
+    def test_mutation_times_are_captured_when_b_answers(self):
+        origin, reader = Mock(), Mock()
+        origin.upload.return_value = "source-track"
+        reader.search.side_effect = ["reader-track", None]
+        observations = {}
+        with patch("load.time.sleep"), patch("load.time.monotonic", side_effect=[100.0, 100.4, 100.9]), \
+                patch("load.wait_for", side_effect=lambda label, probe, timeout: probe()):
+            churn(origin, reader, 1, 99.0, observations)
+        self.assertEqual(observations["reader_track_id"], "reader-track")
+        self.assertAlmostEqual(observations["started_ms"], 1000)
+        self.assertAlmostEqual(observations["insert_observed_ms"], 1400)
+        self.assertAlmostEqual(observations["withdraw_observed_ms"], 1900)
+        origin.call.assert_called_once_with("/tracks/source-track", method="DELETE")
+
+    def test_catalogue_changes_must_be_visible_inside_the_plateau(self):
+        report = observation()
+        change = report["live_catalogue_change"]
+        for withdrawn, classification, verdict in [
+            (89439.9, "within_plateau", "passed"),
+            (89440, "deadline_uncertain", "insufficient_evidence"),
+            (90000, "after_plateau", "not_met"),
+            (90250, "after_plateau", "not_met"),
+            (9000, "unobserved", "insufficient_evidence"),
+        ]:
+            with self.subTest(withdrawn=withdrawn):
+                change["withdraw_observed_ms"] = withdrawn
+                result = assess(report)
+                self.assertEqual(result["catalogue_mutation_timing"], classification)
+                self.assertEqual(result["service"]["catalogue_mutation_completed"], verdict == "passed")
+                self.assertEqual(result["verdict"], verdict)
+        del change["insert_observed_ms"]
+        self.assertEqual(assess(report)["verdict"], "insufficient_evidence")
+        report["profile"]["pause_c"] = True
+        report["fault"] = {"source": "C"}
+        self.assertEqual(assess(report)["verdict"], "fault_observation_incomplete")
 
     def test_missing_proposed_load(self):
         report = observation()

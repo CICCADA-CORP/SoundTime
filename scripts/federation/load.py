@@ -148,16 +148,21 @@ def physical_storage(project):
     return occupied
 
 
-def churn(a, b, delay):
+def churn(a, b, delay, frame_received, observed):
     time.sleep(delay)
     start = time.monotonic()
+    observed["started_ms"] = (start - frame_received) * 1000
     track = a.upload("Loadcatalogchange", wav_fixture(32000, 47))
-    wait_for("fresh title at B during load", lambda: b.search("Loadcatalogchange"), timeout=50)
+    observed["origin_track_id"] = track
+    observed["reader_track_id"] = wait_for("fresh title at B during load", lambda: b.search("Loadcatalogchange"), timeout=50)
     inserted = time.monotonic()
+    observed["insert_observed_ms"] = (inserted - frame_received) * 1000
+    observed["visible_insert_ms"] = round((inserted - start) * 1000)
     a.call("/tracks/" + track, method="DELETE")
     wait_for("withdrawal at B during load", lambda: not b.search("Loadcatalogchange"), timeout=50)
-    return {"visible_insert_ms": round((inserted - start) * 1000),
-            "visible_withdraw_ms": round((time.monotonic() - inserted) * 1000)}
+    withdrawn = time.monotonic()
+    observed["withdraw_observed_ms"] = (withdrawn - frame_received) * 1000
+    observed["visible_withdraw_ms"] = round((withdrawn - inserted) * 1000)
 
 
 def pause_source(project, steady, full):
@@ -309,9 +314,18 @@ def run(args, report):
             # Anchor the remaining plateau on receipt of the generator's frame.
             deadline = received + min(seconds, max(0, announced["remaining_ms"] / 1000))
             steady = deadline - seconds
+            # The generator starts its ramp after reading our config, and emits
+            # the steady frame before we receive it. These two causal bounds
+            # do not require synchronised clocks or negligible Docker pipe lag.
+            earliest_end = records.config_sent_at + announced["ramp_ms"] / 1000 + seconds
+            report["catalogue_observation_window_ms"] = {
+                "earliest_end_ms": (earliest_end - received) * 1000,
+                "latest_end_ms": (deadline - received) * 1000,
+            }
+            observed = report["live_catalogue_change"] = {}
             with ThreadPoolExecutor(max_workers=3) as executor:
                 sound = executor.submit(observe_sound, sound_browser, deadline, report) if full else None
-                mutation = executor.submit(churn, a, b, 10 if full else 2)
+                mutation = executor.submit(churn, a, b, 10 if full else 2, received, observed)
                 failure = executor.submit(pause_source, project, steady, full) if fault else None
                 while time.monotonic() + 3 < deadline and generator.poll() is None:
                     try:
@@ -326,7 +340,7 @@ def run(args, report):
                 records.wait("complete", timeout=max(5, deadline+30-time.monotonic()))
                 require(generator.wait(timeout=15) == 0, "Generator failed after writing its result")
                 try:
-                    report["live_catalogue_change"] = mutation.result(timeout=120)
+                    mutation.result(timeout=120)
                 except Exception as exc:
                     report["live_catalogue_change_error"] = str(exc)
                 if sound:

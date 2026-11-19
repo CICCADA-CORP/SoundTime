@@ -247,7 +247,7 @@ plateauStart = performance.now();
 plateauCpu = process.cpuUsage();
 plateauElu = performance.eventLoopUtilization();
 plateauLoop.enable();
-console.log(JSON.stringify({ phase: "steady", clients, search_per_second: rate, duration_s: duration / 1000,
+console.log(JSON.stringify({ phase: "steady", clients, search_per_second: rate, duration_s: duration / 1000, ramp_ms: ramp,
   remaining_ms: Math.max(0, end - performance.now()), end_unix_ms: performance.timeOrigin + end }));
 await delay(Math.max(1, end - performance.now()));
 const plateauEnd = performance.now();

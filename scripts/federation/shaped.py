@@ -128,11 +128,13 @@ def trial(browser, source, b, warm):
 def benchmark(args, report):
     links = Links()
     report["topology"] = {name: links.apply(name) for name in "ABC"}
+    report["phase"] = "calibration"
     report["calibration"] = calibration = {}
     for src in "ABC":
         for dst in "ABC":
             if src != dst:
                 calibration[src + "_to_" + dst] = links.calibrate(src, dst)
+    report["phase"] = "playback"
     peers = {name: Instance(name, getattr(args, name.lower())) for name in "ABC"}
     b = peers["B"]
     users, playlists, tracks = {}, {}, {}
@@ -182,8 +184,6 @@ def benchmark(args, report):
                 warm.append(trial(browsers[name], peers[name], b, True))
         report["first_sound"] = {k: quantiles([v["first_sound_ms"] for v in values]) for k, values in (("cold", cold), ("warm", warm))}
     report["egress"] = {name: links.counters(name) for name in "ABC"}
-    report["warm_p95_under_2s"] = report["first_sound"]["warm"]["p95_ms"] < 2000
-    report["status"] = "measured"
 
 
 def main():
@@ -192,15 +192,20 @@ def main():
         parser.add_argument("--" + field, required=True)
     parser.add_argument("--mode", choices=["shaped"], required=True)
     args = parser.parse_args()
-    report = {"mode": "shaped", "status": "failed", "target_mbit_s": 10, "target_rtt_ms": 60}
+    report = {"mode": "shaped", "status": "failed", "phase": "topology",
+              "target_mbit_s": 10, "target_rtt_ms": 60, "warm_p95_target_ms_exclusive": 2000}
     try:
         benchmark(args, report)
+        passed = report["first_sound"]["warm"]["p95_ms"] < report["warm_p95_target_ms_exclusive"]
+        report.update(status="measured", phase="complete", warm_p95_under_2s=passed,
+                      verdict="passed" if passed else "not_met")
     except Exception as error:
+        report["verdict"] = "invalid_calibration" if report["phase"] in ("topology", "calibration") else "insufficient_evidence"
         report["error"] = str(error)
         print(error, file=sys.stderr)
     finally:
         Path(args.report).write_text(json.dumps(report, indent=2) + "\n")
-    return 0 if report["status"] == "measured" else 1
+    return 0 if report["verdict"] == "passed" else 1
 
 
 if __name__ == "__main__":

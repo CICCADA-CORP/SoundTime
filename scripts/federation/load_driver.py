@@ -89,6 +89,7 @@ def launch(project, selected, cfg, report, progress_path):
     ) as proc:
         def write_config():
             try:
+                records.config_sent_at = time.monotonic()
                 proc.stdin.write((json.dumps(cfg) + "\n").encode())
                 proc.stdin.close()
             except (BrokenPipeError, OSError, ValueError):

@@ -29,6 +29,21 @@ def describe_generator(result, rate, seconds, steady_observed):
     }
 
 
+def mutation_timing(report):
+    """Compare monotonic observations to the two causal deadline bounds."""
+    change = report.get("live_catalogue_change", {})
+    window = report.get("catalogue_observation_window_ms", {})
+    marks = [change.get(key) for key in ("started_ms", "insert_observed_ms", "withdraw_observed_ms")]
+    earliest, latest = window.get("earliest_end_ms"), window.get("latest_end_ms")
+    if not all(isinstance(t, (int, float)) and math.isfinite(t) for t in [earliest, latest, *marks]):
+        return "unobserved"
+    if not (0 <= marks[0] <= marks[1] <= marks[2] and 0 < earliest <= latest):
+        return "unobserved"
+    if marks[2] < earliest:
+        return "within_plateau"
+    return "after_plateau" if marks[2] >= latest else "deadline_uncertain"
+
+
 def assess(report):
     full = report["mode"] == "load-full"
     profile = report["profile"]
@@ -63,8 +78,9 @@ def assess(report):
     sound = report["first_sound_ms"]
     routed = report["successful_searches_per_reader"]
     reader_roles = ["catalog-http-1", "catalog-http-2"] if full else []
+    mutation = mutation_timing(report)
     evidence = {
-        "steady_observation": load["steady_seconds"] == seconds
+        "catalogue_mutation_timing": mutation in ("within_plateau", "after_plateau"),        "steady_observation": load["steady_seconds"] == seconds
                             and load["steady_samples"] >= math.ceil(.90 * (seconds - 1))
                             and load["max_sample_gap_ms"] <= 2500,
         "search_accounting": result["search_due"] == result["search_started"] + result["omissions"]
@@ -80,7 +96,7 @@ def assess(report):
         "browser_first_sound_witness": not full or (sound["samples"] >= minimum_witness and "sound_browser_error" not in report),
     }
     service = {
-        "catalogue_mutation_completed": "live_catalogue_change" in report,
+        "catalogue_mutation_completed": mutation == "within_plateau",
         "zero_search_failures": result["search_failed"] == 0,
         "zero_failed_media_starts": result["media_failed_starts"] == 0,
         "zero_media_interruptions": result["interruptions"] == 0,
@@ -90,7 +106,7 @@ def assess(report):
     reached = (all(offered.values()) and all(achieved.values()) and evidence["steady_observation"]
                and evidence["all_listeners_accounted"] and evidence["search_accounting"])
     if profile["pause_c"]:
-        fault_observed = ("fault" in report and evidence["reader_tier_observed"]
+        fault_observed = ("fault" in report and evidence["catalogue_mutation_timing"] and evidence["reader_tier_observed"]
                           and screen["samples"] > 0 and (not full or sound["samples"] > 0))
         verdict = "fault_observation" if fault_observed else "fault_observation_incomplete"
     elif not full:
@@ -109,6 +125,7 @@ def assess(report):
                     "audio_target_bytes_per_second_per_reader": audio_target,
                     "minimum_audio_bytes_per_second_per_reader": audio_target * audio_fraction,
                     "maximum_unbuffered_ms": 2000, "screen_p95_target_ms": 300},
+        "catalogue_mutation_timing": mutation,
         "offered": offered, "achieved": achieved, "evidence": evidence, "service": service,
         "workload_reached": reached, "verdict": verdict,
         "generator_observation": describe_generator(result, profile["target_search_per_second"], seconds,
