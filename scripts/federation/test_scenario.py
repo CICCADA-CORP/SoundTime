@@ -49,6 +49,23 @@ class FederationScenarioTests(unittest.TestCase):
         proc.stdin.close.assert_called_once()
         proc.stdout.close.assert_called_once()
 
+    def test_load_cli_passes_report_path_for_sibling_progress(self):
+        def write_progress(args, report):
+            self.assertIsInstance(args.report, Path)
+            progress = args.report.with_name("generator-progress.jsonl")
+            progress.write_text('{"phase":"complete"}\n')
+            report["progress_file"] = progress.name
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "load report.json"
+            argv = ["load.py", "--a", "A", "--b", "B", "--c", "C", "--mode", "load-smoke",
+                    "--report", str(path)]
+            with patch.object(load.sys, "argv", argv), patch.object(load, "run", side_effect=write_progress):
+                load.main()
+            self.assertEqual(json.loads(path.read_text())["progress_file"], "generator-progress.jsonl")
+            self.assertEqual(json.loads((path.parent / "generator-progress.jsonl").read_text()),
+                             {"phase": "complete"})
+
     def test_load_error_retains_diagnostics_and_partial_results_when_witness_wont_exit(self):
         proc = Mock()
         proc.stdin.close.side_effect = BrokenPipeError()

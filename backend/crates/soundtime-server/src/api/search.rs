@@ -7,7 +7,9 @@ use futures_util::{
     future::{BoxFuture, WeakShared},
     FutureExt,
 };
-use sea_orm::{ConnectionTrait, DbBackend, DbErr, FromQueryResult, Statement};
+use sea_orm::{
+    AccessMode, ConnectionTrait, DbBackend, DbErr, FromQueryResult, Statement, TransactionTrait,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -264,32 +266,44 @@ pub async fn search(
     .await
     .map_err(database_error)?
     .ok_or_else(|| database_error(DbErr::Custom("missing search name matches".into())))?;
-    if names.albums {
-        for row in state
+    if names.albums || names.artists {
+        // These availability joins can trigger seconds of LLVM compilation per
+        // execution. Keep the setting local to the matching category queries.
+        let tx = state
             .db
-            .query_all(statement(include_str!("search/albums.sql")))
+            .begin_with_config(None, Some(AccessMode::ReadOnly))
             .await
-            .map_err(database_error)?
-        {
-            let model = album::Model::from_query_result(&row, "").map_err(database_error)?;
-            let name = row
-                .try_get("", "result_artist_name")
-                .map_err(database_error)?;
-            result
-                .albums
-                .push(super::albums::AlbumResponse::from_model(model, name));
-        }
-    }
-    if names.artists {
-        let artists =
-            artist::Model::find_by_statement(statement(include_str!("search/artists.sql")))
-                .all(&state.db)
+            .map_err(database_error)?;
+        tx.execute_unprepared("SET LOCAL jit = off")
+            .await
+            .map_err(database_error)?;
+        if names.albums {
+            for row in tx
+                .query_all(statement(include_str!("search/albums.sql")))
                 .await
-                .map_err(database_error)?;
-        result.artists = artists
-            .into_iter()
-            .map(super::artists::ArtistResponse::from)
-            .collect();
+                .map_err(database_error)?
+            {
+                let model = album::Model::from_query_result(&row, "").map_err(database_error)?;
+                let name = row
+                    .try_get("", "result_artist_name")
+                    .map_err(database_error)?;
+                result
+                    .albums
+                    .push(super::albums::AlbumResponse::from_model(model, name));
+            }
+        }
+        if names.artists {
+            let artists =
+                artist::Model::find_by_statement(statement(include_str!("search/artists.sql")))
+                    .all(&tx)
+                    .await
+                    .map_err(database_error)?;
+            result.artists = artists
+                .into_iter()
+                .map(super::artists::ArtistResponse::from)
+                .collect();
+        }
+        tx.commit().await.map_err(database_error)?;
     }
     result.total = result.tracks.len() + result.albums.len() + result.artists.len();
     if params.include_p2p.unwrap_or(false) {
