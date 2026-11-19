@@ -1,4 +1,24 @@
-# SoundTime
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/soundtime-signature-white.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/soundtime-signature.png">
+    <img src="docs/assets/soundtime-signature.png" width="320" alt="SoundTime">
+  </picture>
+</h1>
+
+<p align="center"><strong>Self-hosted music streaming with peer-to-peer sharing</strong></p>
+
+<p align="center">
+  <a href="https://github.com/CICCADA-CORP/SoundTime/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/CICCADA-CORP/SoundTime/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status on main"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg" alt="License: AGPL-3.0-or-later"></a>
+  <a href="backend/crates/soundtime-server/Cargo.toml"><img src="https://img.shields.io/badge/version-0.1.0-green.svg" alt="Package version: 0.1.0"></a>
+  <a href=".github/workflows/ci.yml"><img src="https://img.shields.io/badge/Rust-1.97.0-orange.svg" alt="Rust 1.97.0 in CI"></a>
+  <a href=".github/workflows/ci.yml"><img src="https://img.shields.io/badge/Node.js-24-339933.svg" alt="Node.js 24 in CI"></a>
+</p>
+
+<p align="center">
+  <a href="https://discord.gg/UVCZCNcJvM"><img src="https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&amp;logo=discord&amp;logoColor=white" alt="Join the SoundTime Discord"></a>
+</p>
 
 <p align="center">
   <img src="frontend/static/soundtime-signature.svg" alt="" width="320" />
@@ -7,6 +27,7 @@
 SoundTime is a self-hosted music server for your own audio collection. Browse by artist or album, build a queue, and listen from a desktop or mobile browser. You decide who can access the web catalog and whether your server shares music with other SoundTime instances.
 
 [Quick start](#quick-start) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md)
+[Quick start](#quick-start) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md) · [Community](#community) · [Disclaimer](#disclaimer)
 
 ![SoundTime playing Last Light from the demo library, with cover art on the left and the next three tracks queued on the right](docs/assets/soundtime-player.webp)
 
@@ -119,8 +140,38 @@ The playback test starts a disposable Compose project and exercises the browser 
 | Ask a question or report a bug | [GitHub Discussions](https://github.com/CICCADA-CORP/SoundTime/discussions) · [Discord](https://discord.gg/UVCZCNcJvM) · [Issue tracker](https://github.com/CICCADA-CORP/SoundTime/issues) |
 | Report a security vulnerability privately | [Security policy](SECURITY.md) |
 
+## Community
+
+- Chat with other listeners, instance operators and contributors on [Discord](https://discord.gg/UVCZCNcJvM).
+- Ask a setup question or share an idea in [GitHub Discussions](https://github.com/CICCADA-CORP/SoundTime/discussions).
+- Track ongoing work in [GitHub Issues](https://github.com/CICCADA-CORP/SoundTime/issues), [report a bug](https://github.com/CICCADA-CORP/SoundTime/issues/new?template=bug_report.md) or [request a feature](https://github.com/CICCADA-CORP/SoundTime/issues/new?template=feature_request.md).
+
 ## License
 
 SoundTime is maintained by CICCADA and distributed under the GNU Affero General Public License, version 3 or later (`AGPL-3.0-or-later`). [License text](LICENSE)
 
 Each operator is responsible for the media they host and share. Use recordings you have permission to distribute when sharing with peers. Rights holders can contact the operator of the instance serving the recording.
+---
+
+<a name="disclaimer"></a>
+
+## ⚠️ Disclaimer
+
+SoundTime is a **self-hosted music streaming tool** designed for managing and streaming your **own personal music library**. The peer-to-peer features are intended for sharing legally owned or royalty-free content between instances you operate or trust.
+
+**The developers of SoundTime do not endorse, encourage, or condone the use of this software for sharing, distributing, or hosting copyrighted material without proper authorization from the rights holders.**
+
+Each SoundTime instance is independently operated. The responsibility for the content hosted, shared, or made available through a given node lies **entirely with the operator of that node** — not with the authors, contributors, or maintainers of the SoundTime software.
+
+By using SoundTime, you acknowledge that:
+- You are solely responsible for ensuring that all content on your instance complies with applicable copyright laws and regulations in your jurisdiction.
+- The SoundTime project and its contributors bear **no liability** for any unlawful use of the software.
+- P2P connections are made at the discretion of instance operators. Connecting to another node does not imply endorsement of its content.
+
+If you are a rights holder and believe your content is being shared through a SoundTime instance, please contact the **operator of that specific instance** directly.
+
+---
+
+<p align="center">
+  Made with ❤️ by <a href="https://github.com/CICCADA-CORP">CICCADA</a>
+</p>
