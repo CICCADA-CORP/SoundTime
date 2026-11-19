@@ -2,8 +2,8 @@
 
 use axum::{extract::State, http::StatusCode, Extension, Json};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter,
-    QuerySelect, Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, FromQueryResult, PaginatorTrait,
+    QueryFilter, QuerySelect, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use soundtime_db::AppState;
 
 // ─── DTOs ───────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, FromQueryResult)]
 pub struct SetupStatusResponse {
     pub setup_complete: bool,
     pub has_admin: bool,
@@ -97,44 +97,26 @@ async fn upsert_setting(
 pub async fn setup_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SetupStatusResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let setup_complete = is_setup_complete(&state.db).await.map_err(|s| {
-        (
-            s,
-            Json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            }),
-        )
-    })?;
-
-    let user_count = user::Entity::find().count(&state.db).await.map_err(|_| {
+    let status = SetupStatusResponse::find_by_statement(sea_orm::Statement::from_string(
+        state.db.get_database_backend(),
+        "SELECT EXISTS (SELECT FROM users) AS has_admin,
+                EXISTS (SELECT FROM instance_settings WHERE key = 'setup_complete' AND value = 'true') AS setup_complete,
+                EXISTS (SELECT FROM instance_settings WHERE key = 'instance_private' AND value = 'true') AS instance_private",
+    ))
+    .one(&state.db)
+    .await
+    .map_err(|error| {
+        tracing::error!(%error, "failed to read instance setup status");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "Internal server error".to_string(),
             }),
         )
-    })?;
+    })?
+    .expect("SELECT of EXISTS expressions always returns one row");
 
-    let instance_private = instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq("instance_private"))
-        .one(&state.db)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Unable to read instance visibility".into(),
-                }),
-            )
-        })?
-        .map(|s| s.value == "true")
-        .unwrap_or(false);
-
-    Ok(Json(SetupStatusResponse {
-        setup_complete,
-        has_admin: user_count > 0,
-        instance_private,
-    }))
+    Ok(Json(status))
 }
 
 /// POST /api/setup/admin — public, but only works if 0 users exist

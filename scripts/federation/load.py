@@ -332,6 +332,7 @@ def run(args, report):
                         obs = browser.phase("measure")
                         if time.monotonic() <= deadline:
                             browsers.append({"unix_s": time.time(), "search_to_screen_ms": obs["search_to_screen_ms"],
+                                             "navigation_timing": obs.get("navigation_timing"),
                                              "first_media_progress_ms": obs["first_progress_ms"],
                                              "seek_progress": obs["after_seek_seconds"]})
                     except Exception as exc:

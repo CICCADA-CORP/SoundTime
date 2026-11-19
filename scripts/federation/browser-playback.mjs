@@ -44,6 +44,37 @@ async function until(label, get, timeout = 20000) {
   throw new Error("Timed out waiting for " + label);
 }
 
+// Executed in the document after a visible result, relative to navigation start.
+// Report fixed endpoint names only. Query strings may contain listener searches.
+function navigationTimings() {
+  const navigation = performance.getEntriesByType("navigation")[0];
+  if (!navigation) return null;
+  const resources = performance.getEntriesByType("resource");
+  const endpoints = {};
+  const paths = new Set(["/api/setup/status", "/api/auth/me", "/api/auth/media-session", "/api/search"]);
+  let assets = 0;
+  let transferred = 0;
+  let lastAssetEnd = 0;
+  for (const resource of resources) {
+    const url = new URL(resource.name);
+    if (url.origin !== location.origin) continue;
+    if (paths.has(url.pathname)) {
+      endpoints[url.pathname] = {
+        start_ms: resource.startTime, first_byte_ms: resource.responseStart, end_ms: resource.responseEnd,
+      };
+    } else if (url.pathname.startsWith("/_app/immutable/")) {
+      assets++;
+      transferred += resource.transferSize;
+      lastAssetEnd = Math.max(lastAssetEnd, resource.responseEnd);
+    }
+  }
+  return {
+    document_first_byte_ms: navigation.responseStart, document_end_ms: navigation.responseEnd,
+    dom_interactive_ms: navigation.domInteractive, immutable_assets: assets,
+    immutable_transfer_bytes: transferred, last_asset_end_ms: lastAssetEnd, endpoints,
+  };
+}
+
 try {
   const port = await until("Chrome debugger", async () => {
     try {
@@ -396,7 +427,8 @@ try {
           "new URL(location.href).searchParams.get('q')==="+JSON.stringify(title)+
           " && Boolean("+row+"?.getBoundingClientRect().height)"));
         const visible=performance.now()-began;
-        result={search_to_screen_ms:visible,...await playback()};
+        const navigation = await evaluate(`(${navigationTimings.toString()})()`);
+        result={search_to_screen_ms:visible,navigation_timing:navigation,...await playback()};
         await send("Page.navigate",{url:"about:blank"});
       }
       else if (phase==="play") {
