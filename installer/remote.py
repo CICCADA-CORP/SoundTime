@@ -203,7 +203,10 @@ def _staging_commands(platform, identifier, digest):
         upload = paths + "New-Item -ItemType Directory -Path $d -ErrorAction Stop | Out-Null;try {" + (
             "$fs=[IO.File]::Open($f,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);"
             "try {[Console]::OpenStandardInput().CopyTo($fs)} finally {$fs.Dispose()};"
-            "if ((Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash -ne '" + digest + "'){throw 'Invalid transfer'}"
+            "$sha=[Security.Cryptography.SHA256]::Create();$reader=[IO.File]::OpenRead($f);"
+            "try {$actual=[BitConverter]::ToString($sha.ComputeHash($reader)).Replace('-','')}"
+            "finally {$reader.Dispose();$sha.Dispose()};"
+            "if ($actual -ne '" + digest + "'){throw 'Invalid transfer'}"
         ) + "} catch {" + remove + "throw}"
         execute = (paths + "try {$OutputEncoding=New-Object Text.UTF8Encoding($false);"
                    "[Console]::ReadLine() | & $f --stdio-agent;$status=$LASTEXITCODE} finally {"

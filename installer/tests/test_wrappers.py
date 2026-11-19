@@ -1,6 +1,7 @@
 """Exercise the portable entry points without requiring a built release."""
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -64,16 +65,38 @@ class WindowsWrapperTests(unittest.TestCase):
             base = Path(temp)
             entry = base / "soundtime.cmd"
             shutil.copy2(WRAPPERS / entry.name, entry)
-            # cmd.exe is a native console application that can return any chosen status.
-            for arch, target in (("AMD64", "x64"), ("ARM64", "arm64")):
-                with self.subTest(arch=arch):
-                    path = base / "bin" / ("windows-" + target) / "soundtime.exe"
-                    path.parent.mkdir(parents=True)
-                    shutil.copyfile(os.environ["COMSPEC"], path)
-                    env = dict(os.environ, PROCESSOR_ARCHITECTURE="x86", PROCESSOR_ARCHITEW6432=arch)
-                    run = subprocess.run([os.environ["COMSPEC"], "/d", "/c", "soundtime.cmd /d /c exit 37"],
-                                         cwd=temp, env=env, capture_output=True)
+            comspec = os.environ["COMSPEC"]
+            for suffix in ("x64", "arm64"):
+                engine = base / "bin" / ("windows-" + suffix) / "soundtime.exe"
+                engine.parent.mkdir(parents=True)
+                shutil.copyfile(comspec, engine)
+            # CMDCMDLINE identifies the copy of cmd.exe actually launched. Both
+            # binaries are present, so a passing exit code alone is insufficient.
+            (base / "probe.cmd").write_text(
+                '@echo off\nsetlocal EnableExtensions DisableDelayedExpansion\n'
+                'echo %CMDCMDLINE%\necho ARG=[%~1]\nexit /b %~2\n', encoding="ascii")
+            # Windows can restore the real architecture when starting cmd.exe.
+            # Set the simulated values inside the process that calls the wrapper.
+            (base / "simulate.cmd").write_text(
+                '@echo off\nset "PROCESSOR_ARCHITECTURE=%~1"\nset "PROCESSOR_ARCHITEW6432=%~2"\n'
+                'call soundtime.cmd /d /c probe.cmd "music folder" 37\nexit /b %ERRORLEVEL%\n',
+                encoding="ascii")
+            for arch, native, expected in (("AMD64", "", "x64"), ("ARM64", "", "arm64"),
+                                           ("x86", "AMD64", "x64"), ("x86", "ARM64", "arm64")):
+                with self.subTest(shell="cmd", arch=arch, native=native):
+                    run = subprocess.run([comspec, "/d", "/v:off", "/c", "simulate.cmd", arch, native],
+                                         cwd=base, capture_output=True)
                     self.assertEqual(run.returncode, 37, run.stderr)
-                    run = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-                        "& '.\\soundtime.cmd' /d /c exit 39; exit $LASTEXITCODE"], cwd=temp, env=env)
-                    self.assertEqual(run.returncode, 39)
+                    self.assertIn(f"bin\\windows-{expected}\\soundtime.exe".encode(), run.stdout.lower())
+                    self.assertIn(b"ARG=[music folder]", run.stdout.splitlines())
+
+            # Launch PowerShell normally so its child cmd.exe sees the runner's
+            # actual architecture, including on native Windows ARM64.
+            cpu = os.environ.get("RUNNER_ARCH") or platform.machine()
+            expected = {"AMD64": "x64", "X64": "x64", "X86_64": "x64", "ARM64": "arm64"}[cpu.upper()]
+            run = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                                  "& '.\\soundtime.cmd' /d /c probe.cmd 'music folder' 39; exit $LASTEXITCODE"],
+                                 cwd=base, capture_output=True)
+            self.assertEqual(run.returncode, 39, run.stderr)
+            self.assertIn(f"bin\\windows-{expected}\\soundtime.exe".encode(), run.stdout.lower())
+            self.assertIn(b"ARG=[music folder]", run.stdout.splitlines())
