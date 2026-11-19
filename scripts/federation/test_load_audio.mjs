@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
-import { AudioDelivery } from "./load-audio.mjs";
+import { setTimeout as delay } from "node:timers/promises";
+import { AudioDelivery, MediaRead } from "./load-audio.mjs";
 
 test("a buffered listener, an empty socket and an interrupted listener", () => {
   const audio = new AudioDelivery(3, 1000, 4000, 1000);
@@ -21,6 +28,71 @@ test("a buffered listener, an empty socket and an interrupted listener", () => {
   assert.equal(interrupted.bytes, 500);
   assert.equal(interrupted.failed_starts, 1);
   assert.equal(interrupted.interruptions, 1);
+});
+
+test("a paced HTTP reader keeps buffered bytes past its socket timeout", {skip: process.platform === "win32"}, async t => {
+  const folder = await mkdtemp(join(tmpdir(), "st-audio-"));
+  const socketPath = join(folder, "test.sock");
+  const total = 512 * 1024;
+  const server = http.createServer((request, response) => {
+    if (request.url === "/body") response.end(Buffer.alloc(total, 3));
+  });
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    await rm(folder, {recursive: true, force: true});
+  });
+  server.listen(socketPath);
+  await once(server, "listening");
+  const read = new MediaRead(100);
+  const req = http.get({socketPath, path:"/body", agent:false});
+  read.watchHeaders(req);
+  const [res] = await once(req, "response");
+  let bytes = 0;
+  for await (const chunk of read.chunks(res)) {
+    if (!bytes) {
+      read.pace(300);
+      await delay(300);
+      assert.ok(res.readableLength > 0);
+    }
+    bytes += chunk.length;
+  }
+  assert.equal(bytes, total);
+  assert.equal(read.failure, null);
+  const pending = new MediaRead(50);
+  const stalled = http.get({socketPath, path:"/no-headers", agent:false});
+  pending.watchHeaders(stalled);
+  const [error] = await once(stalled, "error");
+  assert.match(error.message, /inactivity_timeout/);
+  assert.equal(pending.failure.cause, "local_header_timeout");
+});
+
+test("a real wait with no body bytes after a chunk still expires", async () => {
+  const read = new MediaRead(40);
+  const response = new PassThrough();
+  response.write(Buffer.from("ok"));
+  const chunks = read.chunks(response);
+  assert.equal((await chunks.next()).value.toString(), "ok");
+  await assert.rejects(chunks.next(), /inactivity_timeout/);
+  assert.equal(read.failure.phase, "await_body");
+  assert.equal(read.failure.cause, "local_body_timeout");
+  assert.equal(read.failure.buffered_bytes, 0);
+  assert.ok(read.failure.since_last_chunk_ms > 0);
+});
+
+test("a peer reset during local pacing is recorded before the next read", async () => {
+  const body = new PassThrough();
+  const read = new MediaRead(40);
+  body.write(Buffer.from("ok"));
+  const chunks = read.chunks(body);
+  await chunks.next();
+  read.pace(80);
+  body.destroy(Object.assign(new Error("remote reset"), {code: "ECONNRESET"}));
+  await once(body, "error");
+  await assert.rejects(chunks.next(), {code:"ECONNRESET"});
+  assert.equal(read.failure.cause, "response_error");
+  assert.equal(read.failure.phase, "paced_pause");
+  assert.equal(read.failure.requested_pace_ms, 80);
 });
 
 test("retry delays grow, stay bounded and stagger peers after a shared failure", async () => {

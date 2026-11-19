@@ -65,3 +65,69 @@ export class AudioCursor {
     this.offset += chunk.length;
   }
 }
+
+// Capture where a failure was observed, even when Node later reports a generic
+// ECONNRESET to its async iterator. A client's pacing sleep is not a network wait.
+export class MediaRead {
+  constructor(timeoutMs = 15000) {
+    this.timeoutMs = timeoutMs;
+    this.phase = "headers";
+    this.lastByte = null;
+    this.failure = null;
+    this.requestedPaceMs = 0;
+  }
+
+  watchHeaders(request) {
+    request.setTimeout(this.timeoutMs, () => {
+      const error = new Error("inactivity_timeout");
+      this.observe("local_header_timeout", null, error);
+      request.destroy(error);
+    });
+    request.once("response", () => request.setTimeout(0));
+  }
+
+  observe(cause, response, error) {
+    this.failure ??= {
+      cause, phase: this.phase, code: error?.code || error?.message,
+      buffered_bytes: response?.readableLength ?? null,
+      socket_buffered_bytes: response?.socket?.readableLength ?? null,
+      since_last_chunk_ms: this.lastByte === null ? null : Math.round(performance.now() - this.lastByte),
+      requested_pace_ms: Math.round(this.requestedPaceMs),
+    };
+  }
+
+  async *chunks(response) {
+    const iterator = response[Symbol.asyncIterator]();
+    const onError = error => this.observe("response_error", response, error);
+    response.on("error", onError);
+    try {
+      while (true) {
+        this.phase = "await_body";
+        this.requestedPaceMs = 0;
+        const timeout = setTimeout(() => {
+          const error = new Error("inactivity_timeout");
+          this.observe("local_body_timeout", response, error);
+          response.destroy(error);
+        }, this.timeoutMs);
+        let next;
+        try {
+          next = await iterator.next();
+        } finally {
+          clearTimeout(timeout);
+        }
+        if (next.done) return;
+        this.lastByte = performance.now();
+        this.phase = "consume";
+        yield next.value;
+      }
+    } finally {
+      response.off("error", onError);
+      await iterator.return?.();
+    }
+  }
+
+  pace(durationMs) {
+    this.phase = "paced_pause";
+    this.requestedPaceMs = durationMs;
+  }
+}

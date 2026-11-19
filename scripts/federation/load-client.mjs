@@ -4,7 +4,7 @@ import { setMaxListeners } from "node:events";
 import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import http from "node:http";
-import { AudioCursor, AudioDelivery, audioRetryDelayMs } from "./load-audio.mjs";
+import { AudioCursor, AudioDelivery, MediaRead, audioRetryDelayMs } from "./load-audio.mjs";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
@@ -75,19 +75,21 @@ let sessions = 0, openResponses = 0, peakOpen = 0, issued = 0, queries = 0, byte
 const omissions = { inflight_limit: 0, dispatch_late: 0, inflight_limit_and_dispatch_late: 0, window_ended: 0 };
 let due = 0, searchStarts = 0, searchErrors = 0;
 let mediaAttempts = 0, mediaStarts = 0, failedStarts = 0, interruptions = 0;
+const mediaFailureDiagnostics = {counts: {}, samples: []};
 
 function countError(kind, error) {
   const key = kind + "_" + (error.code || error.message);
   errors[key] = (errors[key] || 0) + 1;
 }
 
-function get(path, listener, headers = {}) {
+function get(path, listener, headers = {}, mediaRead) {
   const credential = cfg.tokens[listener % cfg.tokens.length];
   return new Promise((resolve, reject) => {
     const req = http.get(new URL(path, cfg.base), {
       agent, signal: controller.signal, headers: { ...headers, Authorization: "Bearer " + credential },
     }, resolve);
-    req.setTimeout(15000, () => req.destroy(Error("inactivity_timeout")));
+    if (mediaRead) mediaRead.watchHeaders(req);
+    else req.setTimeout(15000, () => req.destroy(Error("inactivity_timeout")));
     req.on("error", reject);
   });
 }
@@ -135,18 +137,19 @@ async function session(index) {
   try {
     while (!controller.signal.aborted) {
       const began = performance.now();
+      const read = new MediaRead();
       let counted = false, delivered = 0, retryMs = 0, res;
       try {
         const offset = cursor.beginRequest();
         mediaAttempts++;
-        res = await get("/api/tracks/" + track.id + "/stream", index, { Range: "bytes=" + offset + "-" });
+        res = await get("/api/tracks/" + track.id + "/stream", index, { Range: "bytes=" + offset + "-" }, read);
         if (res.statusCode !== 206 || res.headers["content-range"] !== "bytes " + offset + "-" + (track.size - 1) + "/" + track.size)
           throw Error("media_status_" + res.statusCode);
         counted = true;
         openResponses++;
         mediaStarts++;
         peakOpen = Math.max(peakOpen, openResponses);
-        for await (const chunk of res) {
+        for await (const chunk of read.chunks(res)) {
           const now = performance.now();
           if (!delivered) {
             firstBytes.push(now - began);
@@ -161,11 +164,19 @@ async function session(index) {
             mediaBytesByOrigin[track.source] = (mediaBytesByOrigin[track.source] || 0) + chunk.length;
           }
           const remaining = began + delivered / readRate * 1000 - performance.now();
-          if (remaining > 0) await delay(remaining, undefined, { signal: controller.signal });
+          if (remaining > 0) {
+            read.pace(remaining);
+            await delay(remaining, undefined, { signal: controller.signal });
+          }
         }
         if (cursor.offset !== track.size) throw Error("short_audio");
       } catch (error) {
         if (!controller.signal.aborted) {
+          read.observe("request_or_consumer_error", res, error);
+          const kind = read.failure.cause + "/" + read.failure.phase;
+          mediaFailureDiagnostics.counts[kind] = (mediaFailureDiagnostics.counts[kind] || 0) + 1;
+          if (mediaFailureDiagnostics.samples.length < 24)
+            mediaFailureDiagnostics.samples.push({listener: index, delivered, ...read.failure});
           if (delivered) interruptions++; else failedStarts++;
           audioDelivery.failed(index, delivered > 0);
           countError("media", error);
@@ -290,5 +301,6 @@ console.log(JSON.stringify({
   search_due: expectedSearches, search_started: searchStarts, search_completed: searchTimes.length,
   search_failed: searchErrors, search_open_at_deadline: Math.max(0, searchStarts - searchErrors - searchTimes.length),
   media_attempts: mediaAttempts, media_starts: mediaStarts, media_failed_starts: failedStarts, interruptions,
+  media_failure_diagnostics: mediaFailureDiagnostics,
   useful_bytes: bytes, per_reader_delivery: audioDelivery.results(), client_audio_bytes_by_publication_origin: mediaBytesByOrigin, errors, samples,
 }));
