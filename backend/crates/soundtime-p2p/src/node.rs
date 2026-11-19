@@ -44,6 +44,9 @@ mod ranges;
 #[path = "legacy_audio.rs"]
 mod legacy_audio;
 
+#[path = "presence.rs"]
+mod presence;
+
 pub const SOUNDTIME_ALPN: &[u8] = b"soundtime/p2p/1";
 #[path = "inventory/live.rs"]
 mod catalogs;
@@ -1437,13 +1440,15 @@ impl P2pNode {
     ) -> Result<P2pMessage, P2pError> {
         let started = chrono::Utc::now();
         let source = peer_addr.id.to_string();
+        let access = soundtime_db::media_access::ReadGuard::peer(&source);
         let result = match tokio::time::timeout(
             std::time::Duration::from_secs(12),
-            self.probe_presence(peer_addr),
+            access.during(self.probe_presence(peer_addr)),
         )
         .await
         {
-            Ok(result) => result,
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(P2pError::PeerPolicyChanged(source.clone())),
             Err(_) => Err(P2pError::Connection("peer presence timed out".into())),
         };
         match &result {
@@ -1465,16 +1470,6 @@ impl P2pNode {
     }
 
     async fn probe_presence(&self, peer_addr: EndpointAddr) -> Result<P2pMessage, P2pError> {
-        let policy = if self.explicit_catalog() {
-            let id = peer_addr.id.to_string();
-            let policy = crate::peer_policy::get(&self.db, &id).await?;
-            if policy.banned {
-                return Err(P2pError::PeerBlocked(id));
-            }
-            Some(policy)
-        } else {
-            None
-        };
         let peer_addr = if let Some(url) = &self.manual_relay {
             peer_addr.with_relay_url(url.clone())
         } else {
@@ -1483,60 +1478,21 @@ impl P2pNode {
         if peer_addr.ip_addrs().next().is_some() || peer_addr.relay_urls().next().is_some() {
             self.manual_addresses.set_endpoint_info(peer_addr.clone());
         }
-        let conn = self.conn_pool.get_connection(peer_addr.id).await.map_err(|e| {
-            let err_str = format!("{e}");
-            if err_str.contains("ALPN") || err_str.contains("protocol") || err_str.contains("timed out") {
-                P2pError::Connection(format!(
-                    "{e} (possible protocol version mismatch — this node uses ALPN 'soundtime/p2p/1')"
-                ))
-            } else {
-                e
-            }
-        })?;
-
-        let probe = if let Some(policy) = policy {
-            presence_probe(
-                conn.alpn(),
-                policy.followed,
-                self._config.share_identity,
-                self.versioned_catalog(),
-            )?
-        } else {
-            P2pMessage::Ping
-        };
-        let (mut send, mut recv) = match conn.open_bi().await {
-            Ok(streams) => streams,
-            Err(e) => {
-                self.conn_pool.invalidate(&peer_addr.id).await;
-                return Err(P2pError::Connection(e.to_string()));
-            }
-        };
-
-        let ping = serde_json::to_vec(&probe)?;
-        send.write_all(&(ping.len() as u32).to_be_bytes())
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
-        send.write_all(&ping)
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
-        send.finish()
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
-
-        let mut len_buf = [0u8; 4];
-        recv.read_exact(&mut len_buf)
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
-        let msg_len = u32::from_be_bytes(len_buf) as usize;
-
-        if msg_len > 16 * 1024 {
-            return Err(P2pError::Connection("oversized ping response".into()));
-        }
-        let response = recv
-            .read_to_end(msg_len)
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))?;
-
-        let pong: P2pMessage = serde_json::from_slice(&response)?;
+        let (probe, pong) = presence::query(
+            &self.conn_pool,
+            peer_addr.id,
+            self._config.share_identity,
+            self.versioned_catalog(),
+            || async {
+                let id = peer_addr.id.to_string();
+                let policy = crate::peer_policy::get(&self.db, &id).await?;
+                if policy.banned {
+                    return Err(P2pError::PeerBlocked(id));
+                }
+                Ok(self.explicit_catalog().then_some(policy.followed))
+            },
+        )
+        .await?;
         let pong = match pong {
             P2pMessage::PresenceReply {
                 node_id,

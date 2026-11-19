@@ -19,7 +19,7 @@ services:
     depends_on:
       db-b: { condition: service_healthy }
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && read -r version code rest <&3 && [[ $$code == 200 ]]"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '^HTTP/1.[01] 200 '"]
       interval: 2s
       timeout: 3s
       retries: 90

@@ -72,7 +72,9 @@ impl ConnectionPool {
         let dial = {
             let mut state = self.state.lock().expect("connection pool");
             if let Some(entry) = state.ready.get_mut(&node_id) {
-                if entry.conn.close_reason().is_none() && entry.last_used.elapsed().as_secs() < MAX_IDLE_SECS {
+                if entry.conn.close_reason().is_none()
+                    && entry.last_used.elapsed().as_secs() < MAX_IDLE_SECS
+                {
                     entry.last_used = Instant::now();
                     return Ok(entry.conn.clone());
                 }
@@ -92,11 +94,19 @@ impl ConnectionPool {
                 let options = iroh::endpoint::ConnectOptions::new()
                     .with_additional_alpns(self.fallback.iter().map(|v| v.to_vec()).collect());
                 let dial = async move {
-                    let connecting = endpoint.connect_with_opts(EndpointAddr::new(node_id), alpn, options)
-                        .await.map_err(|error| Arc::<str>::from(error.to_string()))?;
-                    connecting.await.map_err(|error| Arc::<str>::from(error.to_string()))
-                }.boxed().shared();
-                state.pending.insert(node_id, dial.downgrade().expect("unpolled handshake"));
+                    let connecting = endpoint
+                        .connect_with_opts(EndpointAddr::new(node_id), alpn, options)
+                        .await
+                        .map_err(|error| Arc::<str>::from(error.to_string()))?;
+                    connecting
+                        .await
+                        .map_err(|error| Arc::<str>::from(error.to_string()))
+                }
+                .boxed()
+                .shared();
+                state
+                    .pending
+                    .insert(node_id, dial.downgrade().expect("unpolled handshake"));
                 dial
             }
         };
@@ -112,7 +122,13 @@ impl ConnectionPool {
                 if state.ready.len() >= MAX_POOL_SIZE {
                     self.evict_oldest(&mut state.ready);
                 }
-                state.ready.insert(node_id, PoolEntry { conn: conn.clone(), last_used: Instant::now() });
+                state.ready.insert(
+                    node_id,
+                    PoolEntry {
+                        conn: conn.clone(),
+                        last_used: Instant::now(),
+                    },
+                );
             }
         }
         result.map_err(|error| P2pError::Connection(error.to_string()))
@@ -122,7 +138,11 @@ impl ConnectionPool {
     pub fn invalidate_connection(&self, connection: &Connection) {
         let mut state = self.state.lock().expect("connection pool");
         let peer = connection.remote_id();
-        if state.ready.get(&peer).is_some_and(|entry| entry.conn.stable_id() == connection.stable_id()) {
+        if state
+            .ready
+            .get(&peer)
+            .is_some_and(|entry| entry.conn.stable_id() == connection.stable_id())
+        {
             state.ready.remove(&peer);
         }
     }
@@ -188,10 +208,97 @@ mod tests {
         assert_eq!(MAX_IDLE_SECS, 60);
     }
 
-    #[test]
-    fn test_pool_entry_creation() {
-        // Verify PoolEntry can be created with correct fields
-        let now = Instant::now();
-        assert!(now.elapsed().as_secs() < 1);
+    #[tokio::test]
+    async fn simultaneous_callers_share_a_handshake_and_can_retry_its_failure() -> anyhow::Result<()>
+    {
+        use anyhow::Context;
+        use futures_util::future::join_all;
+        use iroh::address_lookup::memory::MemoryLookup;
+        use iroh::endpoint::{presets::Minimal, PortmapperConfig};
+        use std::time::Duration;
+
+        const ALPN: &[u8] = b"soundtime/pool-test";
+        let lookup = MemoryLookup::new();
+        let local = || {
+            Endpoint::builder(Minimal)
+                .clear_ip_transports()
+                .clear_relay_transports()
+                .portmapper_config(PortmapperConfig::Disabled)
+                .address_lookup(lookup.clone())
+                .alpns(vec![ALPN.to_vec()])
+                .bind_addr("127.0.0.1:0")
+        };
+        let server = local()?.bind().await?;
+        let silent = local()?.bind().await?;
+        let client = local()?.bind().await?;
+        for peer in [&server, &silent] {
+            lookup.set_endpoint_info(
+                EndpointAddr::new(peer.id()).with_ip_addr(peer.bound_sockets()[0]),
+            );
+        }
+        let pool = ConnectionPool::new(client, ALPN);
+        let silent_id = silent.id();
+        let mut unfinished = Box::pin(pool.get_connection(silent_id));
+        assert!(futures_util::poll!(&mut unfinished).is_pending());
+        let mut second = Box::pin(pool.get_connection(silent_id));
+        assert!(futures_util::poll!(&mut second).is_pending());
+        drop(second);
+
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let readers = || join_all((0..24).map(|_| pool.get_connection(server.id())));
+            let (failed, _) = tokio::join!(readers(), async {
+                server.accept().await.expect("server closed").refuse();
+            });
+            assert!(failed.iter().all(Result::is_err));
+            assert_eq!(pool.established(), 0);
+
+            let (connections, incoming) = tokio::join!(readers(), async {
+                server
+                    .accept()
+                    .await
+                    .context("server closed")?
+                    .await
+                    .map_err(anyhow::Error::from)
+            });
+            let _incoming = incoming?;
+            let connections: Vec<_> = connections.into_iter().collect::<Result<_, _>>()?;
+            assert!(connections
+                .iter()
+                .all(|c| c.stable_id() == connections[0].stable_id()));
+            assert_eq!(pool.established(), 1);
+            assert_eq!(
+                pool.get_connection(server.id()).await?.stable_id(),
+                connections[0].stable_id()
+            );
+
+            pool.invalidate_connection(&connections[0]);
+            let (replacement, incoming) = tokio::join!(pool.get_connection(server.id()), async {
+                server
+                    .accept()
+                    .await
+                    .context("server closed")?
+                    .await
+                    .map_err(anyhow::Error::from)
+            });
+            let _incoming = incoming?;
+            let replacement = replacement?;
+            pool.invalidate_connection(&connections[0]);
+            assert_eq!(
+                pool.get_connection(server.id()).await?.stable_id(),
+                replacement.stable_id()
+            );
+            assert_eq!(pool.established(), 2);
+
+            // The never-accepted peer did not block the other 24 readers.
+            assert!(pool.state.lock().unwrap().pending[&silent_id]
+                .upgrade()
+                .is_some());
+            drop(unfinished);
+            assert!(pool.state.lock().unwrap().pending[&silent_id]
+                .upgrade()
+                .is_none());
+            Ok::<_, anyhow::Error>(())
+        })
+        .await?
     }
 }

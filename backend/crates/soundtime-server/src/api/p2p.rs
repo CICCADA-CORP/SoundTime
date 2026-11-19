@@ -239,10 +239,16 @@ pub async fn add_peer(
             }))
         }
         Err(e) => {
-            // Register as offline peer
-            node.registry()
-                .failed_since(&payload.node_id, started, true)
-                .await;
+            if matches!(
+                e,
+                soundtime_p2p::P2pError::Connection(_)
+                    | soundtime_p2p::P2pError::Endpoint(_)
+                    | soundtime_p2p::P2pError::Io(_)
+            ) {
+                node.registry()
+                    .failed_since(&payload.node_id, started, true)
+                    .await;
+            }
             tracing::warn!(peer = %payload.node_id, "ping failed: {e}");
             Ok(Json(MessageResponse {
                 message: format!("peer {} added but ping failed: {e}", payload.node_id),

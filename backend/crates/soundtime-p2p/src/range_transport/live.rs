@@ -198,11 +198,18 @@ impl P2pNode {
                 }
             }
         }
-        bail!("range providers unavailable for publication {}", req.publication)
+        bail!(
+            "range providers unavailable for publication {}",
+            req.publication
+        )
     }
 
     async fn fetch_from_provider(
-        &self, id: Uuid, req: &WindowRequest, peer: EndpointId, track: &ReadGuard,
+        &self,
+        id: Uuid,
+        req: &WindowRequest,
+        peer: EndpointId,
+        track: &ReadGuard,
     ) -> Result<Option<Bytes>> {
         // The bounded flight table also covers these local waits. A slow local
         // quota must not use the peer's network timeout or record a failed peer.
@@ -211,53 +218,75 @@ impl P2pNode {
         let _global = self.ranges.reads.acquire().await?;
         let remote = peer != self.node_id();
         if remote {
-            self.ranges.download.admit(peer, req.length as usize).await?;
+            self.ranges
+                .download
+                .admit(peer, req.length as usize)
+                .await?;
         }
         if !self.providers(id, req).await?.contains(&peer) {
             return Ok(None);
         }
 
-        let (window, relayed) = if remote {
-            let deadline = tokio::time::Instant::now() + ATTEMPT_TIMEOUT;
-            let connection = match tokio::time::timeout_at(deadline, self.ranges.pool.get_connection(peer)).await {
-                Ok(Ok(conn)) => conn,
-                Ok(Err(P2pError::ConnectionPoolBusy)) => return Err(P2pError::ConnectionPoolBusy.into()),
-                _ => { self.note_range_failure(peer); return Ok(None); }
-            };
-            let relay_only_path = || {
-                let paths = connection.paths();
-                paths.iter().any(|path| path.is_selected() && path.is_relay())
-                    && paths.iter().all(|path| path.is_relay())
-            };
-            let before = relay_only_path();
-            let fetch = range_transport::fetch_window(&connection, req, track.subscription());
-            match tokio::time::timeout_at(deadline, fetch).await {
-                Ok(Ok(window)) => (window, (before || self._config.relay_only) && relay_only_path()),
-                _ => {
-                    self.ranges.pool.invalidate_connection(&connection);
-                    self.note_range_failure(peer);
-                    return Ok(None);
+        let (window, relayed) =
+            if remote {
+                let deadline = tokio::time::Instant::now() + ATTEMPT_TIMEOUT;
+                let connection =
+                    match tokio::time::timeout_at(deadline, self.ranges.pool.get_connection(peer))
+                        .await
+                    {
+                        Ok(Ok(conn)) => conn,
+                        Ok(Err(P2pError::ConnectionPoolBusy)) => return Ok(None),
+                        _ => {
+                            self.note_range_failure(peer);
+                            return Ok(None);
+                        }
+                    };
+                let relay_only_path = || {
+                    let paths = connection.paths();
+                    paths
+                        .iter()
+                        .any(|path| path.is_selected() && path.is_relay())
+                        && paths.iter().all(|path| path.is_relay())
+                };
+                let before = relay_only_path();
+                let fetch = range_transport::fetch_window(&connection, req, track.subscription());
+                match tokio::time::timeout_at(deadline, fetch).await {
+                    Ok(Ok(window)) => (
+                        window,
+                        (before || self._config.relay_only) && relay_only_path(),
+                    ),
+                    _ => {
+                        self.ranges.pool.invalidate_connection(&connection);
+                        self.note_range_failure(peer);
+                        return Ok(None);
+                    }
                 }
-            }
-        } else {
-            let encoded = match self.encode_range(req).await {
-                Ok(encoded) => encoded,
-                Err(_) => return Ok(None),
+            } else {
+                let encoded = match self.encode_range(req).await {
+                    Ok(encoded) => encoded,
+                    Err(_) => return Ok(None),
+                };
+                let Ok(window) = range_transport::decode_window(req, &encoded) else {
+                    return Ok(None);
+                };
+                (window, false)
             };
-            let Ok(window) = range_transport::decode_window(req, &encoded) else {
-                return Ok(None);
-            };
-            (window, false)
-        };
         if !self.providers(id, req).await?.contains(&peer) {
             return Ok(None);
         }
         if remote {
             self.ranges.proof_bytes_received.fetch_add(
-                (window.response_bytes - window.data.len()) as u64, Ordering::Relaxed);
+                (window.response_bytes - window.data.len()) as u64,
+                Ordering::Relaxed,
+            );
             self.ranges.verified_windows.fetch_add(1, Ordering::Relaxed);
-            if relayed { self.ranges.relay_windows_verified.fetch_add(1, Ordering::Relaxed); }
-            self.audio_bytes_received.fetch_add(window.data.len() as u64, Ordering::Relaxed);
+            if relayed {
+                self.ranges
+                    .relay_windows_verified
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            self.audio_bytes_received
+                .fetch_add(window.data.len() as u64, Ordering::Relaxed);
         }
         Ok(Some(window.data))
     }
@@ -336,8 +365,8 @@ impl P2pNode {
         _permits: (OwnedSemaphorePermit, OwnedSemaphorePermit),
     ) -> Result<()> {
         let peer_grant = ReadGuard::peer(&peer.to_string());
-        let result = peer_grant.during(tokio::time::timeout(Duration::from_secs(15), async {
-            let req = range_transport::read_request(&mut recv).await?;
+        let result = peer_grant.during(async {
+            let req = tokio::time::timeout(Duration::from_secs(15), range_transport::read_request(&mut recv)).await??;
             let id = self.local_publication(&req).await?;
             let track = ReadGuard::track(id);
             let stopped = send.stopped();
@@ -352,17 +381,18 @@ impl P2pNode {
                     ensure!(self.allows_range_export(peer,id,i64::try_from(req.revision)?,req.origin).await?, "publication export revoked");
                     self.ranges.upload.admit(peer, bytes.len()).await?;
                     self.local_publication(&req).await?;
-                    send.write_all(&bytes).await?;
+                    ensure!(self.allows_range_export(peer,id,i64::try_from(req.revision)?,req.origin).await?, "publication export revoked during admission");
+                    tokio::time::timeout(Duration::from_secs(15), send.write_all(&bytes)).await??;
                     send.finish()?;
                     self.audio_bytes_sent.fetch_add(u64::from(req.length), Ordering::Relaxed);
                     Ok::<_,anyhow::Error>(())
                 }) => result?,
             }
-        })).await;
-        if !matches!(result, Ok(Ok(Ok(())))) {
+        }).await;
+        if !matches!(result, Ok(Ok(()))) {
             let _ = send.reset(1u32.into());
         }
-        result???;
+        result??;
         Ok(())
     }
 }

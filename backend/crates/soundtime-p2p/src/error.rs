@@ -13,6 +13,9 @@ pub enum P2pError {
     #[error("peer is blocked: {0}")]
     PeerBlocked(String),
 
+    #[error("peer policy changed during presence verification: {0}")]
+    PeerPolicyChanged(String),
+
     #[error("track not found: {0}")]
     TrackNotFound(String),
 

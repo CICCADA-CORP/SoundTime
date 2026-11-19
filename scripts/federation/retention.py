@@ -18,6 +18,20 @@ def ready(node):
         return False
 
 
+def reconnect(restarted, neighbours, report):
+    timings = report.setdefault("restart_presence_s", {})
+    for other in neighbours:
+        # The surviving node keeps its subscription, address and potentially
+        # stale QUIC session. Require one successful authenticated HTTP ping.
+        started = time.monotonic()
+        other.ping(restarted)
+        timings[other.name + "_to_" + restarted.name] = time.monotonic() - started
+        require(any(p["node_id"] == restarted.node_id and p["is_online"]
+                    for p in other.call("/admin/p2p/peers")), "Authenticated Pong did not restore online status")
+        # The restarted participant has lost its in-memory address routes.
+        restarted.connect(other, follow=True)
+
+
 def run(args, report):
     a, b, c = nodes = [Instance(k, getattr(args, k.lower())) for k in "ABC"]
     for node in nodes:
@@ -58,8 +72,7 @@ def run(args, report):
     switch_backend("B", True)
     wait_for("restarted B", lambda: ready(b), timeout=60)
     require(b.node_id == identity and b.call(endpoint)["pinned"], "Restart lost the public identity or pin")
-    for x, y in [(b,a),(a,b),(c,b),(b,c)]:
-        x.connect(y, follow=not (x is c and y is b))
+    reconnect(b, [a, c], report)
 
     # Ban A on C to guarantee the fetch cannot accidentally select the origin;
     # then stop A to establish that B's durable copy works independently of A.
@@ -101,8 +114,7 @@ def run(args, report):
     finally:
         switch_backend("A", True)
     wait_for("restarted origin", lambda: ready(a), timeout=60)
-    for x,y in [(a,b),(b,a)]:
-        x.connect(y, follow=True)
+    reconnect(a, [b], report)
     withdrawn_at = time.monotonic()
     a.call("/tracks/" + source,method="DELETE")
     wait_for("pinned B rejects signed withdrawal",lambda:probe_stream(b,b_id,audio)==410,timeout=90)
