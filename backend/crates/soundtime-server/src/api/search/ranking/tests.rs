@@ -1,3 +1,4 @@
+mod changes;
 mod direct;
 
 use super::*;
@@ -53,6 +54,8 @@ async fn exercise(url: &str) -> Result<()> {
         #[cfg(feature = "redis")]
         redis: None,
     });
+
+    changes::exercise(&app).await?;
 
     // This writer already has an XID when the ranking is captured. Its commit is
     // invisible to a test that compares only the highest XID seen so far.
