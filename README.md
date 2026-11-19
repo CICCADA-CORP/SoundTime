@@ -22,27 +22,43 @@
 
 SoundTime is a self-hosted music server for your own audio collection. Browse by artist or album, build a queue, and listen from a desktop or mobile browser. You decide who can access the web catalog and whether your server shares music with other SoundTime instances.
 
-[Download the CLI](#guided-installation) · [Manual installation](#manual-installation) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md) · [Community](#community) · [Disclaimer](#disclaimer)
-
-![SoundTime playing Last Light from the demo library, with cover art on the left and the next three tracks queued on the right](docs/assets/soundtime-player.webp)
+[Install from your terminal](#guided-installation) · [Manual installation](#manual-installation) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md) · [Community](#community) · [Disclaimer](#disclaimer)
 
 ## Quick start
 
 ### Guided installation
 
-[Download the portable SoundTime CLI](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.0/SoundTime-CLI.zip) · [SHA-256 checksum](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.0/SoundTime-CLI.zip.sha256) · [Install manually with Docker Compose](#manual-installation)
+**Copy the block for your terminal and press Enter.** It downloads SoundTime CLI 2.0.0, verifies the archive and starts the installer. You can run it on the host itself or on the computer you use to manage a remote server or NAS.
 
-Extract the **entire ZIP** and open a terminal in the extracted folder. The same download runs on Windows, macOS and Linux, on Intel/AMD x64 and ARM64. It includes its runtime.
+**macOS or Linux**
 
-| Terminal | Start the installer |
-| --- | --- |
-| macOS or Linux | `./soundtime` |
-| Windows PowerShell | `.\soundtime.cmd` |
-| Windows Command Prompt (cmd) | `soundtime.cmd` |
+```sh
+sh -c 'start=$(curl -fsSL https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/4fb9ebb4eb68ee2f46b7672c6461696dbd35a7ca/installer/bootstrap.sh) && exec sh -c "$start"'
+```
+
+**Windows PowerShell**
+
+```powershell
+$start = Join-Path $env:TEMP ("SoundTime-" + [guid]::NewGuid() + ".cmd")
+try {
+    Invoke-WebRequest -UseBasicParsing -ErrorAction Stop -Uri 'https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/4fb9ebb4eb68ee2f46b7672c6461696dbd35a7ca/installer/bootstrap.cmd' -OutFile $start
+    & $start
+} finally {
+    Remove-Item -LiteralPath $start -ErrorAction SilentlyContinue
+}
+```
+
+**Windows Command Prompt (cmd)**
+
+```bat
+powershell.exe -NoProfile -Command "$f=Join-Path $env:TEMP ('SoundTime-'+[guid]::NewGuid()+'.cmd'); try { Invoke-WebRequest -UseBasicParsing -ErrorAction Stop 'https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/4fb9ebb4eb68ee2f46b7672c6461696dbd35a7ca/installer/bootstrap.cmd' -OutFile $f; & $f; exit $LASTEXITCODE } finally { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue }"
+```
 
 Choose **This computer** to detect your operating system, or **Another machine** to install over SSH. For SSH, enter the host, account and port. The CLI detects the remote system and architecture, shows where your music will live, and checks Docker, the installation folder and the ports before you confirm. For a NAS managed through Synology Container Manager or QNAP Container Station, choose the project export under **Another machine**.
 
 SoundTime needs Docker with Linux containers on the host that will run your library. You can choose local or S3-compatible audio storage and create your first administrator account in the terminal. The CLI supports English, French, Spanish, Russian and Chinese. Add `--lang fr` to select French, or `--help` to see the commands. [Installation guide in French](docs/installateur.md)
+
+To keep a copy of the CLI, download and extract the complete archive. [Download ZIP](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.0/SoundTime-CLI.zip) · [SHA-256 checksum](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.0/SoundTime-CLI.zip.sha256)
 
 ### Manual installation
 
@@ -113,6 +129,8 @@ Open `http://localhost:8880/setup` and create the first administrator account. O
 Sign in, open **Upload**, and add an audio file. Open **Tracks** and press **Play**. SoundTime reads artist, album and cover tags during import. A track without an album stays in **Tracks** and on its artist’s page. An explicitly named album appears in **Albums**, even when you own only one of its tracks.
 
 ## Library and playback
+
+![SoundTime playing Last Light from the demo library, with cover art on the left and the next three tracks queued on the right](docs/assets/soundtime-player.webp)
 
 - **Import a collection.** Upload MP3, FLAC, Ogg, WAV, AAC, Opus, M4A or AIFF files. SoundTime converts AIFF uploads to FLAC. On Linux, you can also mount an existing SMB or NFS library read-only and import its files from the administration panel. [Network library setup](docs/deployment.md#read-only-smb-and-nfs-music-libraries)
 - **Choose what plays next.** Search for a track, album or artist, build a playlist, or start a radio station from a track, artist or genre. The player keeps the queue available as you browse and supports seeking, shuffle, repeat and lock-screen controls on compatible browsers.
