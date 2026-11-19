@@ -27,6 +27,7 @@ let repeat = $state<"none" | "one" | "all">("none");
 let audio: HTMLAudioElement | null = null;
 let lastPositionUpdate = 0;
 let playbackRequest = 0;
+let automaticallySelected = false;
 let loadedTrackId: string | null = null;
 let restorePosition: number | null = null;
 let completionLogged = false;
@@ -255,7 +256,7 @@ function logListen(track: Track, durationListened: number, completed: boolean) {
   api.post("/history", body).catch(() => {});
 }
 
-function play(track: Track) {
+function play(track: Track, automatic = false) {
   if (!canPlay(track)) return;
   initAudio();
   if (!audio) return;
@@ -263,10 +264,11 @@ function play(track: Track) {
   // Log a skip for the previous track if it played for at least 5 seconds.
   // The 5-second threshold avoids logging spurious skips from rapid
   // next-track taps or accidental plays.
-  if (currentTrack && progress > 5 && !completionLogged) {
+  if (currentTrack && progress > 5 && !completionLogged && !failed) {
     logListen(currentTrack, progress, false);
   }
 
+  automaticallySelected = automatic;
   currentTrack = track;
   progress = 0;
   duration = track.duration_secs;
@@ -295,7 +297,8 @@ function failPlayback() {
   void api.get<Track>(`/tracks/${id}`).then(track => {
     if (request !== playbackRequest || currentTrack?.id !== id || !track || canPlay(track)) return;
     currentTrack = track;
-    getQueueStore().markUnavailable(track);
+    const advance = automaticallySelected || track.availability !== "temporarily_unavailable";
+    getQueueStore().updateAvailability(track, advance);
   }).catch(() => {});
 }
 
@@ -309,8 +312,19 @@ function pause() {
 }
 
 function resume() {
-  if (!audio || !currentTrack || !canPlay(currentTrack)) return;
+  if (!audio || !currentTrack) return;
   const track = currentTrack;
+  if (!canPlay(track)) {
+    if (track.availability !== "temporarily_unavailable") return;
+    const request = ++playbackRequest;
+    void api.get<Track>(`/tracks/${track.id}`).then(latest => {
+      if (request !== playbackRequest || latest?.id !== track.id) return;
+      currentTrack = latest;
+      getQueueStore().updateAvailability(latest, false);
+      if (canPlay(latest)) resume();
+    }).catch(() => {});
+    return;
+  }
   const retry = failed;
   const localAudio = showcaseAudio(track.id);
   const request = ++playbackRequest;

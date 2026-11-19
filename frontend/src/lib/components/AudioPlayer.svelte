@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { availabilityLabel, canPlay } from "$lib/catalog/availability";
   import { ChevronUp, Disc3, Play, Pause, SkipBack, SkipForward, RotateCw, Repeat, Shuffle, Infinity as Autoplay, ListMusic, Volume1, Volume2, VolumeX, Square, Maximize2 } from "lucide-svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
@@ -61,7 +62,7 @@
           </span>
           <span class="metadata">
             <span class="song">{track.title}</span>
-            {#if player.failed}<span class="artist" role="alert">{t("player.playbackError")}</span>
+            {#if player.failed}<span class="artist" role="alert">{availabilityLabel(track) || t("player.playbackError")}</span>
             {:else}<span class="artist">{track.artist_name ?? t("track.unknownArtist")}</span>{/if}
             {#if radio.active}<span class="radio-status">{t(radio.autoplayMode ? "player.autoplayActive" : "radio.nowPlaying")}</span>{/if}
           </span>
@@ -82,7 +83,7 @@
         <div class="controls">
           <button type="button" class="mode" aria-pressed={player.shuffle} title={t("player.shuffle")} onclick={player.toggleShuffle}><Shuffle size={16}/></button>
           <button type="button" class="skip previous" title={t("player.previous")} onclick={queue.previous}><SkipBack size={19} fill="currentColor" /></button>
-          <button type="button" class="play" aria-label={t(player.failed ? "radio.tryAgain" : player.isPlaying ? "shell.pause" : "shell.play")} onclick={player.togglePlay}>
+          <button type="button" class="play" disabled={!canPlay(track) && track.availability !== "temporarily_unavailable"} aria-label={t(player.failed ? "radio.tryAgain" : player.isPlaying ? "shell.pause" : "shell.play")} onclick={player.togglePlay}>
             {#if player.failed}<RotateCw size={17} />{:else if player.isPlaying}<Pause size={17} fill="currentColor" />{:else}<Play size={17} fill="currentColor" />{/if}
           </button>
           <button type="button" class="skip" title={t("player.next")} onclick={queue.next}><SkipForward size={19} fill="currentColor" /></button>

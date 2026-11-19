@@ -34,7 +34,10 @@ services:
       PLUGIN_ENABLED: "false"
     ports: ["127.0.0.1::8080"]
     volumes: [files-a:/data]
-    networks: [site-a, peers, ingress]
+    networks:
+      site-a: {aliases: [backend]}
+      peers: {}
+      ingress: {}
   proxy-a:
     depends_on: [backend-a, frontend-a, catalog-http]
     volumes:

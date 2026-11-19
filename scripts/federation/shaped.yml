@@ -1,0 +1,8 @@
+services:
+  link-tools:
+    profiles: [measurement]
+    image: soundtime-federation-link-tools:${COMPOSE_PROJECT_NAME}
+    build:
+      context: .
+      dockerfile: Dockerfile.link-tools
+    network_mode: none

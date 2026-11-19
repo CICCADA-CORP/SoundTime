@@ -32,17 +32,20 @@ pub fn read_candidates<'de, D: Deserializer<'de>>(input: D) -> Result<Vec<String
 pub struct Policy {
     pub followed: bool,
     pub banned: bool,
+    pub source_disabled: bool,
 }
 
 pub async fn get(db: &impl ConnectionTrait, id: &str) -> Result<Policy, DbErr> {
     let row = db.query_one(Statement::from_sql_and_values(DbBackend::Postgres,
         "SELECT COALESCE((SELECT is_followed FROM federation_peer_policies WHERE node_id=$1), false) AS followed,
+                COALESCE((SELECT source_disabled FROM federation_peer_policies WHERE node_id=$1), false) AS source_disabled,
                 COALESCE((SELECT is_banned FROM federation_peer_policies WHERE node_id=$1), false)
                 OR EXISTS (SELECT 1 FROM blocked_domains WHERE domain=$1) AS banned", [id.into()]))
         .await?.ok_or_else(|| DbErr::Custom("missing peer policy result".into()))?;
     Ok(Policy {
         followed: row.try_get("", "followed")?,
         banned: row.try_get("", "banned")?,
+        source_disabled: row.try_get("", "source_disabled")?,
     })
 }
 

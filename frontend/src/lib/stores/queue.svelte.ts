@@ -42,7 +42,7 @@ function playQueue(tracks: Track[], startIndex = 0, source?: import("$lib/types"
   currentIndex = queue.findIndex((track, i) => i >= startIndex && canPlay(track));
   const player = getPlayerStore();
   if (queue[currentIndex]) {
-    player.play(queue[currentIndex]);
+    player.play(queue[currentIndex], source === "radio" || source === "autoplay");
   } else {
     player.pause();
   }
@@ -114,7 +114,9 @@ function startAutoplay() {
   sourceContext = "autoplay";
 }
 
-function next() {
+function next() { advance(false); }
+
+function advance(automatic: boolean) {
   const player = getPlayerStore();
   if (queue.length === 0) return;
 
@@ -138,7 +140,7 @@ function next() {
     return;
   }
   currentIndex = candidate;
-  player.play(queue[currentIndex]);
+  player.play(queue[currentIndex], automatic);
 
   // Radio auto-fetch: mark played and fetch more if running low
   try {
@@ -164,25 +166,23 @@ function previous() {
   for (let i = currentIndex - 1; i >= 0; i--) {
     if (canPlay(queue[i])) {
       currentIndex = i;
-      player.play(queue[i]);
+      player.play(queue[i], false);
       return;
     }
   }
 }
 
-// Metadata is rechecked after a playback failure. Only a confirmed catalogue
-// decision skips a track. Temporary playback/network errors keep the retry action.
-function markUnavailable(track: Track) {
-  if (canPlay(track)) return;
+// Keep saved rows and their order when a source goes offline or returns.
+function updateAvailability(track: Track, skip: boolean) {
   const wasCurrent = queue[currentIndex]?.id === track.id;
   queue = queue.map(item => item.id === track.id ? { ...item, availability: track.availability } : item);
-  if (wasCurrent) next();
+  if (wasCurrent && skip && !canPlay(track)) advance(true);
 }
 
 // Listen for track ended events
 if (typeof window !== "undefined") {
   window.addEventListener("soundtime:trackended", () => {
-    next();
+    advance(true);
   });
   // Listen for Media Session previous/next track actions
   window.addEventListener("soundtime:previoustrack", () => {
@@ -206,7 +206,7 @@ export function getQueueStore() {
       try { return getRadioStore().active; } catch { return false; }
     },
     get autoplay() { return autoplay; },
-    markUnavailable,
+    updateAvailability,
     playQueue,
     addToQueue,
     addNext,

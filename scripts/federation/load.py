@@ -99,6 +99,18 @@ def mp3_fixture(project, node):
     return node.upload("Browserwitness", encoded, extension="mp3", mime="audio/mpeg")
 
 
+def physical_storage(project):
+    occupied = {}
+    for site in "abc":
+        rows = compose(project, "exec", "-T", "backend-" + site, "du", "-sk",
+                       "/data/music", "/data/p2p-blobs").decode().splitlines()
+        occupied[site.upper()] = {name: int(kib) * 1024 for kib, name in (line.split(None, 1) for line in rows)}
+    sql = "SELECT pg_database_size(current_database())"
+    occupied["B"]["database"] = int(compose(project, "exec", "-T", "db-b", "psql", "-XqAt",
+                                            "-U", "soundtime", "-d", "soundtime", "-c", sql))
+    return occupied
+
+
 def churn(a, b, delay):
     time.sleep(delay)
     start = time.monotonic()
@@ -166,6 +178,10 @@ def run(args, report):
     mp3_fixture(project, a)
     witness = wait_for("browser MP3 on B", lambda: b.search("Browserwitness"))
     report["seed"] = seed(project, virtual, titles)
+    for node in nodes:
+        refreshed = node.call("/auth/refresh", method="POST", token="",
+                              body={"refresh_token": node.refresh_token})
+        node.token, node.refresh_token = refreshed["access_token"], refreshed["refresh_token"]
     require(report["seed"] == {"virtual_catalogues": virtual, "virtual_tracks": virtual * titles,
                                "indexed_tracks": virtual * titles}, "Incomplete synthetic index")
     wait_for("metadata searchable after FTS reconciliation",
@@ -180,6 +196,7 @@ def run(args, report):
     accounts = [b.account("loadlistener" + str(i)) for i in range(32 if full else 2)]
     pid = b.playlist(accounts[0], "Load witness", [witness])
     report["profile"]["distinct_listener_accounts"] = len(accounts)
+    report["physical_bytes_before"] = physical_storage(project)
     baseline = counters(nodes)
     report["container_samples"], report["monitor_errors"], report["browser_samples"] = [], [], []
     samples, errors, browsers = report["container_samples"], report["monitor_errors"], report["browser_samples"]
@@ -228,6 +245,7 @@ def run(args, report):
                 raise
     report["transport_delta"] = difference(baseline, counters(nodes))
     report["cache_after"] = b.call("/admin/storage/status")["cache"]
+    report["physical_bytes_after"] = physical_storage(project)
     for key in ("search_to_screen_ms", "first_media_progress_ms"):
         report[key] = quantiles([row[key] for row in browsers])
     report["container_peak_memory_bytes"] = {

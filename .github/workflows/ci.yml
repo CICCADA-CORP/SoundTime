@@ -65,11 +65,11 @@ jobs:
       RUSTFLAGS: -Dwarnings
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: soundtime
           POSTGRES_PASSWORD: ci
-          POSTGRES_DB: soundtime
+          POSTGRES_DB: soundtime_federation_history
         ports:
           - 5432/tcp
         options: >-
@@ -88,10 +88,12 @@ jobs:
           workspaces: backend
       - name: Lint all targets and features
         run: cargo --config 'profile.dev.package."*".opt-level=0' clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - name: Test the workspace including PostgreSQL reconciliation
+      - name: Migrate the test database and run the workspace tests
         env:
-          TEST_DATABASE_URL: postgres://soundtime:ci@localhost:${{ job.services.postgres.ports['5432'] }}/soundtime
-        run: cargo --config 'profile.dev.package."*".opt-level=0' test --locked --workspace --all-features -- --include-ignored
+          TEST_DATABASE_URL: postgres://soundtime:ci@localhost:${{ job.services.postgres.ports['5432'] }}/soundtime_federation_history
+        run: |
+          cargo --config 'profile.dev.package."*".opt-level=0' run --locked -p soundtime-server --features redis --example federation_upgrade
+          cargo --config 'profile.dev.package."*".opt-level=0' test --locked --workspace --all-features -- --include-ignored
 
   frontend-check:
     name: Frontend (types and coverage)

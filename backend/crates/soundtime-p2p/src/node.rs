@@ -406,6 +406,7 @@ pub struct TransportStats {
     pub audio_bytes_received: u64,
     pub range_proof_bytes_received: u64,
     pub range_windows_verified: u64,
+    pub range_connections_established: u64,
     pub relay_windows_verified: u64,
     pub relay_only: bool,
     pub range_streaming: bool,
@@ -592,7 +593,12 @@ impl P2pNode {
             Endpoint::builder(iroh::endpoint::presets::N0)
         } else {
             Endpoint::builder(iroh::endpoint::presets::Minimal)
-                .dns_resolver(iroh::dns::DnsResolver::builder().disable_fallback().build())
+                .dns_resolver(
+                    iroh::dns::DnsResolver::builder()
+                        .with_system_defaults()
+                        .disable_fallback()
+                        .build(),
+                )
                 .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         };
         let mut protocols = vec![SOUNDTIME_ALPN.to_vec()];
@@ -1019,6 +1025,7 @@ impl P2pNode {
             audio_bytes_received: self.audio_bytes_received.load(Ordering::Relaxed),
             range_proof_bytes_received: self.ranges.proof_bytes_received.load(Ordering::Relaxed),
             range_windows_verified: self.ranges.verified_windows.load(Ordering::Relaxed),
+            range_connections_established: self.ranges.pool.established(),
             relay_windows_verified: self.ranges.relay_windows_verified.load(Ordering::Relaxed),
             relay_only: self._config.relay_only,
             range_streaming: self.range_streaming(),
@@ -1199,6 +1206,7 @@ impl P2pNode {
         let allowed = async || -> Result<bool, P2pError> {
             let policy = crate::peer_policy::get(&self.db, &source).await?;
             Ok(!policy.banned
+                && !policy.source_disabled
                 && (!self.explicit_catalog() || policy.followed)
                 && soundtime_db::media_access::allows_legacy_hash(&self.db, &hash.to_string())
                     .await?)
@@ -1412,7 +1420,8 @@ impl P2pNode {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 self.ping_peer(EndpointAddr::new(id)),
-            ).await;
+            )
+            .await;
         }
     }
 
@@ -1590,7 +1599,8 @@ impl P2pNode {
                 continue;
             }
             let ping = self.ping_peer(EndpointAddr::new(id));
-            let Ok(Ok(P2pMessage::Pong { .. })) = tokio::time::timeout(std::time::Duration::from_secs(15), ping).await
+            let Ok(Ok(P2pMessage::Pong { .. })) =
+                tokio::time::timeout(std::time::Duration::from_secs(15), ping).await
             else {
                 debug!(peer = %peer_id, "rendezvous peer did not respond to ping");
                 continue;

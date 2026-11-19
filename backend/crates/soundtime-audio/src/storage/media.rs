@@ -214,18 +214,69 @@ mod tests {
             .unwrap();
         assert!(reader.next_chunk().await.is_err());
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn atomic_replacement_never_splices_two_originals_into_an_open_reader() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("song");
+        let replacement = dir.path().join("next");
+        let size = 128 * 1024;
+        tokio::fs::write(&path, vec![3; size]).await.unwrap();
+        tokio::fs::write(&replacement, vec![9; size]).await.unwrap();
+        let mut previously_opened = OpenedMedia::local(&path)
+            .await
+            .unwrap()
+            .range(0, size as u64)
+            .await
+            .unwrap();
+        assert_eq!(
+            previously_opened.next_chunk().await.unwrap().unwrap(),
+            vec![3; 64 * 1024]
+        );
+        tokio::fs::rename(replacement, &path).await.unwrap();
+        // Unix filesystems may update the old inode's ctime when the last directory link disappears.
+        match previously_opened.next_chunk().await {
+            Ok(Some(old)) => assert_eq!(old, vec![3; 64 * 1024]),
+            Err(err) => assert_eq!(err.kind(), io::ErrorKind::InvalidData),
+            Ok(None) => panic!("truncated old original returned as a complete stream"),
+        }
+        let mut fresh = OpenedMedia::local(&path)
+            .await
+            .unwrap()
+            .range(0, 4)
+            .await
+            .unwrap();
+        assert_eq!(fresh.next_chunk().await.unwrap().unwrap(), vec![9; 4]);
+    }
+
     #[tokio::test]
     async fn s3_seek_reads_only_the_conditioned_range_and_rejects_a_changed_object() {
         use std::{
             io::{BufRead, BufReader, Write},
             net::TcpListener,
             thread,
+            time::{Duration, Instant},
         };
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let responder = thread::spawn(move || {
-            for (index, connection) in listener.incoming().take(4).enumerate() {
-                let mut connection = connection.unwrap();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            for index in 0..4 {
+                let mut connection = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(err)
+                            if err.kind() == io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(err) => panic!("missing S3 request {index}: {err}"),
+                    }
+                };
+                connection.set_nonblocking(false).unwrap();
                 connection
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                     .unwrap();
@@ -235,8 +286,16 @@ mod tests {
                     .take_while(|s| !s.is_empty())
                     .collect();
                 let header = header.join("\n").to_lowercase();
+                let mut request = header.lines().next().unwrap().split_whitespace();
+                assert_eq!(
+                    request.next(),
+                    Some(if index % 2 == 0 { "head" } else { "get" })
+                );
+                assert_eq!(
+                    request.next().unwrap().split('?').next(),
+                    Some("/music/test.flac")
+                );
                 if index % 2 == 0 {
-                    assert!(header.starts_with("head /music/test.flac "));
                     connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\nETag: \"original\"\r\nConnection: close\r\n\r\n").unwrap();
                 } else {
                     assert!(header.contains("range: bytes=999996-999999"), "{header}");
@@ -251,6 +310,12 @@ mod tests {
         });
         let config = aws_sdk_s3::Config::builder()
             .behavior_version_latest()
+            .retry_config(aws_sdk_s3::config::retry::RetryConfig::standard().with_max_attempts(1))
+            .timeout_config(
+                aws_sdk_s3::config::timeout::TimeoutConfig::builder()
+                    .operation_timeout(std::time::Duration::from_secs(5))
+                    .build(),
+            )
             .credentials_provider(aws_sdk_s3::config::Credentials::new(
                 "test", "test", None, None, "fixture",
             ))

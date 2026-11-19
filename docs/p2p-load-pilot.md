@@ -1,0 +1,40 @@
+# Mesurer la charge fédérée
+
+Le banc crée trois instances SoundTime isolées. Les origines A et C servent de vrais fichiers via QUIC. B indexe les catalogues et reçoit simultanément des lectures et des recherches sur son URL publique locale, derrière Nginx. Un navigateur Chrome se connecte comme utilisateur, affiche une recherche, lance un MP3 depuis sa playlist et déplace la tête de lecture.
+
+| Profil | Catalogues distants sur B | Audio servi par A et C | Lectures HTTP simultanées visées | Recherches/s visées | Montée, puis observation |
+| --- | --- | --- | --- | --- | --- |
+| `load-smoke` | 2 réels + 4 synthétiques de 20 titres | 3 WAV et un témoin MP3 | 6, sur 2 comptes | 3 | 2 s, puis 15 s |
+| `load-full` | 2 réels + 298 synthétiques de 1 000 titres | 12 WAV et un témoin MP3 | 1 000, sur 32 comptes | 100 | 20 s, puis 90 s |
+
+Les catalogues synthétiques remplissent les vraies tables d’inventaire, de fournisseurs et de recherche de B. Ils mesurent le coût d’indexation et de lecture de ces tables. Le transport et les mutations de catalogue sont exercés entre les instances A, B et C. Pour qualifier 300 connexions P2P actives, il faudra aussi un pilote distribué.
+
+## Lancement
+
+Utiliser une machine dédiée avec Docker Compose, Node 22 ou supérieur, Python 3 et Chrome. Définir `CHROME_BIN` si Chrome est installé à un emplacement particulier. Le générateur vérifie ses limites de fichiers ouverts avant la construction des images. Les URL HTTP et les opérations Docker sont limitées au projet éphémère créé à chaque invocation.
+
+```sh
+./scripts/test-p2p-federation.sh load-smoke
+./scripts/test-p2p-federation.sh load-full
+```
+
+Le profil normal fixe le quota de cache disque à zéro. Les variantes suivantes rejouent la même charge avec des copies déjà vérifiées, ou avec une panne temporaire de C pendant les lectures. La panne suspend C durant 3 secondes en fumée et 12 secondes en profil complet. L’horodatage de la suspension permet de retrouver les erreurs et les interruptions correspondantes dans les mesures par seconde.
+
+```sh
+SOUNDTIME_LOAD_CACHE=warm ./scripts/test-p2p-federation.sh load-full
+SOUNDTIME_LOAD_FAULT=origin-c ./scripts/test-p2p-federation.sh load-full
+```
+
+`FEDERATION_ARTIFACT_DIR` choisit la destination des mesures et journaux. `SOUNDTIME_LOAD_HOST` peut contenir le nom d’hôte attendu pour vérifier la destination d’une exécution à distance. Chaque invocation crée puis nettoie ses propres réseaux, volumes et identités. Les profils de charge sont absents du workflow CI ordinaire.
+
+## Lecture du rapport
+
+- `run.json` identifie le commit, l’état du répertoire de travail, l’étape et le code de sortie. `report.json` contient les observations de cette exécution, y compris en cas d’échec. Les comptes et jetons de test circulent par des tubes privés.
+- `seed` vérifie le nombre de titres effectivement présents dans l’index local. `live_catalogue_change` mesure le délai d’apparition puis de retrait d’une publication créée sur A pendant la charge.
+- `generator_result.load` donne le débit réellement envoyé et terminé, le nombre de réponses audio ouvertes échantillonné chaque seconde et le nombre d’échantillons au niveau visé. Les lecteurs demandent le même début de morceau, différentes positions d’un titre populaire ou des titres répartis sur A et C. Ils consomment 32 Kio/s chacun et vérifient les octets reçus.
+- `search_http_ms` mesure la réponse applicative. `search_scheduled_to_response_ms` inclut le retard du générateur. `omissions`, les erreurs et les recherches encore ouvertes à la clôture complètent les percentiles des requêtes réussies. `generator_result.generator` donne la mémoire, la consommation CPU, le retard et l’occupation de la boucle Node. Des recherches omises ou un retard d’émission élevé rendent insuffisante une conclusion sur la seule capacité de B.
+- `search_to_screen_ms` mesure la navigation jusqu’à la présence du résultat dans le navigateur. `first_media_progress_ms` mesure le clic jusqu’à la première progression du lecteur HTML. La sonde observe les changements à intervalles de 100 ms. Chaque distribution fournit le nombre de mesures, p50, p95 et p99. Les percentiles du profil fumée portent sur quelques observations. Le nombre de lectures qui échouent avant le premier octet et les interruptions après le début de lecture figurent séparément.
+- `transport_delta` contient les octets audio envoyés et reçus pour chaque nœud et les octets de preuve reçus. `container_peak_memory_bytes` donne le maximum de mémoire observé par service Docker. `physical_bytes_before` et `physical_bytes_after` mesurent les blocs occupés dans les volumes audio et P2P, ainsi que la taille de la base de B. Les instantanés du cache distinguent réservations, épingles, audio évictable et espace libre.
+- `workload_reached` exige le nombre de réponses audio attendu à chaque échantillon stable, au moins 99 % du débit de requêtes prévu et aucune omission. À froid, A et C doivent toutes deux avoir envoyé des octets. `status=measured` indique une observation terminée. Lors d’une panne provoquée, le rapport conserve l’observation même si la concurrence retombe. Examiner la fraîcheur, les erreurs, les interruptions et les échantillons du vrai navigateur avant toute décision d’ouverture.
+
+Le pont Docker local ne simule ni une connexion domestique de 10 Mbit/s et 60 ms, ni un relais. La cible produit de 300 ms au p95 pour la recherche à l’écran peut être comparée aux résultats du profil complet. Le mode distinct `./scripts/test-p2p-federation.sh shaped` exerce un lien direct à 10 Mbit/s et 60 ms aller-retour pour comparer le premier son à la cible de 2 s au p95. Cette mesure dispose de son propre rapport. Les essais de terrain sur des instances volontaires et les connexions relayées complètent cette qualification. Le repli du serveur et le maintien des références utilisateur disposent de scénarios séparés dans le même banc. [Plan d’implémentation](plan-implementation-p2p.md)

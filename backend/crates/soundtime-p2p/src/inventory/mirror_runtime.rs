@@ -3,7 +3,7 @@ use super::{P2pMessage, P2pNode};
 use crate::inventory::{
     self,
     lease::{self, Offer},
-    source::{Request, Response},
+    source::{self, Request, Response},
 };
 use anyhow::{ensure, Context, Result};
 use futures_util::{stream, StreamExt};
@@ -114,9 +114,26 @@ impl P2pNode {
         tokio::spawn(async move {
             let _permit = permit;
             let origin = offer.provider.lease.origin;
+            // An eviction retracts this provider only. When the actual cause is an
+            // authority withdrawal, deliver that distinct signed decision as well.
+            let terminal = if !offer.provider.lease.active {
+                source::withdrawal(
+                    &node.db,
+                    node.endpoint.secret_key(),
+                    origin,
+                    offer.provider.lease.publication,
+                )
+                .await
+                .ok()
+                .flatten()
+                .map(P2pMessage::SignedWithdrawal)
+            } else {
+                None
+            };
             let peers = node.registry.online_peers().await;
             let msg = &P2pMessage::MirrorOffer(Box::new(offer));
             let node = &node;
+            let terminal = terminal.as_ref();
             stream::iter(peers)
                 .for_each_concurrent(4, |peer| async move {
                     let Ok(id) = peer.node_id.parse::<EndpointId>() else {
@@ -133,6 +150,11 @@ impl P2pNode {
                         Ok(true)
                     ) {
                         return;
+                    }
+                    if let Some(proof) = terminal.filter(|_| id != origin) {
+                        if let Err(e) = node.send_message_to_peer(id, proof).await {
+                            tracing::debug!(%id,%e,"mirror withdrawal retained for pull");
+                        }
                     }
                     if let Err(e) = node.send_message_to_peer(id, msg).await {
                         tracing::debug!(%id,%e,"mirror notice retained for pull");
@@ -253,15 +275,7 @@ impl P2pNode {
         }
         if rows.len() < 128 {
             *after = None;
-            self.db
-                .execute(sql(
-                    "DELETE FROM federation_mirror_leases l USING (
-                SELECT track_id,revision,provider FROM federation_mirror_leases
-                WHERE expires_at<now()-interval '2 hours' ORDER BY expires_at LIMIT 128) old
-                WHERE (l.track_id,l.revision,l.provider)=(old.track_id,old.revision,old.provider)",
-                    [],
-                ))
-                .await?;
+            lease::prune(&self.db).await?;
         }
         Ok(())
     }

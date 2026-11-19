@@ -15,11 +15,13 @@ vi.mock('$lib/api', () => ({
   },
 }));
 
+const { updateAvailability } = vi.hoisted(() => ({ updateAvailability: vi.fn() }));
 vi.mock('./queue.svelte', () => ({
   getQueueStore: () => ({
     sourceContext: null,
     queue: [],
     currentIndex: -1,
+    updateAvailability,
     currentTrack: null,
     hasNext: false,
     hasPrevious: false,
@@ -337,6 +339,40 @@ describe('Player Store', () => {
       expect(player.isPlaying).toBe(true);
       expect(player.failed).toBe(false);
       expect(api.post).not.toHaveBeenCalledWith('/history', expect.anything());
+    });
+
+    it('retains a manually selected track through an outage and resumes at its old position', async () => {
+      player.play(mockTrack);
+      player.seek(24);
+      const offline = { ...mockTrack, availability: 'temporarily_unavailable' as const };
+      vi.mocked(api.get).mockResolvedValueOnce(offline);
+      lastAudioInstance!.trigger('error');
+      await Promise.resolve();
+      expect(updateAvailability).toHaveBeenCalledWith(offline, false);
+      expect(player.failed).toBe(true);
+
+      const returned = { ...mockTrack, availability: 'playable' as const };
+      vi.mocked(api.get).mockResolvedValueOnce(returned);
+      player.resume();
+      await Promise.resolve();
+      lastAudioInstance!.duration = 180;
+      lastAudioInstance!.trigger('loadedmetadata');
+      expect(updateAvailability).toHaveBeenLastCalledWith(returned, false);
+      expect(player.isPlaying).toBe(true);
+      expect(lastAudioInstance!.currentTime).toBe(24);
+      expect(api.post).not.toHaveBeenCalled();
+    });
+
+    it('advances automatically on confirmed source loss without recording a musical skip', async () => {
+      player.play(mockTrack, true);
+      player.seek(24);
+      const offline = { ...mockTrack, availability: 'temporarily_unavailable' as const };
+      vi.mocked(api.get).mockResolvedValueOnce(offline);
+      lastAudioInstance!.trigger('error');
+      await Promise.resolve();
+      expect(updateAvailability).toHaveBeenCalledWith(offline, true);
+      player.play({ ...mockTrack, id: 'another' }, true);
+      expect(api.post).not.toHaveBeenCalled();
     });
 
     it('keeps a stopped track retryable after a grant failure and browser gesture restriction', async () => {

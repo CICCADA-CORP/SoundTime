@@ -4,8 +4,31 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - backend/**
-      - frontend/**
+      - backend/Cargo.*
+      - backend/crates/soundtime-p2p/**
+      - backend/crates/soundtime-audio/src/storage*
+      - backend/crates/soundtime-audio/src/storage/**
+      - backend/crates/soundtime-db/**
+      - backend/crates/soundtime-migration/**
+      - backend/crates/soundtime-server/src/api/audio.rs
+      - backend/crates/soundtime-server/src/api/cache_pins.rs
+      - backend/crates/soundtime-server/src/api/p2p.rs
+      - backend/crates/soundtime-server/src/api/playlists.rs
+      - backend/crates/soundtime-server/src/api/search*
+      - backend/crates/soundtime-server/src/api/search/**
+      - backend/crates/soundtime-server/src/api/tracks.rs
+      - backend/crates/soundtime-server/src/cluster.rs
+      - backend/crates/soundtime-server/src/publications.rs
+      - backend/crates/soundtime-server/src/storage_*.rs
+      - backend/crates/soundtime-server/examples/federation*
+      - backend/crates/soundtime-server/examples/federation_upgrade/**
+      - backend/crates/soundtime-server/examples/fixtures/federation_*.sql
+      - frontend/src/lib/catalog/availability*
+      - frontend/src/lib/components/TrackList.svelte
+      - frontend/src/lib/stores/player.svelte.ts
+      - frontend/src/lib/stores/queue.svelte.ts
+      - frontend/src/routes/playlists/**
+      - frontend/src/routes/search/**
       - docker/Dockerfile.*
       - docker/nginx.conf
       - scripts/federation/**

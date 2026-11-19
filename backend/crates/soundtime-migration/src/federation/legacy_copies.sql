@@ -6,7 +6,10 @@ CREATE TABLE federation_legacy_copies (
 CREATE INDEX federation_legacy_copy_hash ON federation_legacy_copies(content_hash);
 ALTER VIEW federation_track_providers RENAME TO federation_versioned_track_providers;
 CREATE VIEW federation_track_providers AS
-SELECT * FROM federation_versioned_track_providers
+SELECT s.track_id,s.provider,s.followed,
+       s.allowed AND NOT coalesce(policy.source_disabled,false) AS allowed,s.online
+FROM federation_versioned_track_providers s
+LEFT JOIN federation_peer_policies policy ON policy.node_id=s.provider
 UNION ALL
 SELECT cp.track_id, own.node_id AS provider, true AS followed, true AS allowed, true AS online
 FROM federation_legacy_copies cp JOIN tracks t ON t.id=cp.track_id

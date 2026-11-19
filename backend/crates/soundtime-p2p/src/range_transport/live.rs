@@ -25,7 +25,7 @@ const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
 type Transfer = BoxFuture<'static, Result<Bytes, Arc<str>>>;
 
 pub(super) struct RangeTransfers {
-    pool: ConnectionPool,
+    pub(crate) pool: ConnectionPool,
     per_peer: usize,
     upload: budget::Budget,
     download: budget::Budget,

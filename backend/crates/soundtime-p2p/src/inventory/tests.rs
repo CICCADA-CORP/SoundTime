@@ -229,8 +229,42 @@ async fn origin_subscriber_accepts_mirror_without_following_it() -> Result<()> {
     assert!(!available(publication).await?);
     let newer = lease::Offer::issue(&b, main.publication, 3, true)?;
     assert!(lease::accept(&db, c, b.public(), &newer, None).await?);
-    db.execute(sql("UPDATE federation_mirror_leases SET expires_at=now()-interval '1 second' WHERE provider=$1",[b_id.clone().into()])).await?;
+    for _ in 0..2 {
+        let key = SecretKey::generate();
+        let other = lease::Offer::issue(&key, newer.publication.clone(), 1, true)?;
+        assert!(lease::accept(&db, c, a.public(), &other, None).await?);
+    }
+    let track: Uuid = db
+        .query_one(sql(
+            "SELECT track_id FROM federation_mirror_leases WHERE provider=$1",
+            [b_id.clone().into()],
+        ))
+        .await?
+        .context("missing signed mirror")?
+        .try_get("", "track_id")?;
+    db.execute(sql("INSERT INTO federation_cached_publications SELECT track_id,revision,content_hash FROM publication_versions WHERE track_id=$1 AND revision=1",
+        [track.into()])).await?;
+    db.execute(sql("UPDATE federation_mirror_leases SET expires_at=now()-CASE WHEN provider=$2 THEN interval '7 days' ELSE interval '8 days' END WHERE track_id=$1",
+        [track.into(),b_id.clone().into()])).await?;
+    lease::prune(&db).await?;
+    let held = db.query_one(sql("SELECT count(*) AS n,bool_or(provider=$2) AS keeps_b FROM federation_mirror_leases WHERE track_id=$1",
+        [track.into(),b_id.clone().into()])).await?.context("missing retention count")?;
+    assert_eq!(held.try_get::<i64>("", "n")?, 2);
+    assert!(held.try_get::<bool>("", "keeps_b")?);
     assert!(!available(publication).await?);
+    db.execute(sql(
+        "DELETE FROM federation_cached_publications WHERE track_id=$1",
+        [track.into()],
+    ))
+    .await?;
+    lease::prune(&db).await?;
+    assert!(db
+        .query_one(sql(
+            "SELECT 1 FROM federation_mirror_leases WHERE track_id=$1",
+            [track.into()]
+        ))
+        .await?
+        .is_none());
     crate::peer_policy::disconnect(&db, &b_id).await?;
     let latest = lease::Offer::issue(&b, newer.publication, 4, true)?;
     lease::accept(&db, c, a.public(), &latest, Some(2)).await?;

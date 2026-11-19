@@ -326,23 +326,36 @@ impl P2pNode {
         let rows=self.db.query_all(Statement::from_sql_and_values(DbBackend::Postgres,
             "SELECT p.track_id,p.origin_publication_id,c.node_id FROM track_publications p
              JOIN federation_catalogs c ON c.id=p.catalog_id WHERE NOT c.is_local AND p.state='active'
-             AND ($1::uuid IS NULL OR p.track_id>$1) AND (EXISTS(SELECT FROM favorites f WHERE f.track_id=p.track_id)
-                OR EXISTS(SELECT FROM playlist_tracks pt WHERE pt.track_id=p.track_id)
-                OR EXISTS(SELECT FROM library_tracks lt WHERE lt.track_id=p.track_id))
+             AND ($1::uuid IS NULL OR p.track_id>$1)
+             AND EXISTS(SELECT FROM federation_withdrawal_references refs WHERE refs.track_id=p.track_id)
              ORDER BY p.track_id LIMIT 4", [(*after).into()])).await?;
         for row in &rows {
             let track: Uuid = row.try_get("", "track_id")?;
             *after = Some(track);
             let origin: EndpointId = row.try_get::<String>("", "node_id")?.parse()?;
             let publication = row.try_get("", "origin_publication_id")?;
-            let others=self.db.query_all(Statement::from_sql_and_values(DbBackend::Postgres,
-                "SELECT DISTINCT o.provider_node_id FROM publication_offers o JOIN federation_peer_policies p ON p.node_id=o.provider_node_id
-                 WHERE o.track_id=$1 AND o.provider_node_id<>$2 AND NOT p.is_banned
-                 AND NOT EXISTS(SELECT FROM blocked_domains b WHERE b.domain=p.node_id)
-                 ORDER BY o.provider_node_id LIMIT 2", [track.into(),origin.to_string().into()])).await?;
+            let others = self
+                .db
+                .query_all(Statement::from_sql_and_values(
+                    DbBackend::Postgres,
+                    "SELECT candidates.provider FROM (
+                     SELECT provider_node_id AS provider FROM publication_offers WHERE track_id=$1
+                     UNION SELECT provider FROM federation_mirror_leases WHERE track_id=$1
+                 ) candidates JOIN federation_peer_policies p ON p.node_id=candidates.provider
+                 LEFT JOIN p2p_peers peer ON peer.node_id=p.node_id
+                 WHERE p.node_id<>$2 AND p.node_id<>$3 AND NOT p.is_banned
+                   AND NOT EXISTS(SELECT FROM blocked_domains b WHERE b.domain=p.node_id)
+                 ORDER BY (peer.is_online IS TRUE) DESC,p.is_followed DESC,p.node_id LIMIT 2",
+                    [
+                        track.into(),
+                        origin.to_string().into(),
+                        self.node_id().to_string().into(),
+                    ],
+                ))
+                .await?;
             let mut providers = vec![origin];
             for other in others {
-                if let Ok(id) = other.try_get::<String>("", "provider_node_id")?.parse() {
+                if let Ok(id) = other.try_get::<String>("", "provider")?.parse() {
                     providers.push(id);
                 }
             }

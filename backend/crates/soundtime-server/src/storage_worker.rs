@@ -251,6 +251,51 @@ struct CatalogEntry {
     file_path: String,
     file_size: i64,
     file_hash: Option<String>,
+    content_hash: Option<String>,
+}
+
+/// A returned mount may now contain a different file at the same path. Read one
+/// version and backfill SHA-256 only if an existing fingerprint attests its bytes.
+async fn restored_sha256(
+    storage: &dyn soundtime_audio::StorageBackend,
+    row: &CatalogEntry,
+) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    if row.file_hash.is_none() && row.content_hash.is_none() {
+        return Err("missing historical fingerprint; original cannot be identified".into());
+    }
+    let file = storage
+        .open_media(&row.file_path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let size = file.size();
+    if i64::try_from(size).ok() != Some(row.file_size) {
+        return Err("contents differ from the missing original".into());
+    }
+    let mut sha = Sha256::new();
+    let mut blob = row.file_hash.is_none().then(soundtime_p2p::BlobHasher::new);
+    if size > 0 {
+        let mut stream = file.range(0, size).await.map_err(|e| e.to_string())?;
+        while let Some(bytes) = stream.next_chunk().await.map_err(|e| e.to_string())? {
+            sha.update(&bytes);
+            if let Some(blob) = &mut blob {
+                blob.update(&bytes);
+            }
+        }
+    }
+    let sha = format!("{:x}", sha.finalize());
+    let valid = match (row.file_hash.as_ref(), blob, row.content_hash.as_ref()) {
+        (Some(expected), _, _) => expected.eq_ignore_ascii_case(&sha),
+        (None, Some(blob), Some(expected)) => {
+            expected.eq_ignore_ascii_case(blob.finalize().to_hex().as_str())
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(sha)
+    } else {
+        Err("contents differ from the missing original".into())
+    }
 }
 
 // Compose mounts the optional NAS volumes independently underneath the local
@@ -278,6 +323,7 @@ pub async fn run_sync(
             track::Column::FilePath,
             track::Column::FileSize,
             track::Column::FileHash,
+            track::Column::ContentHash,
         ])
         .into_model::<CatalogEntry>()
         .all(&state.db)
@@ -347,43 +393,33 @@ pub async fn run_sync(
             }
         } else {
             if absent_ids.contains(&row.id) {
+                let sha = match restored_sha256(state.storage.as_ref(), row).await {
+                    Ok(sha) => sha,
+                    Err(err) => {
+                        report.errors.push(format!("{}: {err}", row.file_path));
+                        continue;
+                    }
+                };
                 let tx = crate::storage_catalog::begin_write(&state.db)
                     .await
                     .map_err(|e| e.to_string())?;
-                let restored = match &row.file_hash {
-                    Some(hash) => {
-                        state
-                            .storage
-                            .hash_file(&row.file_path)
-                            .await
-                            .map_err(|e| e.to_string())?
-                            == *hash
-                    }
-                    None => state
-                        .storage
-                        .file_exists(&row.file_path)
-                        .await
-                        .map_err(|e| e.to_string())?,
-                };
-                if !restored {
-                    report.errors.push(format!(
-                        "{}: contents differ from the missing original",
-                        row.file_path
-                    ));
-                    continue;
-                }
-                if track::Entity::find_by_id(row.id)
-                    .filter(track::Column::FilePath.eq(&row.file_path))
-                    .count(&tx)
-                    .await
-                    .map_err(|e| e.to_string())?
-                    == 1
-                {
+                let confirmed=tx.execute(sea_orm::Statement::from_sql_and_values(sea_orm::DbBackend::Postgres,
+                    "UPDATE tracks t SET file_hash=$3 WHERE id=$1 AND file_path=$2 AND file_hash IS NOT DISTINCT FROM $4
+                     AND content_hash IS NOT DISTINCT FROM $5 AND NOT EXISTS(
+                         SELECT FROM track_publications p WHERE p.track_id=t.id AND p.state='withdrawn')",
+                    [row.id.into(),row.file_path.as_str().into(),sha.into(),row.file_hash.clone().into(),
+                        row.content_hash.clone().into()])).await.map_err(|e|e.to_string())?;
+                if confirmed.rows_affected() == 1 {
                     crate::storage_catalog::source_restored(&tx, row.id)
                         .await
                         .map_err(|e| e.to_string())?;
+                    present_by_size
+                        .entry(row.file_size)
+                        .or_default()
+                        .push(row.id);
                 }
                 tx.commit().await.map_err(|e| e.to_string())?;
+                continue;
             }
             present_by_size
                 .entry(row.file_size)
@@ -894,6 +930,22 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    async fn share_snapshot(db: &sea_orm::DatabaseConnection, id: Uuid) -> (bool, String) {
+        let row = db.query_one(sea_orm::Statement::from_sql_and_values(DbBackend::Postgres,
+            "SELECT EXISTS(SELECT FROM federation_missing_sources m WHERE m.track_id=t.id) AS missing,
+                jsonb_build_array(t.id,p.state,t.file_path,t.file_hash,
+                    (SELECT jsonb_agg(jsonb_build_array(playlist_id,position) ORDER BY playlist_id)
+                     FROM playlist_tracks WHERE track_id=t.id),
+                    (SELECT jsonb_agg(user_id ORDER BY user_id) FROM favorites WHERE track_id=t.id),
+                    (SELECT count(*) FROM listen_history WHERE track_id=t.id))::text AS refs
+             FROM tracks t JOIN track_publications p ON p.track_id=t.id WHERE t.id=$1",
+            [id.into()])).await.unwrap().unwrap();
+        (
+            row.try_get("", "missing").unwrap(),
+            row.try_get("", "refs").unwrap(),
+        )
+    }
+
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL for a PostgreSQL connection"]
     async fn reconcile_storage_with_postgres() {
@@ -937,6 +989,11 @@ mod tests {
             .await
             .unwrap();
         }
+        db.execute_unprepared(
+            "ALTER TABLE playlist_tracks ADD COLUMN position integer NOT NULL DEFAULT 0",
+        )
+        .await
+        .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let state = Arc::new(AppState {
             db,
@@ -1056,12 +1113,41 @@ mod tests {
         fs::create_dir(&share).unwrap();
         let mut other_audio = wav.clone();
         *other_audio.last_mut().unwrap() = 0;
-        fs::write(share.join("nas.wav"), other_audio).unwrap();
+        fs::write(share.join("nas.wav"), &other_audio).unwrap();
         assert_eq!(run_sync(&state, None, &[]).await.unwrap().imported, 1);
+        let nas = track::Entity::find()
+            .filter(track::Column::FilePath.eq("network-nfs/nas.wav"))
+            .one(&state.db)
+            .await
+            .unwrap()
+            .unwrap();
+        let nas_id = nas.id;
+        for query in [
+            "INSERT INTO track_publications VALUES($1,'active')",
+            "INSERT INTO playlist_tracks VALUES(gen_random_uuid(),$1,2),(gen_random_uuid(),$1,7)",
+            "INSERT INTO favorites VALUES(gen_random_uuid(),$1)",
+            "INSERT INTO listen_history VALUES($1),($1)",
+        ] {
+            state
+                .db
+                .execute(sea_orm::Statement::from_sql_and_values(
+                    backend,
+                    query,
+                    [nas_id.into()],
+                ))
+                .await
+                .unwrap();
+        }
+        let (missing, refs) = share_snapshot(&state.db, nas_id).await;
+        assert!(!missing);
         fs::remove_dir_all(&share).unwrap();
         let guarded = run_sync(&state, None, &["network-smb"]).await.unwrap();
         assert_eq!(guarded.removed, 1);
         assert_eq!(guarded.empty_sources, ["network-nfs"]);
+        assert_eq!(
+            share_snapshot(&state.db, nas_id).await,
+            (true, refs.clone())
+        );
         assert_eq!(
             run_sync(&state, None, &["network-nfs"])
                 .await
@@ -1069,6 +1155,78 @@ mod tests {
                 .removed,
             0
         );
+        fs::create_dir(&share).unwrap();
+        // A replacement of the same length cannot silently take over the old playlist entries.
+        fs::write(share.join("nas.wav"), &wav).unwrap();
+        let different = run_sync(&state, None, &[]).await.unwrap();
+        assert!(different
+            .errors
+            .iter()
+            .any(|error| error.contains("contents differ")));
+        assert_eq!(
+            share_snapshot(&state.db, nas_id).await,
+            (true, refs.clone())
+        );
+        fs::write(share.join("nas.wav"), &other_audio).unwrap();
+        let restored = run_sync(&state, None, &[]).await.unwrap();
+        assert!(restored.errors.is_empty(), "{:?}", restored.errors);
+        assert_eq!(
+            (restored.imported, restored.moved, restored.removed),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            share_snapshot(&state.db, nas_id).await,
+            (false, refs.clone())
+        );
+        let source = state.storage.open_media(&nas.file_path).await.unwrap();
+        let mut tail = source.range(other_audio.len() as u64 - 4, 4).await.unwrap();
+        assert_eq!(
+            tail.next_chunk().await.unwrap().unwrap(),
+            other_audio[other_audio.len() - 4..]
+        );
+        fs::remove_dir_all(&share).unwrap();
+        assert_eq!(run_sync(&state, None, &[]).await.unwrap().removed, 1);
+        assert_eq!(share_snapshot(&state.db, nas_id).await, (true, refs));
+        state
+            .db
+            .execute(sea_orm::Statement::from_sql_and_values(
+                backend,
+                "UPDATE tracks SET file_hash=NULL,content_hash=NULL WHERE id=$1",
+                [nas_id.into()],
+            ))
+            .await
+            .unwrap();
+        fs::create_dir(&share).unwrap();
+        fs::write(share.join("nas.wav"), &other_audio).unwrap();
+        let unverified = run_sync(&state, None, &[]).await.unwrap();
+        assert!(unverified
+            .errors
+            .iter()
+            .any(|e| e.contains("missing historical fingerprint")));
+        assert!(share_snapshot(&state.db, nas_id).await.0);
+        let blob = soundtime_p2p::BlobHash::new(&other_audio).to_string();
+        state
+            .db
+            .execute(sea_orm::Statement::from_sql_and_values(
+                backend,
+                "UPDATE tracks SET content_hash=$2 WHERE id=$1",
+                [nas_id.into(), blob.into()],
+            ))
+            .await
+            .unwrap();
+        assert!(run_sync(&state, None, &[]).await.unwrap().errors.is_empty());
+        assert!(!share_snapshot(&state.db, nas_id).await.0);
+        assert_eq!(
+            track::Entity::find_by_id(nas_id)
+                .one(&state.db)
+                .await
+                .unwrap()
+                .unwrap()
+                .file_hash,
+            nas.file_hash
+        );
+        fs::remove_dir_all(&share).unwrap();
+        assert_eq!(run_sync(&state, None, &[]).await.unwrap().removed, 1);
         let mut remote: track::ActiveModel = first.into();
         remote.id = Set(Uuid::new_v4());
         remote.file_path = Set("p2p://node/hash".into());

@@ -222,6 +222,30 @@ pub(crate) async fn tick(tx: &DatabaseTransaction) -> Result<i64> {
     Ok(row.try_get("", "value")?)
 }
 
+/// Keep up to two known routes for a still-retained publication, even when a
+/// listener was offline longer than the lease lifetime. Expired leases grant
+/// no media access. Withdrawn or unreferenced publications need no such route.
+pub(crate) async fn prune(db: &DatabaseConnection) -> Result<()> {
+    db.execute(sql(
+        "DELETE FROM federation_mirror_leases del USING (
+          SELECT l.track_id,l.revision,l.provider FROM federation_mirror_leases l
+          WHERE l.expires_at < now()-interval '2 hours' AND NOT EXISTS(
+            SELECT FROM track_publications p WHERE p.track_id=l.track_id AND p.revision=l.revision AND p.state='active'
+              AND EXISTS(SELECT FROM federation_withdrawal_references refs WHERE refs.track_id=p.track_id)
+              AND l.provider IN (
+                SELECT candidate.provider FROM federation_mirror_leases candidate
+                WHERE candidate.track_id=l.track_id AND candidate.revision=l.revision
+                  AND candidate.provider IS DISTINCT FROM (SELECT node_id FROM federation_catalogs WHERE is_local)
+                  AND NOT EXISTS(SELECT FROM blocked_domains b WHERE b.domain=candidate.provider)
+                  AND NOT EXISTS(SELECT FROM federation_peer_policies peer WHERE peer.node_id=candidate.provider AND peer.is_banned)
+                ORDER BY candidate.expires_at DESC,candidate.provider LIMIT 2))
+          ORDER BY l.expires_at LIMIT 128) old
+        WHERE (del.track_id,del.revision,del.provider)=(old.track_id,old.revision,old.provider)",
+        [],
+    )).await?;
+    Ok(())
+}
+
 pub(crate) async fn store(
     tx: &DatabaseTransaction,
     track: Uuid,

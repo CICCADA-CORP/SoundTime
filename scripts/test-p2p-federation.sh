@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: scripts/test-p2p-federation.sh baseline|compatibility|acceptance|relay|retention|cluster|load-smoke|load-full|rust-tests"
+    echo "Usage: scripts/test-p2p-federation.sh baseline|compatibility|acceptance|shaped|relay|retention|cluster|load-smoke|load-full|rust-tests"
     echo "Set FEDERATION_ARTIFACT_DIR to choose where each run stores its report and logs."
 }
 
@@ -10,7 +10,7 @@ if [[ $# == 1 && $1 == --help ]]; then
     usage
     exit 0
 fi
-if [[ $# != 1 ]] || [[ $1 != baseline && $1 != compatibility && $1 != acceptance && $1 != relay && $1 != retention && $1 != cluster && $1 != load-smoke && $1 != load-full && $1 != rust-tests ]]; then
+if [[ $# != 1 ]] || [[ $1 != baseline && $1 != compatibility && $1 != acceptance && $1 != shaped && $1 != relay && $1 != retention && $1 != cluster && $1 != load-smoke && $1 != load-full && $1 != rust-tests ]]; then
     usage >&2
     exit 2
 fi
@@ -21,7 +21,7 @@ export FEDERATION_CACHE_SIZE=1GB FEDERATION_VERSIONED=false FEDERATION_RETAIN_B=
 if [[ $mode != baseline ]]; then
     export FEDERATION_EXPLICIT_A=true FEDERATION_EXPLICIT_B=true
 fi
-if [[ $mode == acceptance || $mode == relay || $mode == retention || $mode == cluster || $mode == load-* ]]; then
+if [[ $mode == acceptance || $mode == shaped || $mode == relay || $mode == retention || $mode == cluster || $mode == load-* ]]; then
     export FEDERATION_EXPLICIT_C=true FEDERATION_RANGES=true FEDERATION_CACHE_SIZE=0 FEDERATION_VERSIONED=true
 fi
 if [[ $mode == retention ]]; then
@@ -53,6 +53,11 @@ fi
 if [[ $mode == relay ]]; then
     compose+=(--file "$root/scripts/federation/relay.yml")
     export SOUNDTIME_TEST_RELAY=1
+elif [[ $mode == shaped ]]; then
+    compose+=(--file "$root/scripts/federation/shaped.yml")
+elif [[ $mode == retention ]]; then
+    compose+=(--file "$root/scripts/federation/retention.yml")
+    export SOUNDTIME_TEST_RETENTION=1
 elif [[ $mode == rust-tests ]]; then
     compose+=(--file "$root/scripts/federation/rust-tests.yml")
 fi
@@ -80,13 +85,13 @@ finish() {
         "${compose[@]}" --profile migration down --volumes --timeout 10 > "$run_dir/cleanup.log" 2>&1 || status=1
     fi
     if [[ $images_started == true ]]; then
-        for image in "soundtime-federation-backend:$project" "soundtime-federation-frontend:$project" "soundtime-federation-migration:$project" "soundtime-federation-relay:$project" "soundtime-federation-rust-tests:$project"; do
+        for image in "soundtime-federation-backend:$project" "soundtime-federation-frontend:$project" "soundtime-federation-migration:$project" "soundtime-federation-relay:$project" "soundtime-federation-link-tools:$project" "soundtime-federation-rust-tests:$project"; do
             if docker image inspect "$image" > /dev/null 2>&1; then
                 docker image rm --no-prune "$image" >> "$run_dir/cleanup.log" 2>&1 || status=1
             fi
         done
     fi
-    python3 - "$run_dir/run.json" "$mode" "$stage" "$status" "$project" "$revision" "$dirty" <<'PY'
+    python3 -c '
 import json
 import sys
 from pathlib import Path
@@ -96,7 +101,7 @@ with Path(path).open("w") as output:
     json.dump({"revision": revision, "dirty_worktree": dirty == "true", "project": project,
                "mode": mode, "stage": stage, "exit_code": int(status)}, output, indent=2)
     output.write("\n")
-PY
+' "$run_dir/run.json" "$mode" "$stage" "$status" "$project" "$revision" "$dirty"
     if [[ $? != 0 ]]; then
         status=1
     fi
@@ -116,6 +121,7 @@ images_started=true
 build_services=(backend-a frontend-a migration-fixture)
 if [[ $mode == rust-tests ]]; then build_services=(migration-fixture rust-tests); fi
 if [[ $mode == relay ]]; then build_services+=(relay); fi
+if [[ $mode == shaped ]]; then build_services+=(link-tools); fi
 for service in "${build_services[@]}"; do
     "${compose[@]}" build "$service" 2>&1 | tee "$run_dir/build-$service.log"
 done
@@ -165,6 +171,7 @@ url_c=$(proxy_url c)
 stage=scenario
 export SOUNDTIME_TEST_COMPOSE_PROJECT="$project"
 scenario=scripts/federation/scenario.py
+if [[ $mode == shaped ]]; then scenario=scripts/federation/shaped.py; fi
 if [[ $mode == retention ]]; then scenario=scripts/federation/retention.py; fi
 if [[ $mode == load-* ]]; then scenario=scripts/federation/load.py; fi
 if [[ $mode == cluster ]]; then scenario=scripts/federation/cluster.py; fi

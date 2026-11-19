@@ -20,6 +20,17 @@ CREATE TABLE federation_mirror_leases (
 );
 CREATE INDEX federation_mirror_provider ON federation_mirror_leases(provider,expires_at);
 CREATE INDEX federation_mirror_expiry ON federation_mirror_leases(expires_at);
+-- References that still need to learn about an authority withdrawal after an
+-- unsubscribe or an outage. UNION ALL permits indexed existence checks.
+CREATE INDEX federation_withdrawal_favorites ON favorites(track_id);
+CREATE INDEX federation_withdrawal_playlists ON playlist_tracks(track_id);
+CREATE INDEX federation_withdrawal_libraries ON library_tracks(track_id);
+CREATE INDEX federation_withdrawal_history ON listen_history(track_id);
+CREATE INDEX federation_withdrawal_pins ON federation_cache_pins(track_id);
+CREATE VIEW federation_withdrawal_references AS
+    SELECT track_id FROM favorites UNION ALL SELECT track_id FROM playlist_tracks
+    UNION ALL SELECT track_id FROM library_tracks UNION ALL SELECT track_id FROM listen_history
+    UNION ALL SELECT track_id FROM federation_cache_pins UNION ALL SELECT track_id FROM federation_cached_publications;
 ALTER VIEW federation_track_providers RENAME TO federation_origin_track_providers;
 CREATE VIEW federation_track_providers AS
 SELECT * FROM federation_origin_track_providers

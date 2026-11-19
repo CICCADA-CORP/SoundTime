@@ -18,6 +18,9 @@ BEGIN
     UPDATE federation_peer_policies SET is_followed=false WHERE node_id=source;
     SELECT availability INTO STRICT state FROM federation_track_availability(true,true) WHERE track_id=legacy;
     IF state<>'unavailable_on_instance' THEN RAISE EXCEPTION 'unfollowed v1 source accepted %',state; END IF;
+    UPDATE federation_peer_policies SET source_disabled=true WHERE node_id=source;
+    SELECT availability INTO STRICT state FROM federation_track_availability(false,true) WHERE track_id=legacy;
+    IF state<>'unavailable_on_instance' THEN RAISE EXCEPTION 'explicitly disconnected v1 source accepted in compatibility mode %',state; END IF;
     UPDATE federation_peer_policies SET is_banned=true WHERE node_id=source;
     INSERT INTO federation_legacy_copies VALUES(legacy,digest);
     SELECT availability INTO STRICT state FROM federation_track_availability(true,true) WHERE track_id=legacy;

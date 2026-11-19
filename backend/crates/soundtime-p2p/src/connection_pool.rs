@@ -6,6 +6,7 @@
 //! automatically when `open_bi()` fails.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use iroh::endpoint::Connection;
@@ -33,6 +34,7 @@ pub struct ConnectionPool {
     alpn: &'static [u8],
     fallback: Option<&'static [u8]>,
     entries: Mutex<HashMap<EndpointId, PoolEntry>>,
+    established: AtomicU64,
 }
 
 impl ConnectionPool {
@@ -43,6 +45,7 @@ impl ConnectionPool {
             alpn,
             fallback: None,
             entries: Mutex::new(HashMap::new()),
+            established: AtomicU64::new(0),
         }
     }
 
@@ -87,6 +90,8 @@ impl ConnectionPool {
             .await
             .map_err(|e| P2pError::Connection(e.to_string()))?;
 
+        self.established.fetch_add(1, Ordering::Relaxed);
+
         // Cache the new connection
         let mut entries = self.entries.lock().await;
 
@@ -127,6 +132,11 @@ impl ConnectionPool {
         if evicted > 0 {
             debug!(evicted, "cleaned up stale pool entries");
         }
+    }
+
+    /// Completed outgoing QUIC handshakes for this pool's ALPN since startup.
+    pub fn established(&self) -> u64 {
+        self.established.load(Ordering::Relaxed)
     }
 
     /// Number of currently cached connections.

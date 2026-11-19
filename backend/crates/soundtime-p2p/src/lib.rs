@@ -43,6 +43,7 @@ pub use iroh::{EndpointAddr, EndpointId};
 /// Backward-compatible type aliases
 pub type NodeAddr = EndpointAddr;
 pub type NodeId = EndpointId;
+pub use bao_tree::blake3::Hasher as BlobHasher;
 pub use iroh_blobs::Hash as BlobHash;
 
 /// Return the build version string.

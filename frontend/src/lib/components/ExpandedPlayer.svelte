@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { availabilityLabel, canPlay } from "$lib/catalog/availability";
   import { Dialog } from "bits-ui";
   import { AudioLines, ChevronDown, Clock3, Disc3, Infinity as Autoplay, ListMusic, Mic2, Pause, Play, Repeat2, Shuffle, SkipBack, SkipForward, RotateCw, Square, Volume1, Volume2, VolumeX } from "lucide-svelte";
   import { api } from "$lib/api";
@@ -91,7 +92,7 @@
                 {/if}
               </div>
 
-              {#if player.failed}<p role="alert">{t("player.playbackError")}</p>{/if}
+              {#if player.failed}<p role="alert">{availabilityLabel(track) || t("player.playbackError")}</p>{/if}
               <div class="seek">
                 <PlayerRange max={Math.max(1, player.duration)} disabled={!player.duration} label={t("shell.seek")}
                   valueText={formatDuration(player.progress)} value={player.progress} onchange={player.seek} />
@@ -100,7 +101,7 @@
               <div class="transport">
                 <button class="mode" aria-label={t("player.shuffle")} aria-pressed={player.shuffle} onclick={player.toggleShuffle}><Shuffle size={18} /></button>
                 <button class="skip" aria-label={t("player.previous")} onclick={queue.previous}><SkipBack size={25} fill="currentColor" /></button>
-                <Button class="main-play" aria-label={t(player.failed ? "radio.tryAgain" : player.isPlaying ? "shell.pause" : "shell.play")} onclick={player.togglePlay}>
+                <Button class="main-play" disabled={!canPlay(track) && track.availability !== "temporarily_unavailable"} aria-label={t(player.failed ? "radio.tryAgain" : player.isPlaying ? "shell.pause" : "shell.play")} onclick={player.togglePlay}>
                   {#if player.failed}<RotateCw />{:else if player.isPlaying}<Pause fill="currentColor" />{:else}<Play fill="currentColor" />{/if}
                 </Button>
                 <button class="skip" aria-label={t("player.next")} onclick={queue.next}><SkipForward size={25} fill="currentColor" /></button>

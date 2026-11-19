@@ -76,6 +76,7 @@ class Instance:
             self.login_credentials[account_id] = {"username": username, "password": payload["password"]}
         if admin:
             self.token = token
+            self.refresh_token = result["tokens"]["refresh_token"]
             self.call("/setup/instance", method="POST",
                       body={"instance_name": "Test " + self.name, "instance_description": "Federation test"})
             self.call("/setup/complete", method="POST",
@@ -382,6 +383,8 @@ def switch_backend(name, running):
                    "--file", str(Path(__file__).with_name("compose.yml"))]
         if os.getenv("SOUNDTIME_TEST_RELAY") == "1":
             command += ["--file", str(Path(__file__).with_name("relay.yml"))]
+        elif os.getenv("SOUNDTIME_TEST_RETENTION") == "1":
+            command += ["--file", str(Path(__file__).with_name("retention.yml"))]
         command.append(action)
         if not running:
             command += ["--timeout", "3"]

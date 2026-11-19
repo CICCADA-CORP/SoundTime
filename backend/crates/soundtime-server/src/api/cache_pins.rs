@@ -55,7 +55,7 @@ fn scope_valid(scope: &str) -> Result<(), Failure> {
 }
 async fn lock(db_conn: &impl ConnectionTrait) -> Result<(), sea_orm::DbErr> {
     db_conn
-        .execute_unprepared("SELECT pg_advisory_xact_lock(1937011565,3)")
+        .execute_unprepared("SELECT pg_advisory_xact_lock(1937011565,4)")
         .await?;
     Ok(())
 }

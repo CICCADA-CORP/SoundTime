@@ -21,7 +21,14 @@ impl MigrationTrait for Migration {
              CREATE TRIGGER inactive_publication_pins AFTER UPDATE ON track_publications FOR EACH ROW
                WHEN (NEW.state <> 'active' OR NEW.revision <> OLD.revision) EXECUTE FUNCTION federation_drop_inactive_pins();
              CREATE TRIGGER hidden_publication_pins AFTER INSERT ON federation_hidden_publications FOR EACH ROW
-               EXECUTE FUNCTION federation_drop_inactive_pins();"
+               EXECUTE FUNCTION federation_drop_inactive_pins();
+             CREATE FUNCTION federation_drop_blocked_pins() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN
+               DELETE FROM federation_cache_pins WHERE content_hash=NEW.content_hash;
+               RETURN NULL;
+             END; $$;
+             CREATE TRIGGER blocked_content_pins AFTER INSERT ON federation_content_blocks FOR EACH ROW
+               EXECUTE FUNCTION federation_drop_blocked_pins();"
         ).await?;
         Ok(())
     }

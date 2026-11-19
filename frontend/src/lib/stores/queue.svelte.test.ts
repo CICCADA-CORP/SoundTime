@@ -122,14 +122,14 @@ describe('Queue Store', () => {
 
       expect(queue.queue).toHaveLength(3);
       expect(queue.currentIndex).toBe(0);
-      expect(mockPlayerStore.play).toHaveBeenCalledWith(track1);
+      expect(mockPlayerStore.play).toHaveBeenCalledWith(track1, false);
     });
 
     it('plays from specified start index', () => {
       queue.playQueue([track1, track2, track3], 1);
 
       expect(queue.currentIndex).toBe(1);
-      expect(mockPlayerStore.play).toHaveBeenCalledWith(track2);
+      expect(mockPlayerStore.play).toHaveBeenCalledWith(track2, false);
     });
 
     it('hasNext is true when more tracks ahead', () => {
@@ -146,12 +146,12 @@ describe('Queue Store', () => {
   it('skips unavailable rows in both directions and in shuffle', () => {
     queue.playQueue([track1, { ...track2, availability: 'withdrawn' }, track3]);
     queue.next();
-    expect(mockPlayerStore.play).toHaveBeenLastCalledWith(track3);
+    expect(mockPlayerStore.play).toHaveBeenLastCalledWith(track3, false);
     queue.previous();
-    expect(mockPlayerStore.play).toHaveBeenLastCalledWith(track1);
+    expect(mockPlayerStore.play).toHaveBeenLastCalledWith(track1, false);
     mockPlayerStore.shuffle = true;
     queue.next();
-    expect(mockPlayerStore.play).toHaveBeenLastCalledWith(track3);
+    expect(mockPlayerStore.play).toHaveBeenLastCalledWith(track3, false);
   });
 
   it('stops when the last source disappears even with repeat, shuffle and autoplay', () => {
@@ -160,7 +160,7 @@ describe('Queue Store', () => {
     mockPlayerStore.repeat = 'all';
     queue.toggleAutoplay();
     mockPlayerStore.play.mockClear();
-    queue.markUnavailable({ ...track2, availability: 'unavailable_on_instance' });
+    queue.updateAvailability({ ...track2, availability: 'unavailable_on_instance' }, true);
     queue.next();
     expect(queue.currentIndex).toBe(-1);
     expect(mockPlayerStore.play).not.toHaveBeenCalled();
@@ -216,7 +216,7 @@ describe('Queue Store', () => {
 
       queue.next();
 
-      expect(mockPlayerStore.play).toHaveBeenCalledWith(track2);
+      expect(mockPlayerStore.play).toHaveBeenCalledWith(track2, false);
     });
 
     it('does nothing at end without repeat', () => {
@@ -237,7 +237,7 @@ describe('Queue Store', () => {
 
       queue.next();
 
-      expect(mockPlayerStore.play).toHaveBeenCalledWith(track1);
+      expect(mockPlayerStore.play).toHaveBeenCalledWith(track1, false);
     });
   });
 
@@ -260,7 +260,7 @@ describe('Queue Store', () => {
 
       queue.previous();
 
-      expect(mockPlayerStore.play).toHaveBeenCalledWith(track1);
+      expect(mockPlayerStore.play).toHaveBeenCalledWith(track1, false);
     });
 
     it('does nothing at start with progress <= 3', () => {
@@ -296,7 +296,7 @@ describe('Queue Store', () => {
       queue.next();
 
       // With only 1 track, remaining is empty, repeat=all should loop to start
-      expect(mockPlayerStore.play).toHaveBeenCalledWith(track1);
+      expect(mockPlayerStore.play).toHaveBeenCalledWith(track1, false);
     });
 
     it('does nothing with shuffle when remaining is empty and no repeat', () => {
@@ -527,7 +527,7 @@ describe('Queue Store', () => {
 
       expect(mockRadioStore.startRadio).not.toHaveBeenCalled();
       // Instead, repeat-all should loop
-      expect(mockPlayerStore.play).toHaveBeenCalledWith(track1);
+      expect(mockPlayerStore.play).toHaveBeenCalledWith(track1, false);
     });
 
     it('next() does NOT start radio when radio is already active', () => {
@@ -561,7 +561,7 @@ describe('Queue Store', () => {
       queue.next(); // moves to track2, still has track3
 
       expect(mockRadioStore.startRadio).not.toHaveBeenCalled();
-      expect(mockPlayerStore.play).toHaveBeenCalledWith(track2);
+      expect(mockPlayerStore.play).toHaveBeenCalledWith(track2, false);
     });
   });
 });

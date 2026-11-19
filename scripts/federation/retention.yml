@@ -1,0 +1,9 @@
+# Only C's verified remote cache uses this small RAM filesystem. Its original
+# audio, keys and database stay on separate volumes. B exercises durable pins.
+services:
+  backend-c:
+    environment:
+      P2P_CACHE_MIN_FREE: 1MB
+      P2P_CACHE_ON_PLAY: "true"
+    tmpfs:
+      - /data/p2p-blobs/cache-v2:rw,nosuid,nodev,noexec,size=10485760,mode=1777

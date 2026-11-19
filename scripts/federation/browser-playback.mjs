@@ -199,6 +199,39 @@ try {
     noMedia(start);
     return {disabled,removed_from:owner.playlist,other_playlist_unchanged:true,stream_requests:0};
   }
+  async function firstSound(listener) {
+    await asListener(listener);
+    await send("Network.setCacheDisabled", {cacheDisabled: true});
+    await openPlaylist(listener);
+    const checkpoint = responses.length;
+    // The player uses a detached HTMLAudioElement. Observe its first actual 'playing'
+    // event on the same clock as the click, then require decoded time to advance.
+    await evaluate(`(() => {
+      const target = ${button};
+      const original = HTMLMediaElement.prototype.play;
+      const sample = window.soundtimeTestPlayback = {start: performance.now()};
+      HTMLMediaElement.prototype.play = function(...args) {
+        HTMLMediaElement.prototype.play = original;
+        sample.audio = this;
+        this.addEventListener("playing", () => {
+          sample.first = performance.now() - sample.start;
+        }, {once:true});
+        return original.apply(this, args);
+      };
+      target.click();
+    })()`, true);
+    const observation = await until("first decoded audio", () => evaluate(`(() => {
+      const s = window.soundtimeTestPlayback;
+      if (s?.first > 0 && s.audio.currentTime > 0) {
+        return {first_sound_ms:s.first, decoded_seconds:s.audio.currentTime};
+      }
+    })()`));
+    assert.ok(responses.slice(checkpoint).some(r => r.status === 206 || r.status === 200),
+      "No new media HTTP response during the sample");
+    await send("Page.navigate", {url: "about:blank"});
+    await until("sample player closed", () => evaluate("location.href === 'about:blank'"));
+    return observation;
+  }
   async function playback() {
     await send("Page.navigate", { url: origin + "/playlists/" + encodeURIComponent(playlist) });
     await until("the remote track in its playlist", () => evaluate(
@@ -233,6 +266,7 @@ try {
       const {phase,listeners}=JSON.parse(line);
       let result;
       if (phase==="add") result=await addToPlaylists(listeners);
+      else if (phase==="first_sound") result=await firstSound(listeners[0]);
       else if (phase==="measure") {
         await asListener(listeners[0]);
         const began=performance.now();
