@@ -43,8 +43,15 @@ impl Corpus {
         let quick = tx.query_all(statement(DIRECT)).await?;
         let normal = tx.query_all(statement(PAGE)).await?;
         ensure!(
-            quick[0].try_get::<bool>("", "usable")?
-                && quick[0].try_get::<bool>("", "direct")? == direct
+            quick[0].try_get::<bool>("", "usable")?,
+            "rank snapshot {} is stale for prefix {}",
+            self.snapshot,
+            self.ids
+        );
+        let actual = quick[0].try_get::<bool>("", "direct")?;
+        ensure!(
+            actual == direct,
+            "direct proof was {actual}, expected {direct} (offset {offset}, strict {strict}, P2P {enabled})"
         );
         let identifiers = |rows: &[sea_orm::QueryResult]| -> Result<Vec<Uuid>> {
             let ids: Vec<_> = rows
@@ -78,9 +85,14 @@ impl Corpus {
 }
 
 pub(super) async fn exercise(db: &DatabaseConnection) -> Result<()> {
-    let tx = db.begin().await?;
-    tx.execute_unprepared(include_str!("direct_fixture.sql"))
+    // Indexing commits before an HTTP reader can see the new documents.
+    let writer = db.begin().await?;
+    writer
+        .execute_unprepared(include_str!("direct_fixture.sql"))
         .await?;
+    writer.commit().await?;
+
+    let tx = db.begin().await?;
     let prefix = tx
         .query_one(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -95,7 +107,8 @@ pub(super) async fn exercise(db: &DatabaseConnection) -> Result<()> {
     };
     corpus
         .check(&tx, 0, true, true, true, &[FIRST, SECOND])
-        .await?;
+        .await
+        .context("first direct page after indexing committed")?;
     corpus.check(&tx, 1, true, true, true, &[SECOND]).await?;
     corpus.check(&tx, 0, true, false, false, &[]).await?;
     for (label, change) in [
