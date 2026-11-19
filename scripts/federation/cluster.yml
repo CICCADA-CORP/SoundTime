@@ -19,6 +19,8 @@ services:
       DB_MAX_CONNECTIONS: "6"
     ports: ["127.0.0.1::8080"]
     networks: [site-a, ingress]
+    depends_on:
+      db-a: {condition: service_healthy}
   standby-a:
     image: soundtime-federation-backend:${COMPOSE_PROJECT_NAME}
     pull_policy: never
