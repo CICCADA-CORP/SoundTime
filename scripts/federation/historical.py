@@ -8,7 +8,7 @@ from urllib.error import URLError
 from urllib.parse import urlencode
 from uuid import UUID
 
-from historical_image import BUILD_MARKER, inspect_c
+from historical_image import inspect_c
 from scenario import (Instance, ScenarioError, counters, difference, inspect_credit_pair,
                       publish_credit_pair, require, wait_for, wav_fixture)
 
@@ -99,7 +99,8 @@ def run(args, report):
 
     b.subscribe(c, True)
     reply = b.call("/admin/p2p/peers/" + c.node_id + "/ping", method="POST")["message"]
-    require(c.node_id in reply and BUILD_MARKER in reply and "Pong" in reply,
+    version = report["historical_backend"]["pong_version"]
+    require(c.node_id in reply and f'version: Some("{version}")' in reply and "Pong" in reply,
             "The authenticated v1 Pong did not come from the archived build")
     # This independent old-to-new v1 Ping now requests B's catalogue.
     c.ping(b)
