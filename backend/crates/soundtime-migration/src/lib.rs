@@ -38,6 +38,7 @@ mod m20240101_000035_federated_publications;
 mod m20240101_000036_publication_withdrawals;
 mod m20240101_000037_catalog_search;
 mod m20240101_000038_received_inventories;
+mod m20240101_000039_cache_pins;
 
 pub struct Migrator;
 
@@ -98,6 +99,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000036_publication_withdrawals::Migration),
             Box::new(m20240101_000037_catalog_search::Migration),
             Box::new(m20240101_000038_received_inventories::Migration),
+            Box::new(m20240101_000039_cache_pins::Migration),
         ]
     }
 }

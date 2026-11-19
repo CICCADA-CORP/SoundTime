@@ -119,6 +119,7 @@ url_a=$(proxy_url a)
 url_b=$(proxy_url b)
 url_c=$(proxy_url c)
 stage=scenario
+export SOUNDTIME_TEST_COMPOSE_PROJECT="$project"
 python3 scripts/federation/scenario.py \
     --a "$url_a" --b "$url_b" --c "$url_c" \
     --mode "$mode" --report "$run_dir/report.json" 2>&1 | redact_audio_tokens | tee "$run_dir/scenario.log"

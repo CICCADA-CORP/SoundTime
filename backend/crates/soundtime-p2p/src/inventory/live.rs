@@ -25,6 +25,7 @@ pub(super) struct Catalogs {
     active: Mutex<HashMap<EndpointId, Weak<tokio::sync::Mutex<()>>>>,
     reads: Arc<Semaphore>,
     writes: Semaphore,
+    withdrawals: Arc<Semaphore>,
 }
 impl Catalogs {
     pub(super) fn new(endpoint: Endpoint) -> Self {
@@ -34,6 +35,7 @@ impl Catalogs {
             active: Default::default(),
             reads: Arc::new(Semaphore::new(8)),
             writes: Semaphore::new(16),
+            withdrawals: Arc::new(Semaphore::new(2)),
         }
     }
     pub(super) async fn capability(&self, id: EndpointId, capable: bool) {
@@ -122,6 +124,9 @@ impl P2pNode {
                 );
                 if subscribing {
                     self.subscribers.write().await.insert(peer);
+                    self.db.execute(Statement::from_sql_and_values(DbBackend::Postgres,
+                        "INSERT INTO federation_catalog_clients(node_id) VALUES($1) ON CONFLICT DO NOTHING",
+                        [peer.to_string().into()])).await?;
                 }
                 send.write_all(&bytes).await?;
                 send.finish()?;
@@ -382,8 +387,10 @@ impl P2pNode {
         if !self.versioned_catalog() {
             return;
         }
+        let Ok(permit)=self.catalogs.withdrawals.clone().try_acquire_owned() else {return};
         let node = self.clone();
         tokio::spawn(async move {
+            let _permit=permit;
             let Ok(Some(signed)) = source::withdrawal(
                 &node.db,
                 node.endpoint.secret_key(),
@@ -394,12 +401,18 @@ impl P2pNode {
             else {
                 return;
             };
-            let msg = P2pMessage::SignedWithdrawal(signed);
-            for peer in node.catalogs.capable.read().await.clone() {
-                if let Err(error) = node.send_message_to_peer(peer, &msg).await {
+            let msg = &P2pMessage::SignedWithdrawal(signed);
+            let peers=node.catalogs.capable.read().await.clone();
+            use futures_util::{stream, StreamExt};
+            let node=&node;
+            stream::iter(peers).for_each_concurrent(4, |peer| async move {
+                let known=node.db.query_one(Statement::from_sql_and_values(DbBackend::Postgres,
+                    "SELECT 1 FROM federation_catalog_clients WHERE node_id=$1", [peer.to_string().into()])).await;
+                if !matches!(known,Ok(Some(_))) {return}
+                if let Err(error) = node.send_message_to_peer(peer, msg).await {
                     tracing::debug!(%peer,%error,"signed withdrawal retained for catch-up");
                 }
-            }
+            }).await;
         });
     }
 }

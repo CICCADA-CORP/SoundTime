@@ -259,6 +259,7 @@ pub struct P2pConfig {
     pub explicit_catalog: bool,
     pub versioned_catalog: bool,
     pub range_streaming: bool,
+    pub cache_on_play:bool,
     /// Consent to redistribute this node's identity through peer exchange.
     pub share_identity: bool,
     /// Use the public n0 address lookups and relays.
@@ -286,6 +287,7 @@ impl Default for P2pConfig {
             explicit_catalog: false,
             versioned_catalog: false,
             range_streaming: false,
+            cache_on_play:false,
             share_identity: false,
             enable_public_discovery: true,
             enable_local_discovery: true,
@@ -345,6 +347,7 @@ impl P2pConfig {
             blobs_dir,
             secret_key_path,
             bind_port,
+            cache_on_play:std::env::var("P2P_CACHE_ON_PLAY").is_ok_and(|v|v.eq_ignore_ascii_case("true")),
             range_streaming: std::env::var("P2P_RANGE_STREAMING")
                 .is_ok_and(|v| v.eq_ignore_ascii_case("true")),
             versioned_catalog: std::env::var("P2P_VERSIONED_CATALOG")
@@ -1129,6 +1132,7 @@ impl P2pNode {
         }
     }
 
+    pub fn cache_on_play(&self)->bool{self._config.cache_on_play}
     pub async fn reserve_cached_version(
         &self,
         hash: Hash,
@@ -1811,6 +1815,12 @@ impl P2pNode {
     /// tracks into memory at once.
     pub async fn announce_all_tracks_to_peer(&self, peer_id: EndpointId) {
         if self.explicit_catalog() && !self.subscribers.read().await.contains(&peer_id) {
+            return;
+        }
+        if self.catalogs.supports(peer_id).await {
+            if let Err(error)=self.send_message_to_peer(peer_id,&P2pMessage::CatalogChanged).await {
+                debug!(%peer_id,%error,"catalogue change notification deferred");
+            }
             return;
         }
         let page_size = 500u64;
@@ -2803,7 +2813,7 @@ impl P2pNode {
                     conn.close(1u32.into(), b"blocked");
                     return Err(P2pError::PeerBlocked(peer_id));
                 }
-                if !policy.followed
+                if (!policy.followed || self.catalogs.supports(conn.remote_id()).await)
                     && matches!(
                         msg,
                         P2pMessage::CatalogSync(_)

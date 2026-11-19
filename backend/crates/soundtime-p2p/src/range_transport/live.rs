@@ -144,6 +144,10 @@ impl P2pNode {
         Ok(providers)
     }
 
+    pub async fn can_retain_version(&self,id:Uuid,req:&WindowRequest)->Result<bool>{
+        Ok(!self.providers(id,req).await?.is_empty())
+    }
+
     pub async fn verified_range(self: &Arc<Self>, id: Uuid, req: WindowRequest) -> Result<Bytes> {
         req.range()?;
         let transfer = self.ranges.flight(req.clone(), || {

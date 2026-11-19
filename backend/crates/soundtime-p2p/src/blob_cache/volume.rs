@@ -236,6 +236,11 @@ impl CacheVolume {
         self.evicted.subscribe()
     }
 
+    pub fn pinned(&self)->Vec<Hash>{
+        self.state.lock().expect("cache volume").entries.iter().filter(|(_,e)|e.pinned).map(|(h,_)|*h).collect()
+    }
+    pub fn pending(&self,hash:Hash)->bool{self.state.lock().expect("cache volume").pending.contains_key(&hash)}
+
     pub fn contains(&self, hash: Hash) -> bool {
         self.state
             .lock()
@@ -426,7 +431,9 @@ impl CacheWriter {
         Ok(())
     }
 
-    pub async fn commit(mut self, pin: bool) -> Result<()> {
+    pub async fn commit(self,pin:bool)->Result<()> { self.commit_guard(pin).await.map(drop) }
+
+    pub async fn commit_guard(mut self, pin: bool) -> Result<CacheRead> {
         ensure!(self.written == self.size, "incomplete cached file");
         let file = self.file.take().context("interrupted cache writer")?;
         let guard = Arc::clone(&self.stage);
@@ -469,14 +476,14 @@ impl CacheWriter {
                 Entry {
                     bytes,
                     touched: SystemTime::now(),
-                    readers: 0,
+                    readers: 1,
                     pinned: pin,
                 },
             );
             state.pending.remove(&guard.hash);
             drop(state);
             sync_dir(&guard.volume.root)?;
-            Ok::<_, anyhow::Error>(())
+            Ok::<_, anyhow::Error>(CacheRead{volume:Arc::clone(&guard.volume),hash:guard.hash})
         })
         .await?
     }

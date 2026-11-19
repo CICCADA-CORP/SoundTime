@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import select
 import subprocess
@@ -359,6 +360,99 @@ class BrowserSession:
             self.proc.stdout.close()
 
 
+def switch_origin(running):
+    """Operate only the disposable A process selected by the three-instance runner."""
+    action = "start" if running else "stop"
+    project = os.getenv("SOUNDTIME_TEST_COMPOSE_PROJECT", "")
+    native_driver = os.getenv("SOUNDTIME_TEST_FAULT_DRIVER")
+    if re.fullmatch(r"st-fed-[0-9a-f]{16}", project):
+        command = ["docker", "compose", "--env-file", "/dev/null", "--project-name", project,
+                   "--file", str(Path(__file__).with_name("compose.yml")), action]
+        if not running:
+            command += ["--timeout", "3"]
+        command.append("backend-a")
+    elif native_driver:
+        command = [native_driver, action, "A"]
+    else:
+        raise ScenarioError("Acceptance needs the disposable Compose project or a native fault driver")
+    attempt = subprocess.run(command, capture_output=True, text=True, timeout=45)
+    require(attempt.returncode == 0, f"Failed to {action} test backend A: {attempt.stderr[-400:]}")
+
+
+def origin_failure_cycle(nodes, tracks, audio, playlists, measurements):
+    a, b, c = nodes
+    remote_id = tracks["from_A_on_B"]
+    unrelated_id = tracks["independent_on_B"]
+    require(unrelated_id and unrelated_id != remote_id, "Missing independent publication on B")
+    identity = a.node_id
+
+    def saved(expected):
+        return all(any(row["track_id"] == remote_id and row["position"] == 1
+                       and row["availability"] == expected for row in b.positions(pid)) for pid in playlists)
+
+    def origin_ready():
+        try:
+            a.identify()
+            return True
+        except (ScenarioError, OSError):
+            return False
+
+    block = b.call("/admin/blocked-domains", method="POST", body={"domain": identity, "reason": "Federation fixture"})
+    try:
+        wait_for("banned origin removed from B's playable catalogue",
+                 lambda: not b.search("Fedaudio") and saved("unavailable_on_instance"))
+        before = counters(nodes)
+        status = probe_stream(b, remote_id, audio)
+        denied = difference(before, counters(nodes))
+        require(status in (403, 503) and no_audio(denied),
+                f"B read a banned origin or substituted another publication: {status}, {denied}")
+        before = counters(nodes)
+        fetch_range(b, unrelated_id, audio, 3 * 1024 * 1024, 65536)
+        independent = difference(before, counters(nodes))
+        require(independent["C"]["sent"] >= 65536 and independent["A"]["sent"] == 0,
+                "The independent publication did not stream from C while A was banned")
+        measurements["peer_ban"] = {"http": status, "denied": denied, "independent_from_C": independent}
+    finally:
+        b.call("/admin/blocked-domains/" + str(UUID(block["id"])), method="DELETE")
+
+    b.connect(a, follow=True)
+    wait_for("same UUID restored after lifting ban", lambda: b.search("Fedaudio") == remote_id and saved("playable"))
+    before = counters(nodes)
+    fetch_range(b, remote_id, audio, 2 * 1024 * 1024, 65536)
+    after = difference(before, counters(nodes))
+    require(after["A"]["sent"] >= 65536 and after["C"]["sent"] == 0, "Unblocked publication did not return to A")
+    measurements["peer_unban"] = after
+
+    switch_origin(False)
+    try:
+        # Actively confirm the failed authenticated connection. This doesn't unfollow
+        # the catalogue, allowing its UUID to be restored after the origin returns.
+        outcome = b.add_peer(a, follow=True)
+        require("ping failed" in outcome["message"], f"B still reached the stopped A: {outcome}")
+        status = probe_stream(b, remote_id, audio)
+        require(status == 503, f"A failed temporarily, expected a retryable 503, got {status}")
+        wait_for("confirmed outage reflected in saved playlists",
+                 lambda: not b.search("Fedaudio") and saved("temporarily_unavailable"))
+        require(b.search("Independentcopy") == unrelated_id, "C's independent title disappeared with A")
+        measurements["origin_outage"] = {"http": status, "saved_track": remote_id, "source_node": identity}
+    finally:
+        switch_origin(True)
+
+    wait_for("restarted A API and P2P identity", origin_ready, timeout=60)
+    require(a.node_id == identity, "Restart changed the publisher's cryptographic identity")
+    a.connect(b, follow=True)
+    b.connect(a, follow=True)
+    a.connect(c, follow=True)
+    c.connect(a, follow=True)
+    wait_for("restored original after peer restart",
+             lambda: b.search("Fedaudio") == remote_id and saved("playable"))
+    before = counters(nodes)
+    fetch_range(b, remote_id, audio, 3 * 1024 * 1024 + 65536, 65536)
+    resumed = difference(before, counters(nodes))
+    require(resumed["A"]["sent"] >= 65536 and resumed["C"]["sent"] == 0, "Restarted A did not serve its publication")
+    measurements["origin_reconnected"] = {"identity": a.node_id, "saved_track": remote_id, "p2p": resumed}
+
+
 def check(report, name, passed, milestone=1):
     report["checks"][name] = {"passed": bool(passed), "enforced": report["mode"] == "acceptance", "task": milestone}
 
@@ -515,6 +609,9 @@ def _exercise(args, report, stack):
     tracks["independent_on_B"] = independent
     check(report, "independent_publication_indexed_separately",
           independent not in (None, tracks["from_A_on_B"]), milestone=6)
+    if pilot:
+        origin_failure_cycle(nodes, tracks, main_audio, playlists, measurements)
+        check(report, "ban_outage_and_authenticated_recovery", True, milestone=11)
     measurements["browser_playback"] = browser.phase("play")
     for _, token in listeners:
         b.call("/history", method="POST", token=token,
