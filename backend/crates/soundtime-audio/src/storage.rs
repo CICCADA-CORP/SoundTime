@@ -1,3 +1,8 @@
+mod analysis;
+mod media;
+pub use analysis::AnalysisFile;
+pub use media::{MediaReader, OpenedMedia};
+
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -29,6 +34,16 @@ pub trait StorageBackend: Send + Sync {
     ) -> Result<String, StorageError>;
 
     fn full_path(&self, relative_path: &str) -> PathBuf;
+
+    async fn open_media(&self, relative_path: &str) -> Result<OpenedMedia, StorageError> {
+        validate_storage_path(relative_path)?;
+        OpenedMedia::local(&self.full_path(relative_path)).await
+    }
+
+    async fn prepare_analysis(&self, relative_path: &str) -> Result<AnalysisFile, StorageError> {
+        let hash = self.hash_file(relative_path).await?;
+        Ok(AnalysisFile::local(self.full_path(relative_path), hash))
+    }
 
     async fn file_exists(&self, relative_path: &str) -> Result<bool, StorageError>;
 
@@ -360,22 +375,21 @@ impl StorageBackend for S3Storage {
             .await
             .map_err(|e| StorageError::S3(format!("PutObject failed: {e}")))?;
 
-        // Cache locally for streaming
-        let cache_file = self.cache_path.join(&final_relative);
-        if let Some(parent) = cache_file.parent() {
-            if let Err(e) = fs::create_dir_all(parent).await {
-                tracing::warn!(error = %e, "failed to create cache directory for track");
-            }
-        }
-        if let Err(e) = fs::write(&cache_file, data).await {
-            tracing::warn!(error = %e, "failed to write track to local cache");
-        }
-
         Ok(final_relative)
     }
 
     fn full_path(&self, relative_path: &str) -> PathBuf {
         self.cache_path.join(relative_path)
+    }
+
+    async fn open_media(&self, relative_path: &str) -> Result<OpenedMedia, StorageError> {
+        validate_storage_path(relative_path)?;
+        OpenedMedia::object(&self.client, &self.bucket, self.s3_key(relative_path)).await
+    }
+
+    async fn prepare_analysis(&self, relative_path: &str) -> Result<AnalysisFile, StorageError> {
+        let object = self.open_media(relative_path).await?;
+        AnalysisFile::stage(object, &self.cache_path, relative_path).await
     }
 
     async fn file_exists(&self, relative_path: &str) -> Result<bool, StorageError> {
@@ -450,11 +464,6 @@ impl StorageBackend for S3Storage {
 
     async fn read_file(&self, relative_path: &str) -> Result<Vec<u8>, StorageError> {
         validate_storage_path(relative_path)?;
-        let cache_file = self.cache_path.join(relative_path);
-        if cache_file.exists() {
-            return fs::read(&cache_file).await.map_err(StorageError::Io);
-        }
-
         let key = self.s3_key(relative_path);
         let resp = self
             .client
@@ -473,60 +482,21 @@ impl StorageBackend for S3Storage {
             .into_bytes()
             .to_vec();
 
-        if let Some(parent) = cache_file.parent() {
-            if let Err(e) = fs::create_dir_all(parent).await {
-                tracing::warn!(error = %e, "failed to create cache directory for read file");
-            }
-        }
-        if let Err(e) = fs::write(&cache_file, &data).await {
-            tracing::warn!(error = %e, "failed to write read file to local cache");
-        }
-
         Ok(data)
     }
 
     async fn hash_file(&self, relative_path: &str) -> Result<String, StorageError> {
         validate_storage_path(relative_path)?;
-        // The cache is not authoritative: an administrator may replace an object
-        // without using SoundTime. Hash the current S3 object and refresh the copy
-        // used for metadata extraction without exposing a partial download.
-        use tokio::io::AsyncWriteExt;
-        let mut body = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(self.s3_key(relative_path))
-            .send()
-            .await
-            .map_err(|e| StorageError::S3(format!("GetObject failed: {e}")))?
-            .body;
-        let target = self.full_path(relative_path);
-        let parent = target
-            .parent()
-            .ok_or_else(|| StorageError::Config("Invalid cache path".into()))?;
-        fs::create_dir_all(parent).await?;
-        let temporary = parent.join(format!(".soundtime-{}.tmp", Uuid::new_v4()));
-        let result = async {
-            let mut file = fs::File::create_new(&temporary).await?;
-            let mut digest = Sha256::new();
-            while let Some(bytes) = body
-                .try_next()
-                .await
-                .map_err(|e| StorageError::S3(format!("Read body: {e}")))?
-            {
-                digest.update(&bytes);
-                file.write_all(&bytes).await?;
+        let object = self.open_media(relative_path).await?;
+        let mut digest = Sha256::new();
+        let size = object.size();
+        if size > 0 {
+            let mut reader = object.range(0, size).await?;
+            while let Some(chunk) = reader.next_chunk().await? {
+                digest.update(chunk);
             }
-            file.flush().await?;
-            drop(file);
-            fs::rename(&temporary, target).await?;
-            Ok(format!("{:x}", digest.finalize()))
         }
-        .await;
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary).await;
-        }
-        result
+        Ok(format!("{:x}", digest.finalize()))
     }
 
     async fn list_files(&self, prefix: &str) -> Result<Vec<String>, StorageError> {

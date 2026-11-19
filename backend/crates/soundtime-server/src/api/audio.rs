@@ -299,23 +299,31 @@ pub async fn stream_track(
         return media_response(std::io::Cursor::new(data), size, content_type, range, grant).await;
     }
 
-    let path = soundtime_audio::ensure_local_file(state.storage.as_ref(), file_path_str)
+    let original = grant
+        .during(state.storage.open_media(file_path_str))
         .await
-        .map_err(|_| stream_error(StatusCode::SERVICE_UNAVAILABLE, "Audio source unavailable"))?;
-    let file = tokio::fs::File::open(path)
+        .map_err(|_| stream_error(StatusCode::GONE, "Playback authorization revoked"))?
+        .map_err(|error| {
+            tracing::warn!(%id, %error, "could not open audio original");
+            stream_error(StatusCode::SERVICE_UNAVAILABLE, "Audio source unavailable")
+        })?;
+    let (status, headers, start, length) = media_headers(original.size(), content_type, range);
+    if length == 0 {
+        return Ok((status, headers, Body::empty()));
+    }
+    let reader = grant
+        .during(original.range(start, length))
         .await
-        .map_err(|_| stream_error(StatusCode::SERVICE_UNAVAILABLE, "Cannot open audio file"))?;
-    let size = file
-        .metadata()
-        .await
-        .map_err(|_| {
-            stream_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Cannot read audio file size",
-            )
-        })?
-        .len();
-    media_response(file, size, content_type, range, grant).await
+        .map_err(|_| stream_error(StatusCode::GONE, "Playback authorization revoked"))?
+        .map_err(|error| {
+            tracing::warn!(%id,%error,"could not open original range");
+            stream_error(StatusCode::SERVICE_UNAVAILABLE, "Audio version unavailable")
+        })?;
+    let chunks = stream::try_unfold((reader, grant), |(mut reader, grant)| async move {
+        let chunk = grant.during(reader.next_chunk()).await??;
+        Ok::<_, std::io::Error>(chunk.map(|data| (data, (reader, grant))))
+    });
+    Ok((status, headers, Body::from_stream(chunks)))
 }
 
 type StreamError = (StatusCode, Json<serde_json::Value>);
@@ -405,6 +413,7 @@ async fn remote_media_response(
     if length == 0 {
         return Ok((status, headers, Body::empty()));
     }
+    let cache_guard = node.blob_cache().read_guard(manifest.hash);
     let end = start + length;
     let next_window = move |(offset, node, grant, manifest): (
         u64,
@@ -448,6 +457,11 @@ async fn remote_media_response(
         })?;
     let body = stream::once(async move { first_grant.during(std::future::ready(first)).await })
         .chain(chunks);
+    // The body owns this lease until cancellation or EOF, including gaps between windows.
+    let body = body.map(move |chunk| {
+        let _keep = &cache_guard;
+        chunk
+    });
     Ok((status, headers, Body::from_stream(body)))
 }
 

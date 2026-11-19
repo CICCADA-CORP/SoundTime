@@ -34,6 +34,9 @@ async-trait = "0.1"
 soundtime-db = { path = "../soundtime-db" }
 soundtime-audio = { path = "../soundtime-audio" }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }

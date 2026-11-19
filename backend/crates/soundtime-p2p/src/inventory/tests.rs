@@ -17,6 +17,7 @@ fn release(key: &SecretKey, publication: Uuid, revision: i64) -> Result<Entry> {
                     duration_ms: 250,
                     size: 8000,
                     hash: "b1".repeat(32),
+                    ..Default::default()
                 }),
             },
         )?,

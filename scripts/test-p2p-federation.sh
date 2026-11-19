@@ -17,12 +17,12 @@ fi
 
 mode=$1
 export FEDERATION_EXPLICIT_A=false FEDERATION_EXPLICIT_B=false FEDERATION_EXPLICIT_C=false FEDERATION_RANGES=false
-export FEDERATION_CACHE_SIZE=1GB
+export FEDERATION_CACHE_SIZE=1GB FEDERATION_VERSIONED=false
 if [[ $mode != baseline ]]; then
     export FEDERATION_EXPLICIT_A=true FEDERATION_EXPLICIT_B=true
 fi
 if [[ $mode == acceptance ]]; then
-    export FEDERATION_EXPLICIT_C=true FEDERATION_RANGES=true FEDERATION_CACHE_SIZE=0
+    export FEDERATION_EXPLICIT_C=true FEDERATION_RANGES=true FEDERATION_CACHE_SIZE=0 FEDERATION_VERSIONED=true
 fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"

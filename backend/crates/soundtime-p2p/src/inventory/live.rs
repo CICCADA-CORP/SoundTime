@@ -1,0 +1,405 @@
+//! Negotiated, pull-based catalogue RPC. No audio or cover store is accessible here.
+use super::{ConnectionPool, P2pMessage, P2pNode};
+use crate::inventory::{
+    self,
+    source::{self, Request, Response},
+    Page,
+};
+use anyhow::{bail, ensure, Context, Result};
+use iroh::{endpoint::Connection, Endpoint, EndpointId};
+use sea_orm::{ConnectionTrait, DbBackend, Statement};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{atomic::Ordering, Arc, Mutex, Weak},
+    time::Duration,
+};
+use tokio::sync::{RwLock, Semaphore};
+use uuid::Uuid;
+
+const FRAME: usize = inventory::PAGE_BYTES + 4096;
+const RPC_TIMEOUT: Duration = Duration::from_secs(15);
+const PAGE_BUDGET: usize = 16;
+pub(super) struct Catalogs {
+    pool: ConnectionPool,
+    capable: RwLock<HashSet<EndpointId>>,
+    active: Mutex<HashMap<EndpointId, Weak<tokio::sync::Mutex<()>>>>,
+    reads: Arc<Semaphore>,
+    writes: Semaphore,
+}
+impl Catalogs {
+    pub(super) fn new(endpoint: Endpoint) -> Self {
+        Self {
+            pool: ConnectionPool::new(endpoint, inventory::ALPN),
+            capable: Default::default(),
+            active: Default::default(),
+            reads: Arc::new(Semaphore::new(8)),
+            writes: Semaphore::new(16),
+        }
+    }
+    pub(super) async fn capability(&self, id: EndpointId, capable: bool) {
+        let mut peers = self.capable.write().await;
+        if capable {
+            peers.insert(id);
+        } else {
+            peers.remove(&id);
+        }
+    }
+    pub(super) async fn supports(&self, id: EndpointId) -> bool {
+        self.capable.read().await.contains(&id)
+    }
+    fn peer_lock(&self, id: EndpointId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut active = self.active.lock().expect("catalogue jobs");
+        active.retain(|_, job| job.strong_count() > 0);
+        if let Some(job) = active.get(&id).and_then(Weak::upgrade) {
+            return job;
+        }
+        let job = Arc::new(tokio::sync::Mutex::new(()));
+        active.insert(id, Arc::downgrade(&job));
+        job
+    }
+}
+
+impl P2pNode {
+    pub fn versioned_catalog(&self) -> bool {
+        self._config.versioned_catalog && self.explicit_catalog()
+    }
+
+    async fn catalog_rpc(&self, peer: EndpointId, request: Request) -> Result<Response> {
+        let policy = crate::peer_policy::get(&self.db, &peer.to_string()).await?;
+        ensure!(
+            !policy.banned && (policy.followed || matches!(request, Request::Withdrawal { .. })),
+            "catalogue provider denied"
+        );
+        let operation = async {
+            let conn = self.catalogs.pool.get_connection(peer).await?;
+            let (mut send, mut recv) = conn.open_bi().await?;
+            send.write_all(&serde_json::to_vec(&request)?).await?;
+            send.finish()?;
+            let bytes = recv.read_to_end(FRAME).await?;
+            Ok::<_, anyhow::Error>(serde_json::from_slice(&bytes)?)
+        };
+        match tokio::time::timeout(RPC_TIMEOUT, operation).await {
+            Ok(Ok(resp)) => Ok(resp),
+            error => {
+                self.catalogs.pool.invalidate(&peer).await;
+                error.context("catalogue RPC timed out")?
+            }
+        }
+    }
+
+    pub(super) async fn serve_catalog(&self, conn: Connection) -> Result<()> {
+        ensure!(self.versioned_catalog(), "catalogue protocol disabled");
+        let peer = conn.remote_id();
+        while let Ok(Ok((mut send, mut recv))) =
+            tokio::time::timeout(Duration::from_secs(60), conn.accept_bi()).await
+        {
+            let _permit = self
+                .catalogs
+                .writes
+                .try_acquire()
+                .context("catalogue server at capacity")?;
+            tokio::time::timeout(RPC_TIMEOUT, async {
+                ensure!(
+                    !crate::peer_policy::get(&self.db, &peer.to_string())
+                        .await?
+                        .banned,
+                    "catalogue reader blocked"
+                );
+                let request: Request = serde_json::from_slice(&recv.read_to_end(512).await?)?;
+                let subscribing = matches!(request, Request::Head);
+                let response =
+                    source::answer(&self.db, self.endpoint.secret_key(), request).await?;
+                let bytes = serde_json::to_vec(&response)?;
+                ensure!(
+                    bytes.len() <= FRAME,
+                    "catalogue response exceeds frame bound"
+                );
+                ensure!(
+                    !crate::peer_policy::get(&self.db, &peer.to_string())
+                        .await?
+                        .banned,
+                    "catalogue reader blocked"
+                );
+                if subscribing {
+                    self.subscribers.write().await.insert(peer);
+                }
+                send.write_all(&bytes).await?;
+                send.finish()?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await??;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn schedule_catalog_pull(self: &Arc<Self>, peer: EndpointId) {
+        let lock = self.catalogs.peer_lock(peer);
+        let Ok(guard) = lock.try_lock_owned() else {
+            return;
+        };
+        let Ok(permit) = self.catalogs.reads.clone().try_acquire_owned() else {
+            return;
+        };
+        let node = Arc::clone(self);
+        tokio::spawn(async move {
+            let (_permit, _guard) = (permit, guard);
+            if let Err(error) = node.pull_pages(peer).await {
+                tracing::debug!(%peer,%error,"catalogue sync deferred");
+            }
+        });
+    }
+
+    pub(super) async fn pull_catalog(&self, peer: EndpointId) -> Result<()> {
+        let lock = self.catalogs.peer_lock(peer);
+        let _guard = lock.lock_owned().await;
+        let _permit = self.catalogs.reads.acquire().await?;
+        self.pull_pages(peer).await
+    }
+
+    async fn pull_pages(&self, peer: EndpointId) -> Result<()> {
+        let Response::Head(head) = self.catalog_rpc(peer, Request::Head).await? else {
+            bail!("missing catalogue summary")
+        };
+        ensure!(head >= 0, "invalid catalogue summary");
+        let row=self.db.query_one(Statement::from_sql_and_values(DbBackend::Postgres,
+            "SELECT p.applied_cursor,i.snapshot,i.cut,i.complete,i.next_page,i.last_publication,
+                    i.started_at<now()-interval '6 hours' AS refresh
+             FROM federation_peer_policies p LEFT JOIN federation_inventories i ON i.provider=p.node_id
+             WHERE p.node_id=$1 AND p.is_followed AND NOT p.is_banned",[peer.to_string().into()])).await?.context("subscription ended")?;
+        let previous: Option<Uuid> = row.try_get("", "snapshot")?;
+        let complete = row
+            .try_get::<Option<bool>>("", "complete")?
+            .unwrap_or(false);
+        let renew = row.try_get::<Option<bool>>("", "refresh")?.unwrap_or(false);
+        let mut cursor: i64 = row.try_get("", "applied_cursor")?;
+        ensure!(cursor <= head, "remote journal moved backwards");
+        if complete && !renew {
+            for _ in 0..PAGE_BUDGET {
+                if cursor == head {
+                    break;
+                }
+                let Response::Changes(changes) = self
+                    .catalog_rpc(
+                        peer,
+                        Request::Changes {
+                            cut: head,
+                            after: cursor,
+                        },
+                    )
+                    .await?
+                else {
+                    bail!("expected changes")
+                };
+                ensure!(
+                    !changes.is_empty() && changes.len() <= inventory::PAGE_ENTRIES,
+                    "missing or oversized change batch"
+                );
+                self.catalog_entries_received
+                    .fetch_add(changes.len() as u64, Ordering::Relaxed);
+                for change in changes {
+                    ensure!(
+                        cursor.checked_add(1) == Some(change.cursor) && change.cursor <= head,
+                        "noncontiguous changes"
+                    );
+                    inventory::apply_delta(&self.db, peer, &serde_json::to_vec(&change)?).await?;
+                    cursor = change.cursor;
+                }
+            }
+            return Ok(());
+        }
+        let (snapshot, cut, mut number, mut after) = match previous.filter(|_| !complete) {
+            Some(snap) => (
+                snap,
+                row.try_get("", "cut")?,
+                row.try_get("", "next_page")?,
+                row.try_get("", "last_publication")?,
+            ),
+            None => {
+                let snap = Uuid::new_v4();
+                inventory::begin(&self.db, peer, snap, head).await?;
+                (snap, head, 0, None)
+            }
+        };
+        for _ in 0..PAGE_BUDGET {
+            let Response::Snapshot { entries, done } = self
+                .catalog_rpc(peer, Request::Snapshot { cut, after })
+                .await?
+            else {
+                bail!("expected snapshot page")
+            };
+            ensure!(
+                entries.len() <= inventory::PAGE_ENTRIES && (done || !entries.is_empty()),
+                "invalid snapshot page"
+            );
+            self.catalog_entries_received
+                .fetch_add(entries.len() as u64, Ordering::Relaxed);
+            for entry in &entries {
+                let id = entry.publication.manifest.publication;
+                ensure!(
+                    entry.publication.manifest.origin == peer
+                        && after.is_none_or(|older| id > older),
+                    "invalid origin catalogue order"
+                );
+                after = Some(id);
+            }
+            let page = Page {
+                snapshot,
+                cut,
+                number,
+                last: done,
+                entries,
+            };
+            inventory::apply_page(&self.db, peer, &serde_json::to_vec(&page)?).await?;
+            if done {
+                break;
+            }
+            number += 1;
+        }
+        Ok(())
+    }
+
+    pub(super) fn start_catalog_worker(self: &Arc<Self>) {
+        let node = self.clone();
+        let mut shutdown = node.shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let worker = async {
+                loop {
+                    let ready = node
+                        .db
+                        .query_one(Statement::from_string(
+                            DbBackend::Postgres,
+                            "SELECT federation_seed_events(128) AS ready",
+                        ))
+                        .await;
+                    match ready {
+                        Ok(Some(row)) if matches!(row.try_get::<bool>("", "ready"), Ok(true)) => {
+                            break
+                        }
+                        Err(e) => tracing::warn!(%e,"historical journal backfill deferred"),
+                        _ => {}
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                let mut after = String::new();
+                let mut last_retained = None;
+                loop {
+                    tokio::time::sleep(Duration::from_secs(15)).await;
+                    if let Ok(batch) = crate::peer_policy::followed_after(&node.db, &after).await {
+                        for id in &batch {
+                            if let Ok(peer) = id.parse::<EndpointId>() {
+                                if node.catalogs.supports(peer).await
+                                    && node
+                                        .registry
+                                        .get_peer(id)
+                                        .await
+                                        .is_some_and(|p| p.is_online)
+                                {
+                                    node.schedule_catalog_pull(peer).await;
+                                }
+                            }
+                        }
+                        after = if batch.len() == 8 {
+                            batch.last().cloned().unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                    }
+                    if let Err(error) = node.check_retained(&mut last_retained).await {
+                        tracing::debug!(%error,"withdrawal catch-up deferred");
+                    }
+                }
+            };
+            tokio::select! {_=worker=>{},_=shutdown.changed()=>{}}
+        });
+    }
+
+    /// Check a bounded page of retained references through an origin or a known
+    /// provider. Never broadcast listeners' references to unrelated peers.
+    async fn check_retained(&self, after: &mut Option<Uuid>) -> Result<()> {
+        let rows=self.db.query_all(Statement::from_sql_and_values(DbBackend::Postgres,
+            "SELECT p.track_id,p.origin_publication_id,c.node_id FROM track_publications p
+             JOIN federation_catalogs c ON c.id=p.catalog_id WHERE NOT c.is_local AND p.state='active'
+             AND ($1::uuid IS NULL OR p.track_id>$1) AND (EXISTS(SELECT FROM favorites f WHERE f.track_id=p.track_id)
+                OR EXISTS(SELECT FROM playlist_tracks pt WHERE pt.track_id=p.track_id)
+                OR EXISTS(SELECT FROM library_tracks lt WHERE lt.track_id=p.track_id))
+             ORDER BY p.track_id LIMIT 4", [(*after).into()])).await?;
+        for row in &rows {
+            let track: Uuid = row.try_get("", "track_id")?;
+            *after = Some(track);
+            let origin: EndpointId = row.try_get::<String>("", "node_id")?.parse()?;
+            let publication = row.try_get("", "origin_publication_id")?;
+            let others=self.db.query_all(Statement::from_sql_and_values(DbBackend::Postgres,
+                "SELECT DISTINCT o.provider_node_id FROM publication_offers o JOIN federation_peer_policies p ON p.node_id=o.provider_node_id
+                 WHERE o.track_id=$1 AND o.provider_node_id<>$2 AND NOT p.is_banned
+                 AND NOT EXISTS(SELECT FROM blocked_domains b WHERE b.domain=p.node_id)
+                 ORDER BY o.provider_node_id LIMIT 2", [track.into(),origin.to_string().into()])).await?;
+            let mut providers = vec![origin];
+            for other in others {
+                if let Ok(id) = other.try_get::<String>("", "provider_node_id")?.parse() {
+                    providers.push(id);
+                }
+            }
+            for peer in providers {
+                if !self.catalogs.supports(peer).await
+                    || !self
+                        .registry
+                        .get_peer(&peer.to_string())
+                        .await
+                        .is_some_and(|p| p.is_online)
+                {
+                    continue;
+                }
+                if let Ok(Response::Withdrawal(Some(proof))) = self
+                    .catalog_rpc(
+                        peer,
+                        Request::Withdrawal {
+                            origin,
+                            publication,
+                        },
+                    )
+                    .await
+                {
+                    ensure!(
+                        proof.manifest.origin == origin
+                            && proof.manifest.publication == publication,
+                        "unexpected withdrawal subject"
+                    );
+                    inventory::apply_withdrawal(&self.db, peer, &serde_json::to_vec(&proof)?)
+                        .await?;
+                    break;
+                }
+            }
+        }
+        if rows.len() < 4 {
+            *after = None;
+        }
+        Ok(())
+    }
+
+    /// Deliver the authority's signed decision to known version-aware neighbours.
+    /// The journal retains it across shutdown or delivery failure.
+    pub async fn announce_withdrawal(self: &Arc<Self>, publication: Uuid) {
+        if !self.versioned_catalog() {
+            return;
+        }
+        let node = self.clone();
+        tokio::spawn(async move {
+            let Ok(Some(signed)) = source::withdrawal(
+                &node.db,
+                node.endpoint.secret_key(),
+                node.node_id(),
+                publication,
+            )
+            .await
+            else {
+                return;
+            };
+            let msg = P2pMessage::SignedWithdrawal(signed);
+            for peer in node.catalogs.capable.read().await.clone() {
+                if let Err(error) = node.send_message_to_peer(peer, &msg).await {
+                    tracing::debug!(%peer,%error,"signed withdrawal retained for catch-up");
+                }
+            }
+        });
+    }
+}

@@ -19,6 +19,11 @@
   let confirmedSources = $state<string[]>([]);
   const taskProgress = $derived(section.progress);
 
+  const cacheRows = [
+    "maximum_bytes", "evictable_bytes", "pinned_bytes", "reserved_bytes",
+    "legacy_and_unclassified_bytes", "available_bytes", "reserve_free_bytes",
+  ] as const;
+
   function formatStorageSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} ${t('common.bytes')}`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} ${t('common.kilobytes')}`;
@@ -62,6 +67,16 @@
           <p class="text-xl font-bold mt-1 text-green-700">{storageStatus.remote_available_count}</p>
         </div>
       </div>
+      {#if storageStatus.cache}
+        <dl class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {#each cacheRows as key}
+            <div>
+              <dt class="text-xs text-[hsl(var(--muted-foreground))]">{t(`admin.cache.${key}`)}</dt>
+              <dd class="font-medium">{formatStorageSize(storageStatus.cache[key])}</dd>
+            </div>
+          {/each}
+        </dl>
+      {/if}
       <div class="mt-4 p-4 bg-[hsl(var(--secondary))] rounded-lg">
         <h3 class="text-sm font-medium mb-2">{t('admin.storage.configuration')}</h3>
         <p class="text-xs text-[hsl(var(--muted-foreground))]">

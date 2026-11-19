@@ -19,7 +19,7 @@ impl MigrationTrait for Migration {
             .execute_unprepared(
             "DROP FUNCTION federation_import_signed(text,uuid,bigint,jsonb,jsonb),federation_seed_events(integer);
              DROP INDEX federation_event_snapshot;
-             DROP TABLE federation_event_bootstrap;
+             DROP TABLE federation_event_bootstrap,federation_catalog_clients;
              DROP TABLE federation_inventory_pages, federation_inventory_seen,
              federation_inventories, federation_signed_publications;",
             )

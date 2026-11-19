@@ -20,6 +20,9 @@ INSERT INTO federation_assets(content_hash,file_size) SELECT hash,1024 FROM sear
 UPDATE publication_versions v SET content_hash=f.hash FROM search_fixture f WHERE v.track_id=f.id;
 INSERT INTO publication_offers(track_id,revision,provider_node_id,expires_at)
 SELECT id,1,provider,now()+interval '1 day' FROM search_fixture;
+-- A preloaded production catalogue has passed through autovacuum. Flush the
+-- bulk GIN pending list before inspecting the steady-state query plan.
+SELECT gin_clean_pending_list('federation_search_document_gin');
 ANALYZE federation_search_documents;
 ANALYZE tracks;
 ANALYZE track_publications;

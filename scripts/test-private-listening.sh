@@ -32,8 +32,19 @@ for ((i=0; i<90; i++)); do
   sleep 2
 done
 ready || { echo "The private listening instance did not become ready." >&2; exit 1; }
+verify_image() {
+  local service=$1 image=$2 expected running
+  expected=$(docker image inspect --format '{{.Id}}' "$image")
+  running=$(docker inspect --format '{{.Image}}' "$("${compose[@]}" ps -q "$service")")
+  if [[ "$running" != "$expected" ]]; then
+    echo "$service is running $running, expected $expected ($image)" >&2
+    return 1
+  fi
+  echo "Verified running $service image $image ($running)"
+}
+verify_image backend "$QA_BACKEND_IMAGE"
+verify_image frontend "$QA_FRONTEND_IMAGE"
 node "$root/scripts/private-listening/seed.mjs" "$CYPRESS_BASE_URL" "$SOUNDTIME_E2E_FIXTURE"
-docker image inspect --format '{{.Id}}' "$QA_BACKEND_IMAGE" "$QA_FRONTEND_IMAGE"
 cd "$root/frontend"
 npm run cy:run -- "$@"
 
@@ -41,7 +52,6 @@ if [[ -n ${QA_ROLLBACK_FRONTEND_IMAGE:-} ]]; then
   candidate=$QA_FRONTEND_IMAGE
   for release in "$QA_ROLLBACK_FRONTEND_IMAGE" "$candidate"; do
     export QA_FRONTEND_IMAGE="$release"
-    expected=$(docker image inspect --format '{{.Id}}' "$release")
     "${compose[@]}" up -d --no-build --no-deps --force-recreate frontend
     "${compose[@]}" exec -T nginx nginx -s reload
     for ((i=0; i<30; i++)); do
@@ -49,9 +59,7 @@ if [[ -n ${QA_ROLLBACK_FRONTEND_IMAGE:-} ]]; then
       sleep 1
     done
     ready
-    running=$(docker inspect --format '{{.Image}}' "$("${compose[@]}" ps -q frontend)")
-    [[ "$expected" == "$running" ]]
-    echo "Checking private playback on frontend $running"
+    verify_image frontend "$release"
     npm run cy:run -- --spec cypress/private/listening.cy.ts
   done
 fi

@@ -23,9 +23,12 @@ impl Change {
             if let Some(node) = state
                 .p2p
                 .as_ref()
-                .and_then(|p| p.downcast_ref::<soundtime_p2p::P2pNode>())
+                .and_then(|p| p.clone().downcast::<soundtime_p2p::P2pNode>().ok())
             {
                 node.search_index().mark_dirty().await;
+                if self.local {
+                    node.announce_withdrawal(self.id).await;
+                }
             }
             if self.local {
                 if let Some(registry) = crate::api::get_plugin_registry(state) {

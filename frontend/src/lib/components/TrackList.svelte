@@ -133,7 +133,7 @@
     <button role="menuitem" disabled={!canPlay(track)} onclick={() => { getRadioStore().startRadio("track", { seedId: track.id, label: track.title }); closeMenu(true); }}><Radio size={16} />{t("radio.startFromTrack")}</button>
     <button role="menuitem" disabled={!canPlay(track)} onclick={() => { getRadioStore().startRadio("similar", { seedId: track.id, label: track.title }); closeMenu(true); }}><Sparkles size={16} />{t("radio.playSimilar")}</button>
     {#if auth.isAuthenticated}<button role="menuitem" onclick={() => openDialog("playlist")}><ListPlus size={16} />{t("track.addToPlaylist")}</button>{/if}
-    {#if onremove}<button role="menuitem" onclick={() => { closeMenu(true); onremove?.(track.id); }}><ListMinus size={16} />{t("playlists.removeTrack")}</button>{/if}
+    {#if onremove}<button role="menuitem" onclick={() => { const id = track.id; closeMenu(true); onremove?.(id); }}><ListMinus size={16} />{t("playlists.removeTrack")}</button>{/if}
     <button role="menuitem" onclick={() => openDialog("credits")}><CircleHelp size={16} />{t("track.viewCredits")}</button>
     <button role="menuitem" onclick={() => openDialog("share")}><Share2 size={16} />{t("track.share")}</button>
     {#if auth.isAuthenticated}<button role="menuitem" class="text-destructive" onclick={() => openDialog("report")}><Flag size={16} />{t("track.report")}</button>{/if}

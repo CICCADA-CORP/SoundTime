@@ -23,6 +23,7 @@ RUN mkdir -p crates/soundtime-server/src && echo "fn main() {}" > crates/soundti
     && mkdir -p crates/soundtime-plugin/src && echo "" > crates/soundtime-plugin/src/lib.rs
 
 # 3. Build only dependencies (this layer is cached unless Cargo.toml/lock changes)
+ARG CARGO_BUILD_JOBS
 RUN cargo build --locked --release -p soundtime-server --features redis
 RUN rm -rf crates/*/src
 

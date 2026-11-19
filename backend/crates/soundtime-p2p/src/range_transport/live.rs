@@ -177,9 +177,7 @@ impl P2pNode {
                             "offer expired"
                         );
                         let window = if peer == self.node_id() {
-                            let encoded =
-                                range_transport::encode_window(&self.blob_store, req.clone())
-                                    .await?;
+                            let encoded = self.encode_range(req).await?;
                             range_transport::decode_window(req, &encoded)?
                         } else {
                             let conn = self.ranges.pool.get_connection(peer).await?;
@@ -253,6 +251,13 @@ impl P2pNode {
         Ok(())
     }
 
+    async fn encode_range(&self, req: &WindowRequest) -> Result<Vec<u8>> {
+        if let Some(bytes) = self.blob_cache.encode(req).await? {
+            return Ok(bytes);
+        }
+        range_transport::encode_window(&self.blob_store, req.clone()).await
+    }
+
     async fn local_publication(&self, req: &WindowRequest) -> Result<Uuid> {
         let row = self.db.query_one(Statement::from_sql_and_values(DbBackend::Postgres,
             "SELECT p.track_id FROM track_publications p JOIN federation_catalogs c ON c.id=p.catalog_id
@@ -288,7 +293,7 @@ impl P2pNode {
                 result = track.during(async {
                     ensure!(!crate::peer_policy::get(&self.db,&peer.to_string()).await?.banned, "peer banned");
                     ensure!(!self.explicit_catalog() || self.subscribers.read().await.contains(&peer), "peer has no subscription");
-                    let bytes = range_transport::encode_window(&self.blob_store,req.clone()).await?;
+                    let bytes = self.encode_range(&req).await?;
                     self.local_publication(&req).await?;
                     send.write_all(&bytes).await?;
                     send.finish()?;

@@ -914,6 +914,7 @@ pub struct StorageStatusResponse {
     pub storage_path_or_bucket: String,
     pub remote_track_count: u64,
     pub remote_available_count: u64,
+    pub cache: Option<soundtime_p2p::blob_cache::CacheUsage>,
 }
 
 /// GET /api/admin/storage/status
@@ -957,7 +958,19 @@ pub async fn storage_status(
         std::env::var("AUDIO_STORAGE_PATH").unwrap_or_else(|_| "./data/music".to_string())
     };
 
+    let cache = if let Some(node) = get_p2p_node(&state) {
+        Some(node.blob_cache().usage().map_err(|e| {
+            tracing::error!(%e,"could not inspect cache volume");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error":"Cache volume unavailable"})),
+            )
+        })?)
+    } else {
+        None
+    };
     Ok(Json(StorageStatusResponse {
+        cache,
         backend: backend_type,
         total_tracks,
         total_size_bytes: total_size,
@@ -1236,6 +1249,7 @@ mod tests {
     #[test]
     fn test_serialize_storage_status_response() {
         let resp = StorageStatusResponse {
+            cache: None,
             backend: "local".to_string(),
             total_tracks: 50,
             total_size_bytes: 1_000_000,

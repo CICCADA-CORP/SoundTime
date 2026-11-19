@@ -469,7 +469,18 @@ export interface TosResponse {
 
 // ─── Storage Types ──────────────────────────────────────────────────
 
+export interface CacheUsage {
+  maximum_bytes: number;
+  reserve_free_bytes: number;
+  available_bytes: number;
+  evictable_bytes: number;
+  pinned_bytes: number;
+  reserved_bytes: number;
+  legacy_and_unclassified_bytes: number;
+}
+
 export interface StorageStatus {
+  cache?: CacheUsage | null;
   backend: string;
   total_tracks: number;
   total_size_bytes: number;

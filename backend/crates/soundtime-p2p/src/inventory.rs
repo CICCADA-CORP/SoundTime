@@ -15,8 +15,10 @@ pub const PAGE_ENTRIES: usize = 64;
 const MAX_PAGES: i32 = 16384;
 const MAX_LEASE_SECS: i64 = 24 * 60 * 60;
 const SIGNING_DOMAIN: &[u8] = b"soundtime/publication/1\0";
+pub(crate) mod source;
+pub const ALPN: &[u8] = b"soundtime/catalog/2";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Media {
     pub title: String,
@@ -27,6 +29,13 @@ pub struct Media {
     pub size: i64,
     /// Lowercase hexadecimal iroh BLAKE3 root, independent of this publication.
     pub hash: String,
+    pub genre: Option<String>,
+    pub track_number: Option<i16>,
+    pub disc_number: Option<i16>,
+    pub year: Option<i16>,
+    pub bitrate: Option<i32>,
+    pub sample_rate: Option<i32>,
+    pub musicbrainz_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,11 +61,18 @@ impl Manifest {
                     "invalid track metadata"
                 );
             }
-            ensure!(!m.format.is_empty() && m.format.chars().count() <= 16 && !m.format.chars().any(char::is_control), "invalid track format");
+            ensure!(
+                !m.format.is_empty()
+                    && m.format.chars().count() <= 16
+                    && !m.format.chars().any(char::is_control),
+                "invalid track format"
+            );
             ensure!(
                 m.duration_ms >= 0 && m.size > 0,
                 "invalid track size or duration"
             );
+            ensure!(m.genre.as_deref().is_none_or(|s|s.chars().count()<=128 && !s.contains('\0')) &&
+                m.musicbrainz_id.as_deref().is_none_or(|s|s.len()<=36 && !s.contains('\0')), "invalid extended metadata");
             ensure!(
                 m.hash.len() == 64 && m.hash.bytes().all(|b| matches!(b,b'0'..=b'9'|b'a'..=b'f')),
                 "invalid BLAKE3 root"
@@ -310,7 +326,10 @@ pub async fn apply_page(db: &DatabaseConnection, provider: EndpointId, bytes: &[
         page.number == next && !row.try_get::<bool>("", "complete")?,
         "unexpected inventory page"
     );
-    let last_publication = page.entries.last().map(|entry| entry.publication.manifest.publication);
+    let last_publication = page
+        .entries
+        .last()
+        .map(|entry| entry.publication.manifest.publication);
     let mut events = page.entries;
     events.sort_by_key(|e| {
         (
@@ -338,7 +357,7 @@ pub async fn apply_page(db: &DatabaseConnection, provider: EndpointId, bytes: &[
     tx.execute(sql(
         "UPDATE federation_inventories SET next_page=next_page+1,complete=$2,
          last_publication=coalesce($3,last_publication) WHERE provider=$1",
-        [id.clone().into(), page.last.into(),last_publication.into()],
+        [id.clone().into(), page.last.into(), last_publication.into()],
     ))
     .await?;
     if page.last {
@@ -426,7 +445,7 @@ pub async fn apply_delta(
                 "invalid offer identity"
             );
             tx.execute(sql("DELETE FROM publication_offers o USING track_publications p, federation_catalogs c
-                WHERE o.provider_node_id=$1 AND o.revision=$2 AND o.track_id=p.track_id AND p.catalog_id=c.id
+                WHERE o.provider_node_id=$1 AND o.revision<=$2 AND o.track_id=p.track_id AND p.catalog_id=c.id
                 AND c.node_id=$3 AND p.origin_publication_id=$4",
                 [id.clone().into(),revision.into(),origin.to_string().into(),publication.into()])).await?;
             Applied::None

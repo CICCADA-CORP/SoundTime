@@ -53,15 +53,15 @@ const member = await account('listener-one', '/auth/register');
 const other = await account('listener-two', '/auth/register');
 const album = 'Night Sessions';
 const artist = 'SoundTime Ensemble';
-const tracks = [];
-for (const [title, hz] of [['First Light', 196], ['Second Wind', 246]]) {
+async function uploadRecording(title, hz) {
   const data = new FormData();
   data.set('file', recording(hz), title + '.wav');
   data.set('title', title); data.set('album', album); data.set('artist', artist);
   const result = await api('POST', '/upload', data, member.token);
   assert(result.id && result.duration > 10, 'Fixture requires real seekable audio');
-  tracks.push({ id: result.id, title });
+  return { id: result.id, title };
 }
+const tracks = [await uploadRecording('First Light', 196), await uploadRecording('Second Wind', 246)];
 const albumId = (await api('GET', '/tracks/' + tracks[0].id, undefined, member.token)).album_id;
 assert(albumId, 'Uploaded track must belong to an album');
 const playlists = [];
@@ -71,6 +71,13 @@ for (const [name, is_public] of [['Listening Notes', false], ['Open Rotation', t
   await api('POST', '/playlists/' + playlist.id + '/tracks', { track_id: tracks[0].id }, member.token);
   playlists.push({ id: playlist.id, name, is_public });
 }
+// Preserve a real withdrawn entry between two playable tracks in the owner's private playlist.
+const withdrawn = await uploadRecording('Recalled Recording', 329);
+const queuePlaylist = playlists.find(playlist => !playlist.is_public);
+for (const track of [withdrawn, tracks[1]]) {
+  await api('POST', '/playlists/' + queuePlaylist.id + '/tracks', { track_id: track.id }, member.token);
+}
+await api('DELETE', '/tracks/' + withdrawn.id, undefined, member.token);
 await api('PUT', '/admin/settings/instance_private', { value: 'true' }, admin.token);
 assert((await api('GET', '/setup/status')).instance_private);
 assert.equal((await api('GET', '/nodeinfo')).open_registration, false);
@@ -90,5 +97,5 @@ assert.equal(lastImportPage.data.length, 1);
 const { id: importId, title: importTitle } = lastImportPage.data[0];
 const importPageThree = { id: importId, title: importTitle };
 const credentials = ({ username, password }) => ({ username, password });
-await writeFile(output, JSON.stringify({ origin: origin.origin, importPageThree, admin: credentials(admin), member: credentials(member), other: credentials(other), albumId, album, artist, tracks, playlists }), { flag: 'wx', mode: 0o600 });
+await writeFile(output, JSON.stringify({ origin: origin.origin, importPageThree, admin: credentials(admin), member: credentials(member), other: credentials(other), albumId, album, artist, tracks, playlists, withdrawn }), { flag: 'wx', mode: 0o600 });
 console.log('Private instance seeded with two members, a listening album, two playlists and 101 personal imports.');

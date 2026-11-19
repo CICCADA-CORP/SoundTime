@@ -560,11 +560,12 @@ async fn sync_file(
     path: &str,
     legacy_by_size: &HashMap<i64, Vec<Uuid>>,
 ) -> Result<SyncOutcome, String> {
-    let hash = state
+    let source = state
         .storage
-        .hash_file(path)
+        .prepare_analysis(path)
         .await
         .map_err(|e| e.to_string())?;
+    let hash = source.sha256.clone();
     let tx = crate::storage_catalog::begin_write(&state.db)
         .await
         .map_err(|e| e.to_string())?;
@@ -599,12 +600,10 @@ async fn sync_file(
     if excluded {
         return Ok(SyncOutcome::Present);
     }
-    let local_path = soundtime_audio::ensure_local_file(state.storage.as_ref(), path)
-        .await
-        .map_err(|e| e.to_string())?;
-    let meta = soundtime_audio::extract_metadata_from_file(&local_path)
+    let local_path = &source.path;
+    let meta = soundtime_audio::extract_metadata_from_file(local_path)
         .map_err(|e| format!("metadata: {e}"))?;
-    let waveform = soundtime_audio::generate_waveform(&local_path, 200)
+    let waveform = soundtime_audio::generate_waveform(local_path, 200)
         .ok()
         .map(|w| serde_json::json!(w));
 
@@ -622,7 +621,7 @@ async fn sync_file(
         let blob_hash = if candidates.iter().any(|r| r.content_hash.is_some()) {
             Some(
                 soundtime_p2p::BlobHash::new(
-                    tokio::fs::read(&local_path)
+                    tokio::fs::read(local_path)
                         .await
                         .map_err(|e| e.to_string())?,
                 )

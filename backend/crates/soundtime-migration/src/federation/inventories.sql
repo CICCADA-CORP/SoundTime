@@ -25,6 +25,7 @@ CREATE TABLE federation_signed_publications (
     track_id uuid PRIMARY KEY REFERENCES track_publications(track_id),
     envelope jsonb NOT NULL
 );
+CREATE TABLE federation_catalog_clients (node_id text PRIMARY KEY);
 
 -- Keyset pagination uses the latest committed event per publication at a cut.
 CREATE INDEX federation_event_snapshot ON federation_events(catalog_id,origin_publication_id,cursor DESC);
@@ -45,6 +46,7 @@ BEGIN
     IF checkpoint.complete THEN RETURN true; END IF;
     SELECT id INTO STRICT c FROM federation_catalogs WHERE is_local FOR UPDATE;
     FOR item IN SELECT p.track_id,p.origin_publication_id,p.revision,p.state,t.title,t.duration_secs,t.format,
+            t.genre,t.track_number,t.disc_number,t.year,t.bitrate,t.sample_rate,t.musicbrainz_id,
             v.file_size,v.content_hash,a.name AS artist_name,l.title AS album_title
         FROM track_publications p JOIN publication_versions v ON v.track_id=p.track_id AND v.revision=p.revision
         LEFT JOIN tracks t ON t.id=p.track_id LEFT JOIN artists a ON a.id=t.artist_id LEFT JOIN albums l ON l.id=t.album_id
@@ -133,12 +135,17 @@ BEGIN
             ON CONFLICT(title,artist_id) DO NOTHING;
         SELECT id INTO STRICT album_key FROM albums WHERE title=media->>'album' AND artist_id=artist_key;
     END IF;
-    INSERT INTO tracks(id,title,artist_id,album_id,duration_secs,file_path,file_size,format,content_hash)
+    INSERT INTO tracks(id,title,artist_id,album_id,duration_secs,file_path,file_size,format,content_hash,
+                       genre,track_number,disc_number,year,bitrate,sample_rate,musicbrainz_id)
     VALUES(p.track_id,media->>'title',artist_key,album_key,(media->>'duration_ms')::bigint / 1000.0,
-           'p2p://' || asset,bytes,media->>'format',asset)
+           'p2p://' || asset,bytes,media->>'format',asset,media->>'genre',(media->>'track_number')::smallint,
+           (media->>'disc_number')::smallint,(media->>'year')::smallint,(media->>'bitrate')::integer,
+           (media->>'sample_rate')::integer,media->>'musicbrainz_id')
     ON CONFLICT(id) DO UPDATE SET title=excluded.title,artist_id=excluded.artist_id,album_id=excluded.album_id,
         duration_secs=excluded.duration_secs,file_path=excluded.file_path,file_size=excluded.file_size,
-        format=excluded.format,content_hash=excluded.content_hash;
+        format=excluded.format,content_hash=excluded.content_hash,genre=excluded.genre,track_number=excluded.track_number,
+        disc_number=excluded.disc_number,year=excluded.year,bitrate=excluded.bitrate,sample_rate=excluded.sample_rate,
+        musicbrainz_id=excluded.musicbrainz_id;
     RETURN p.track_id;
 END;
 $$;
