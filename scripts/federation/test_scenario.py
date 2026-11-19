@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import scenario
+import load_public
 
 
 class Response(io.BytesIO):
@@ -18,6 +19,18 @@ class Response(io.BytesIO):
 
 
 class FederationScenarioTests(unittest.TestCase):
+    def test_public_load_waits_for_journal_after_projection_completed(self):
+        ready = json.dumps({"projection_complete":True, "journal_complete":True}).encode()
+        pending = json.dumps({"projection_complete":True, "journal_complete":False}).encode()
+        compose = Mock(side_effect=[ready,pending,ready,ready])
+        observed = {}
+        with patch.object(load_public.time, "sleep") as pause:
+            load_public.wait_for_journals(compose, "fixture", observed, 30)
+        self.assertEqual(observed["polls"], 2)
+        self.assertEqual([call.args[3] for call in compose.call_args_list], ["db-a","db-b","db-c","db-b"])
+        self.assertIn("federation_event_bootstrap",compose.call_args_list[0].args[-1])
+        pause.assert_called_once()
+
     def test_fixture_audio_is_reproducible_and_decodable(self):
         data = scenario.wav_fixture(10001, 7)
         self.assertEqual(scenario.wav_fixture(10001, 7), data)

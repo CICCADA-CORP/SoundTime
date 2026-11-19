@@ -32,10 +32,13 @@ enum SourceRead<T> {
 
 // One fresh handshake at most per window across the entire provider list.
 // Every other eligible source is tried before reattempting a lost session.
-async fn read_from_sources<T>(
+async fn read_from_sources<T, F>(
     peers: Vec<EndpointId>,
-    mut read: impl AsyncFnMut(EndpointId) -> Result<SourceRead<T>>,
-) -> Result<Option<T>> {
+    mut read: impl FnMut(EndpointId) -> F,
+) -> Result<Option<T>>
+where
+    F: std::future::Future<Output = Result<SourceRead<T>>>,
+{
     let mut remaining = VecDeque::from(peers);
     let mut redial_scheduled = false;
     while let Some(peer) = remaining.pop_front() {
@@ -258,11 +261,12 @@ impl P2pNode {
         let track = ReadGuard::track(id);
         let providers = self.providers(id, req).await?;
         ensure!(!providers.is_empty(), "no authorized range provider");
-        read_from_sources(providers, async |peer| {
+        let track = &track;
+        read_from_sources(providers, |peer| async move {
             let peer_grant = ReadGuard::peer(&peer.to_string());
             // Acquire a new supplier grant on retry. The original track grant
             // and immutable request persist across every attempt.
-            let attempt = self.fetch_from_provider(id, req, peer, &track);
+            let attempt = self.fetch_from_provider(id, req, peer, track);
             match track.during(peer_grant.during(attempt)).await? {
                 Ok(fetched) => fetched,
                 Err(_) => Ok(SourceRead::Unavailable),
@@ -485,9 +489,9 @@ mod tests {
         let origin = iroh::SecretKey::generate().public();
         let mirror = iroh::SecretKey::generate().public();
         let mut attempts = Vec::new();
-        let result = read_from_sources(vec![origin, mirror], async |peer| {
+        let result = read_from_sources(vec![origin, mirror], |peer| {
             attempts.push(peer);
-            Ok(SourceRead::<Bytes>::LostSession)
+            std::future::ready(Ok(SourceRead::<Bytes>::LostSession))
         })
         .await?;
         assert!(result.is_none());
@@ -549,21 +553,26 @@ mod tests {
             // After the first attempt, rediscovery supplies a fresh endpoint with
             // the same cryptographic identity and the same immutable publication.
             let mut calls = 0;
-            let recovery = read_from_sources(vec![old.id()], async |peer| {
+            let recovery = read_from_sources(vec![old.id()], |peer| {
                 calls += 1;
                 let timeout = if calls == 1 {
                     Duration::from_millis(100)
                 } else {
                     ATTEMPT_TIMEOUT
                 };
-                let fetched = read_remote_window(&pool, peer, &req, &track, false, timeout).await?;
-                if matches!(&fetched, SourceRead::LostSession) {
-                    old.close().await;
-                    lookup.set_endpoint_info(
-                        EndpointAddr::new(new.id()).with_ip_addr(new.bound_sockets()[0]),
-                    );
+                let (pool, req, track, old, new, lookup) =
+                    (&pool, &req, &track, &old, &new, &lookup);
+                async move {
+                    let fetched =
+                        read_remote_window(pool, peer, req, track, false, timeout).await?;
+                    if matches!(&fetched, SourceRead::LostSession) {
+                        old.close().await;
+                        lookup.set_endpoint_info(
+                            EndpointAddr::new(new.id()).with_ip_addr(new.bound_sockets()[0]),
+                        );
+                    }
+                    Ok(fetched)
                 }
-                Ok(fetched)
             });
             let serving = async {
                 let connection = new

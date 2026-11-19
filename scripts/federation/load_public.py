@@ -12,9 +12,41 @@ from uuid import uuid4
 from scenario import require
 
 
-def sql(compose, project, statement, *, timeout=30):
-    return compose(project, "exec", "-T", "db-b", "psql", "-XqAt", "-v", "ON_ERROR_STOP=1",
+def sql(compose, project, statement, *, timeout=30, site="B"):
+    require(site in ("A", "B", "C"), "Unknown fixture database")
+    return compose(project, "exec", "-T", "db-"+site.lower(), "psql", "-XqAt", "-v", "ON_ERROR_STOP=1",
                    "-U", "soundtime", "-d", "soundtime", "-c", statement, timeout=timeout).decode().strip()
+
+
+def wait_for_journals(compose, project, observation, timeout):
+    # inventory::source::head reads federation_event_bootstrap.complete. Its job
+    # can start only after the publication projection reached its own checkpoint.
+    query = """SELECT json_build_object(
+        'projection_complete',p.complete,'last_projected_track',p.last_track_id,
+        'journal_complete',j.complete,'last_journal_track',j.last_track)
+        FROM federation_backfill p CROSS JOIN federation_event_bootstrap j
+        WHERE p.singleton AND j.singleton"""
+    start = time.monotonic()
+    deadline = start + timeout
+    sites = {}
+    observation.update(timeout_s=timeout, polls=0, sites=sites)
+    while True:
+        observation["polls"] += 1
+        for site in ("A", "B", "C"):
+            if sites.get(site, {}).get("journal_complete") is True:
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            raw = sql(compose, project, query, site=site, timeout=min(10, remaining))
+            require(raw, f"{site} has no historical publication checkpoint")
+            sites[site] = json.loads(raw)
+        observation["elapsed_s"] = round(time.monotonic()-start, 3)
+        if len(sites) == 3 and all(s["journal_complete"] is True for s in sites.values()):
+            return
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, f"Historical publication journals still preparing: {sites}")
+        time.sleep(min(2,remaining))
 
 
 def prepare(compose, seed, dest):

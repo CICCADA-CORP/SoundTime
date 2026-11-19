@@ -188,6 +188,21 @@ def run(args, report):
         require(not node.call("/setup/status")["has_admin"], "Disposable empty instances required")
         node.account("admin" + node.name.lower(), admin=True)
         node.identify()
+    if full:
+        prepared = json.loads(Path(os.environ["SOUNDTIME_TEST_LOAD_INDEX"]).read_text())
+        require(prepared["project"] == project, "Index report belongs to a different disposable project")
+        generation = int(load_public.sql(compose, project, "SELECT generation FROM federation_worker_lease "
+               "WHERE expires_at>clock_timestamp()"))
+        require(generation > prepared["generation"], "Public worker did not acquire a new generation")
+        report["index_preparation"] = prepared
+        report["serving_worker_generation"] = generation
+        report["seed"] = prepared["seed"]
+    report["journal_preparation"] = {}
+    load_public.wait_for_journals(compose, project, report["journal_preparation"], 900 if full else 120)
+    for node in nodes:
+        refreshed = node.call("/auth/refresh", method="POST", token="",
+                              body={"refresh_token": node.refresh_token})
+        node.token, node.refresh_token = refreshed["access_token"], refreshed["refresh_token"]
     for source in (a, c):
         b.connect(source, follow=True)
         source.connect(b, follow=True)
@@ -204,21 +219,8 @@ def run(args, report):
             fetch_range(b, track, audio, 0, len(audio))
     mp3_fixture(project, a)
     witness = wait_for("browser MP3 on B", lambda: b.search("Browserwitness"))
-    if full:
-        prepared = json.loads(Path(os.environ["SOUNDTIME_TEST_LOAD_INDEX"]).read_text())
-        require(prepared["project"] == project, "Index report belongs to a different disposable project")
-        generation = int(load_public.sql(compose, project, "SELECT generation FROM federation_worker_lease "
-               "WHERE expires_at>clock_timestamp()"))
-        require(generation > prepared["generation"], "Public worker did not acquire a new generation")
-        report["index_preparation"] = prepared
-        report["serving_worker_generation"] = generation
-        report["seed"] = prepared["seed"]
-    else:
+    if not full:
         report["seed"] = seed(project, virtual, titles)
-    for node in nodes:
-        refreshed = node.call("/auth/refresh", method="POST", token="",
-                              body={"refresh_token": node.refresh_token})
-        node.token, node.refresh_token = refreshed["access_token"], refreshed["refresh_token"]
     require(report["seed"] == {"virtual_catalogues": virtual, "virtual_tracks": virtual * titles,
                                "indexed_tracks": virtual * titles}, "Incomplete synthetic index")
     wait_for("metadata searchable after FTS reconciliation",
