@@ -19,7 +19,7 @@
   const auth = getAuthStore();
   const player = getPlayerStore();
   const current = $derived(currentCatalogPage());
-  const history = catalogQuery(() => auth.isAuthenticated ? api.get<PaginatedResponse<HistoryEntry>>(`/history?page=${current}&per_page=50`) : null);
+  const history = catalogQuery(signal => auth.isAuthenticated ? api.get<PaginatedResponse<HistoryEntry>>(`/history?page=${current}&per_page=50`, signal) : null);
   let date = $derived(new Intl.DateTimeFormat(getLocale(), { day: "numeric", month: "short", year: "numeric" }));
 </script>
 
@@ -40,7 +40,7 @@
           </span>
           <span class="min-w-0 flex-1"><span class="block truncate text-sm font-medium">{track.title}</span>
             {#if !canPlay(track)}<span class="block text-xs text-muted-foreground">{availabilityLabel(track)}</span>{/if}
-            <span class="block truncate text-xs text-muted-foreground">{track.artist_name ?? t("track.unknownArtist")}</span>
+            {#if track.artist_name}<span class="block truncate text-xs text-muted-foreground">{track.artist_name}</span>{/if}
           </span>
           <time datetime={listened_at} class="text-xs text-muted-foreground">{date.format(new Date(listened_at))}</time>
           <span class="hidden w-12 text-right text-xs tabular-nums text-muted-foreground sm:inline">{formatDuration(track.duration_secs)}</span>

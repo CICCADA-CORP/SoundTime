@@ -2,19 +2,23 @@
   import { homeApi } from "$lib/api";
   import { catalogQuery } from "$lib/catalog/query.svelte";
   import { t } from "$lib/i18n/index.svelte";
-  import type { Track } from "$lib/types";
   import TrackList from "$lib/components/TrackList.svelte";
   import CatalogState from "./CatalogState.svelte";
 
-  let { popular, popularLoading = false }: { popular: Track[]; popularLoading?: boolean } = $props();
   const periods = [
     ["1h", "explore.trendingHour"],
     ["24h", "explore.trendingDay"],
     ["7d", "explore.trendingWeek"],
   ] as const;
   let period = $state<"1h" | "24h" | "7d">("24h");
-  const trending = catalogQuery(() => homeApi.trendingTracks(10, period));
-  let showPopular = $derived(!trending.loading && !trending.data?.length && popular.length > 0);
+  const trending = catalogQuery(signal => homeApi.trendingTracks(10, period, signal));
+  const popular = catalogQuery(signal => !trending.loading && !trending.data?.length ? homeApi.popularTracks(8, signal) : null);
+  const showPopular = $derived(!trending.loading && !trending.data?.length && Boolean(popular.data?.data.length));
+
+  function retryFailed() {
+    if (trending.failed) trending.retry();
+    else if (popular.failed) popular.retry();
+  }
 </script>
 
 <section class="space-y-4">
@@ -37,9 +41,9 @@
         <button type="button" class="font-medium underline underline-offset-2" onclick={trending.retry}>{t("radio.tryAgain")}</button>
       </div>
     {/if}
-    <TrackList source="explore" tracks={popular} />
+    <TrackList source="explore" tracks={popular.data?.data ?? []} />
   {:else}
-    <CatalogState loading={trending.loading || (!trending.failed && popularLoading)} failed={trending.failed}
-      status={trending.status} retry={trending.retry} message={t("explore.noTracks")} />
+    <CatalogState loading={trending.loading || popular.loading} failed={trending.failed || popular.failed}
+      status={trending.status ?? popular.status} retry={retryFailed} message={t("explore.noTracks")} />
   {/if}
 </section>

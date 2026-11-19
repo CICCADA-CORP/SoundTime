@@ -28,7 +28,7 @@ export interface Track {
   best_bitrate?: number | null;
   best_source?: string | null;
   // Joined fields
-  artist_name?: string;
+  artist_name?: string | null;
   album_title?: string;
   cover_url?: string;
 }
@@ -43,7 +43,7 @@ export interface Album {
   year: number | null;
   created_at: string;
   // Joined
-  artist_name?: string;
+  artist_name?: string | null;
   tracks?: Track[];
 }
 
@@ -359,7 +359,7 @@ export interface TrackCredits {
   uploaded_by_username?: string | null;
   created_at: string;
   artist_id: string;
-  artist_name: string;
+  artist_name: string | null;
   artist?: string;
   artist_bio: string | null;
   artist_image: string | null;

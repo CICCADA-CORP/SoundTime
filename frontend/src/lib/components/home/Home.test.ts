@@ -53,6 +53,28 @@ describe("home catalogue", () => {
     expect(screen.queryByRole("region", { name: "After Hours" })).toBeNull();
   });
 
+  it("reveals the initial selection together and keeps the current view during a refresh", async () => {
+    let respond!: (value: Response) => void;
+    const picked = { ...showcaseTracks[0], id: "pick", title: "Selected track" };
+    const popular = { ...showcaseTracks[1], id: "popular", title: "Popular track" };
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (url.includes("/tracks/random")) return new Promise<Response>(resolve => { respond = resolve; });
+      return Promise.resolve(Response.json(url.includes("/tracks/popular") ? { data: [popular] } : emptyResponse(url)));
+    }));
+    render(Home);
+    expect(await screen.findByRole("status")).toHaveTextContent("Loading");
+    expect(screen.queryByRole("tablist")).toBeNull();
+
+    respond(Response.json([picked]));
+    const panel = within(await screen.findByRole("tabpanel", { name: "Tracks" }));
+    expect(panel.getByRole("button", { name: /Selected track/ })).toBeVisible();
+    await fireEvent.click(panel.getByRole("button", { name: "List view" }));
+    await fireEvent.click(panel.getByRole("button", { name: /refresh/i }));
+    expect(panel.getByRole("button", { name: "List view" })).toHaveAttribute("aria-pressed", "true");
+    respond(Response.json([picked]));
+    expect(await panel.findByRole("button", { name: /Selected track/ })).toBeVisible();
+  });
+
   it("filters the preview, sorts the playback queue and browses its album and artist offline", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 503 })));
     render(Home);

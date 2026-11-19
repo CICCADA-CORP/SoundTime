@@ -46,9 +46,9 @@
         </span>
         <span class="min-w-0 flex-1">
           <span class="block truncate text-sm font-semibold leading-5 group-hover:text-primary">{track.title}</span>
-          <span class="block truncate text-xs leading-5 text-muted-foreground">
-            {track.artist_name ?? t("track.unknownArtist")}
-          </span>
+          {#if track.artist_name}
+            <span class="block truncate text-xs leading-5 text-muted-foreground">{track.artist_name}</span>
+          {/if}
         </span>
         <span class="pl-1 text-xs tabular-nums text-muted-foreground">{formatDuration(track.duration_secs)}</span>
       </button>

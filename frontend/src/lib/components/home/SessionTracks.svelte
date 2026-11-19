@@ -1,6 +1,5 @@
 <script lang="ts">
   import { AudioLines, Pause, Play } from "lucide-svelte";
-  import { t } from "$lib/i18n/index.svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import type { PlaybackSource, Track } from "$lib/types";
@@ -30,7 +29,7 @@
         </span>
         <span class="min-w-0 flex-1">
           <span class="block truncate text-sm font-semibold" class:text-primary={current}>{track.title}</span>
-          <span class="block truncate text-xs text-muted-foreground">{track.artist_name ?? t("track.unknownArtist")}</span>
+          {#if track.artist_name}<span class="block truncate text-xs text-muted-foreground">{track.artist_name}</span>{/if}
         </span>
         <span class="mr-2 text-xs tabular-nums text-muted-foreground">{formatDuration(track.duration_secs)}</span>
         {#if playing}<Pause size={14} class="text-primary" fill="currentColor" />

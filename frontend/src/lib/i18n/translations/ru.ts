@@ -203,6 +203,7 @@ export default {
   // Explore
   "explore.title": "Обзор",
   "explore.newInCatalog": "Новинки",
+  "explore.searchHint": "Трек, альбом или исполнитель",
   "explore.searchCatalog": "Поиск по каталогу",
   "explore.recentTracks": "Недавно добавленные треки",
   "explore.allAlbums": "Все альбомы",

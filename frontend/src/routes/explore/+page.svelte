@@ -20,10 +20,9 @@
     ["genres", "explore.genres"], ["playlists", "nav.playlists"],
   ] as const;
   const active = $derived(tabs.find(([id]) => id === page.url.searchParams.get("tab"))?.[0] ?? "new");
-  const artists = catalogQuery(() => active === "artists" ? homeApi.topArtists(8) : null);
-  const genres = catalogQuery(() => active === "genres" ? homeApi.genres() : null);
-  const editorial = catalogQuery(() => active === "playlists" ? homeApi.editorialPlaylists() : null);
-  const popular = catalogQuery(() => active === "trending" ? homeApi.popularTracks(8) : null);
+  const artists = catalogQuery(signal => active === "artists" ? homeApi.topArtists(8, signal) : null);
+  const genres = catalogQuery(signal => active === "genres" ? homeApi.genres(signal) : null);
+  const editorial = catalogQuery(signal => active === "playlists" ? homeApi.editorialPlaylists(signal) : null);
   let query = $state("");
 
   function search(event: SubmitEvent) {
@@ -40,7 +39,7 @@
     <form class="catalog-search" role="search" action="/search" method="GET" onsubmit={search}>
       <Search size={19} strokeWidth={1.7} aria-hidden="true" />
       <input name="q" type="search" bind:value={query} aria-label={t("explore.searchCatalog")}
-        placeholder={t("search.placeholder")} autocomplete="off" enterkeyhint="search" required />
+        placeholder={t("explore.searchHint")} autocomplete="off" enterkeyhint="search" required />
       <button type="submit" aria-label={t("common.search")} disabled={!query.trim()}><ArrowRight size={17} /></button>
     </form>
   </header>
@@ -54,12 +53,7 @@
 
     <Tabs.Content class="explore-panel" value="new" tabindex={-1}>{#if active === "new"}<ExploreRecent />{/if}</Tabs.Content>
     <Tabs.Content class="explore-panel" value="trending" tabindex={-1}>
-      {#if active === "trending"}<ExploreTrending popular={popular.data?.data ?? []} popularLoading={popular.loading} />{/if}
-      {#if popular.failed}
-        <p role="status" class="mt-4 text-sm text-muted-foreground">
-          {t("catalog.partial")} <button class="underline" onclick={popular.retry}>{t("radio.tryAgain")}</button>
-        </p>
-      {/if}
+      {#if active === "trending"}<ExploreTrending />{/if}
     </Tabs.Content>
     <Tabs.Content class="explore-panel" value="artists" tabindex={-1}>
       <div class="panel-heading">
@@ -69,7 +63,7 @@
       {#if artists.data?.data.length}
         <RecordShelf>{#each artists.data.data as artist (artist.id)}<ArtistCard {artist} />{/each}</RecordShelf>
       {:else}
-        <CatalogState loading={artists.loading} failed={artists.failed} status={artists.status} retry={artists.retry} message={t("explore.noArtists")} />
+        <CatalogState layout="shelf" loading={artists.loading} failed={artists.failed} status={artists.status} retry={artists.retry} message={t("explore.noArtists")} />
       {/if}
     </Tabs.Content>
     <Tabs.Content class="explore-panel" value="genres" tabindex={-1}>
@@ -78,7 +72,7 @@
     </Tabs.Content>
     <Tabs.Content class="explore-panel" value="playlists" tabindex={-1}>
       {#if editorial.data?.length}<ExploreEditorial playlists={editorial.data} />
-      {:else}<CatalogState loading={editorial.loading} failed={editorial.failed} status={editorial.status} retry={editorial.retry} message={t("explore.emptySelections")} />{/if}
+      {:else}<CatalogState layout="shelf" loading={editorial.loading} failed={editorial.failed} status={editorial.status} retry={editorial.retry} message={t("explore.emptySelections")} />{/if}
       <a class="more mt-4" href="/playlists">{t("explore.allPlaylists")} <ChevronRight size={15} /></a>
     </Tabs.Content>
   </Tabs.Root>
@@ -92,7 +86,7 @@
   .catalog-search:focus-within { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
   .catalog-search input { flex: 1; min-width: 0; height: 42px; background: transparent; color: hsl(var(--foreground)); outline: none; font-size: .9375rem; }
   .catalog-search button { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 6px; background: hsl(var(--foreground)); color: hsl(var(--background)); }
-  .catalog-search button:disabled { visibility: hidden; }
+  .catalog-search button:disabled { display: none; }
   .explore :global(.explore-tabs) { display: flex; gap: clamp(12px, 2.2vw, 26px); overflow-x: auto; border-bottom: 1px solid hsl(var(--border)); }
   .explore :global(.explore-tab) { flex: none; padding: 10px 1px; border-bottom: 2px solid transparent; color: hsl(var(--muted-foreground)); font-size: .875rem; font-weight: 520; }
   .explore :global(.explore-tab[data-state="active"]) { color: hsl(var(--foreground)); border-color: currentColor; }
@@ -102,8 +96,12 @@
   .panel-heading h2 { font-size: 1.125rem; font-weight: 600; letter-spacing: -.025em; }
   .more { display: inline-flex; align-items: center; gap: 2px; color: hsl(var(--muted-foreground)); font-size: .8125rem; }
   .more:hover { text-decoration: underline; color: hsl(var(--foreground)); }
+  @media (max-width: 480px) {
+    .explore :global(.explore-tabs) { gap: 8px; justify-content: space-between; }
+    .explore :global(.explore-tab) { font-size: .8125rem; }
+  }
   @media (max-width: 600px) {
-    .explore-heading { display: grid; gap: 14px; margin-bottom: 16px; }
+    .explore-heading { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-bottom: 16px; }
     .catalog-search { width: 100%; }
     .catalog-search input { font-size: 1rem; }
     .explore :global(.explore-panel) { padding-top: 18px; }

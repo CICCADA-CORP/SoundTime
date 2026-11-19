@@ -14,7 +14,7 @@
   } = $props();
 
   const page = $derived(currentCatalogPage());
-  const result = catalogQuery(() => api.get<PaginatedResponse<Item>>(`${path}?page=${page}&per_page=50`));
+  const result = catalogQuery(signal => api.get<PaginatedResponse<Item>>(`${path}?page=${page}&per_page=50`, signal));
 </script>
 
 <div class="space-y-7">
@@ -25,6 +25,6 @@
     </RecordShelf>
     <PageControls {page} total={result.data.total_pages} select={selectCatalogPage} />
   {:else}
-    <CatalogState loading={result.loading} failed={result.failed} status={result.status} message={empty} retry={result.retry} />
+    <CatalogState layout="shelf" loading={result.loading} failed={result.failed} status={result.status} message={empty} retry={result.retry} />
   {/if}
 </div>

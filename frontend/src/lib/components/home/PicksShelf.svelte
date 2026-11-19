@@ -12,7 +12,7 @@
   import { homeCopy } from "./copy";
   import SessionTracks from "./SessionTracks.svelte";
 
-  type Entry = { id: string; title: string; detail?: string; image?: string | null; href?: string; track?: Track };
+  type Entry = { id: string; title: string; detail?: string | null; image?: string | null; href?: string; track?: Track };
   let { tracks, catalog, children }: { tracks: Track[]; catalog: ReturnType<typeof createCatalog>; children: Snippet } = $props();
 
   const tabs = [["tracks", "workspaceHome.tracks"], ["albums", "explore.albums"], ["artists", "explore.artists"]] as const;
@@ -40,7 +40,7 @@
       }));
     }
     return tracks.map(track => ({
-      id: track.id, title: track.title, detail: track.artist_name ?? t("track.unknownArtist"), image: track.cover_url, track,
+      id: track.id, title: track.title, detail: track.artist_name, image: track.cover_url, track,
     }));
   });
   const needle = $derived(search.trim().toLocaleLowerCase(getLocale()));

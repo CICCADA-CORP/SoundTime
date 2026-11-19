@@ -5,7 +5,7 @@ import { setLocale } from "$lib/i18n/index.svelte";
 import Layout from "./+layout.svelte";
 
 const mocks = vi.hoisted(() => ({
-  get: vi.fn(), goto: vi.fn(), page: { url: new URL("http://localhost/") },
+  get: vi.fn(), goto: vi.fn(), page: { url: new URL("http://localhost/"), params: {} },
   auth: { init: vi.fn(), isAuthenticated: false, isAdmin: false },
 }));
 vi.mock("$app/navigation", () => ({ goto: mocks.goto, afterNavigate: vi.fn() }));

@@ -14,8 +14,8 @@
   import NetworkSearch from "$lib/components/catalog/NetworkSearch.svelte";
 
   const query = $derived(page.url.searchParams.get("q")?.trim() ?? "");
-  const search = catalogQuery(() => query
-    ? api.get<SearchResults>(`/search?q=${encodeURIComponent(query)}`)
+  const search = catalogQuery(signal => query
+    ? api.get<SearchResults>(`/search?q=${encodeURIComponent(query)}`, signal)
     : null);
   const results = $derived(search.data);
 </script>

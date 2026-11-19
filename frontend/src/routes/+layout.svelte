@@ -63,5 +63,5 @@
 {:else if onSetup}
   {@render children()}
 {:else}
-  <AppShell>{@render children()}</AppShell>
+  <AppShell>{#key page.params.id}{@render children()}{/key}</AppShell>
 {/if}

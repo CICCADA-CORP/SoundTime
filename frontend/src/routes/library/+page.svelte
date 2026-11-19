@@ -27,11 +27,11 @@
   const active = $derived(tabs.find(([id]) => id === page.url.searchParams.get("tab"))?.[0] ?? "uploads");
   const current = $derived(currentCatalogPage());
 
-  const uploads = catalogQuery(() => auth.user?.id && active === "uploads"
-    ? api.get<PaginatedResponse<Track>>(`/tracks/my-uploads?page=${current}&per_page=50`) : null);
+  const uploads = catalogQuery(signal => auth.user?.id && active === "uploads"
+    ? api.get<PaginatedResponse<Track>>(`/tracks/my-uploads?page=${current}&per_page=50`, signal) : null);
   const playlists = ownedPlaylists(() => auth.user?.id && active === "playlists" ? current : null);
-  const albums = catalogQuery(() => auth.user?.id && active === "albums"
-    ? api.get<PaginatedResponse<Album>>(`/albums?page=${current}&per_page=24`) : null);
+  const albums = catalogQuery(signal => auth.user?.id && active === "albums"
+    ? api.get<PaginatedResponse<Album>>(`/albums?page=${current}&per_page=24`, signal) : null);
   const selected = $derived(({ uploads, playlists, albums })[active]);
 
 </script>
@@ -67,7 +67,7 @@
         <Tabs.Content value={id} tabindex={-1} class="space-y-5 pt-5">
           {#if active === id}
             {#if selected.loading || selected.failed}
-              <CatalogState loading={selected.loading} failed={selected.failed} status={selected.status} retry={selected.retry} />
+              <CatalogState layout={active === "uploads" ? "rows" : "shelf"} loading={selected.loading} failed={selected.failed} status={selected.status} retry={selected.retry} />
             {:else if active === "uploads" && uploads.data?.data.length}
               <TrackList tracks={uploads.data.data} />
             {:else if active === "albums" && albums.data?.data.length}

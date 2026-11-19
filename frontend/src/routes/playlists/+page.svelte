@@ -15,7 +15,7 @@
 
   const auth = getAuthStore();
   const page = $derived(currentCatalogPage());
-  const playlists = playlistQuery(() => api.get<PaginatedResponse<Playlist>>(`/playlists?page=${page}&per_page=50`));
+  const playlists = playlistQuery(signal => api.get<PaginatedResponse<Playlist>>(`/playlists?page=${page}&per_page=50`, signal));
   let removing = $state<string | null>(null);
   let error = $state("");
 
@@ -60,6 +60,6 @@
     </RecordShelf>
     <PageControls {page} total={playlists.data.total_pages} select={selectCatalogPage} />
   {:else}
-    <CatalogState loading={playlists.loading} failed={playlists.failed} status={playlists.status} retry={playlists.retry} message={t("playlists.noPlaylists")} />
+    <CatalogState layout="shelf" loading={playlists.loading} failed={playlists.failed} status={playlists.status} retry={playlists.retry} message={t("playlists.noPlaylists")} />
   {/if}
 </div>

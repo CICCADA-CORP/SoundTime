@@ -66,7 +66,7 @@
               <ChevronDown size={20} />
             </Button>
           </header>
-          <Dialog.Description class="sr-only">{track.title} · {track.artist_name ?? t("track.unknownArtist")}</Dialog.Description>
+          <Dialog.Description class="sr-only">{[track.title, track.artist_name].filter(Boolean).join(" · ")}</Dialog.Description>
 
           <div class="stage" data-panel={panel}>
             <div class="deck">
@@ -77,15 +77,19 @@
               <div class="track-heading">
                 <div class="min-w-0 flex-1">
                   <h2>{track.title}</h2>
-                  <p class="byline">
-                    {#if catalogId && track.artist_id}<a href={"/artists/" + track.artist_id} onclick={close}>{track.artist_name ?? t("track.unknownArtist")}</a>
-                    {:else}{track.artist_name ?? t("track.unknownArtist")}{/if}
-                    {#if track.album_title}
-                      <span class="separator" aria-hidden="true">·</span>
-                      {#if catalogId && track.album_id}<a class="album" href={"/albums/" + track.album_id} onclick={close}>{track.album_title}</a>
-                      {:else}<span class="album">{track.album_title}</span>{/if}
-                    {/if}
-                  </p>
+                  {#if track.artist_name || track.album_title}
+                    <p class="byline">
+                      {#if track.artist_name}
+                        {#if catalogId && track.artist_id}<a href={"/artists/" + track.artist_id} onclick={close}>{track.artist_name}</a>
+                        {:else}{track.artist_name}{/if}
+                      {/if}
+                      {#if track.album_title}
+                        {#if track.artist_name}<span class="separator" aria-hidden="true">·</span>{/if}
+                        {#if catalogId && track.album_id}<a class="album" href={"/albums/" + track.album_id} onclick={close}>{track.album_title}</a>
+                        {:else}<span class="album">{track.album_title}</span>{/if}
+                      {/if}
+                    </p>
+                  {/if}
                 </div>
                 {#if catalogId && auth.isAuthenticated}
                   {#key catalogId}<PlayerSaveActions {track} />{/key}
@@ -160,7 +164,7 @@
                     <div class="min-w-0 flex-1">
                       <p class="current-label">{t("player.nowPlaying")}</p>
                       <p class="current-title">{track.title}</p>
-                      <p class="row-artist">{track.artist_name ?? t("track.unknownArtist")}</p>
+                      {#if track.artist_name}<p class="row-artist">{track.artist_name}</p>{/if}
                     </div>
                     <div class="level" data-playing={player.isPlaying} aria-hidden="true"><i></i><i></i><i></i><i></i></div>
                   </div>

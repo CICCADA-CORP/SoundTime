@@ -10,7 +10,7 @@
   import { t } from "$lib/i18n/index.svelte";
 
   const page = $derived(currentCatalogPage());
-  const result = catalogQuery(() => api.get<PaginatedResponse<Track>>(`/tracks?page=${page}&per_page=50`));
+  const result = catalogQuery(signal => api.get<PaginatedResponse<Track>>(`/tracks?page=${page}&per_page=50`, signal));
 </script>
 
 <svelte:head><title>{t("explore.tracks")} — SoundTime</title></svelte:head>

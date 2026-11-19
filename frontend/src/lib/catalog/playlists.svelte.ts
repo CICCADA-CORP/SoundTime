@@ -5,12 +5,12 @@ import { createCatalogCollection } from "./query.svelte";
 export const { query: playlistQuery, invalidate: invalidatePlaylists } = createCatalogCollection();
 
 export function recentPlaylists() {
-  return playlistQuery(() => api.get<{ data?: unknown }>("/playlists?per_page=4"));
+  return playlistQuery(signal => api.get<{ data?: unknown }>("/playlists?per_page=4", signal));
 }
 
 export function ownedPlaylists(currentPage: () => number | null) {
-  return playlistQuery(() => {
+  return playlistQuery(signal => {
     const page = currentPage();
-    return page === null ? null : api.get<PaginatedResponse<Playlist>>(`/me/playlists?page=${page}&per_page=20`);
+    return page === null ? null : api.get<PaginatedResponse<Playlist>>(`/me/playlists?page=${page}&per_page=20`, signal);
   });
 }

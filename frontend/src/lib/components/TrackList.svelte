@@ -14,9 +14,10 @@
   import FavoriteButton from "./FavoriteButton.svelte";
   import TrackActions, { type TrackDialog } from "./catalog/TrackActions.svelte";
 
-  let { tracks = [], showAlbum = true, showArtist = true, source = "collection", onremove }: {
-    tracks?: Track[]; showAlbum?: boolean; showArtist?: boolean; source?: PlaybackSource; onremove?: (id: string) => void;
+  let { tracks = [], showAlbum = true, showArtist = true, source = "collection", compact, onremove }: {
+    tracks?: Track[]; showAlbum?: boolean; showArtist?: boolean; source?: PlaybackSource; compact?: boolean; onremove?: (id: string) => void;
   } = $props();
+  let compactRows = $derived(compact ?? source === "explore");
   const player = getPlayerStore();
   const queue = getQueueStore();
   const auth = getAuthStore();
@@ -78,14 +79,16 @@
 
 <svelte:window onclick={() => closeMenu()} onkeydown={menuKeys} onresize={() => closeMenu()} />
 
-<div class="track-table">
+<div class="track-table" class:compact={compactRows}>
   {#if likes.failed}
     <div role="status" class="mb-2 flex flex-wrap gap-2 text-xs text-muted-foreground">{t("favorites.unavailable")} <button class="underline" onclick={likes.retry}>{t("radio.tryAgain")}</button></div>
   {/if}
   <div class="track-line heading text-xs text-muted-foreground">
     <span>#</span><span>{t("track.title")}</span>
-    <span class="album">{showAlbum ? t("track.album") : showArtist ? t("track.artist") : ""}</span>
-    <span class="plays">{t("track.plays")}</span><span class="quality">{t("track.quality")}</span>
+    {#if !compactRows}
+      <span class="album">{showAlbum ? t("track.album") : showArtist ? t("track.artist") : ""}</span>
+      <span class="plays">{t("track.plays")}</span><span class="quality">{t("track.quality")}</span>
+    {/if}
     <span class="text-right">{t("track.duration")}</span><span class="like"></span><span></span>
   </div>
   {#each tracks as track, index (track.id + ":" + (track.position ?? index))}
@@ -101,19 +104,21 @@
       <div class="min-w-0">
         <a class="block truncate font-medium hover:underline {active ? 'text-primary' : ''}" href="/tracks/{track.id}">{track.title}</a>
         {#if unavailable}<span class="block text-xs text-muted-foreground">{availabilityLabel(track)}</span>{/if}
-        {#if showArtist}<span class="block truncate text-xs text-muted-foreground">{track.artist_name ?? ""}</span>{/if}
+        {#if showArtist && track.artist_name}<span class="block truncate text-xs text-muted-foreground">{track.artist_name}</span>{/if}
       </div>
-      <div class="album truncate text-muted-foreground">
-        {#if showAlbum && track.album_id}<a href="/albums/{track.album_id}" class="hover:underline">{track.album_title ?? ""}</a>
-        {:else if showAlbum}{track.album_title ?? ""}{:else if showArtist}{track.artist_name ?? ""}{/if}
-      </div>
-      <span class="plays text-xs tabular-nums text-muted-foreground">{track.play_count ?? 0}</span>
-      <span class="quality text-xs text-muted-foreground">
-        {#if track.best_bitrate || track.bitrate}
-          <span>{track.best_bitrate ?? track.bitrate}k</span> <span class="uppercase">{track.format}</span>
-          {#if track.best_source && track.best_source !== "local"}<span class="text-primary" title={track.best_source}>Fed</span>{/if}
-        {:else}—{/if}
-      </span>
+      {#if !compactRows}
+        <div class="album truncate text-muted-foreground">
+          {#if showAlbum && track.album_id}<a href="/albums/{track.album_id}" class="hover:underline">{track.album_title ?? ""}</a>
+          {:else if showAlbum}{track.album_title ?? ""}{:else if showArtist}{track.artist_name ?? ""}{/if}
+        </div>
+        <span class="plays text-xs tabular-nums text-muted-foreground">{track.play_count ?? 0}</span>
+        <span class="quality text-xs text-muted-foreground">
+          {#if track.best_bitrate || track.bitrate}
+            <span>{track.best_bitrate ?? track.bitrate}k</span> <span class="uppercase">{track.format}</span>
+            {#if track.best_source && track.best_source !== "local"}<span class="text-primary" title={track.best_source}>Fed</span>{/if}
+          {:else}—{/if}
+        </span>
+      {/if}
       <span class="text-right text-xs tabular-nums text-muted-foreground">{formatDuration(track.duration_secs)}</span>
       <span class="like">
         {#if auth.user}<FavoriteButton trackId={track.id} disabled={likes.loading || likes.failed} liked={likedIds.has(track.id)} size={15} />{/if}
@@ -165,11 +170,11 @@
     .track-line { grid-template-columns: 1.75rem minmax(0,1fr) 3rem 1.5rem 2rem; }
   }
   @container (min-width: 590px) {
-    .track-line { grid-template-columns: 1.75rem minmax(0,1.5fr) minmax(0,1fr) 3rem 1.5rem 2rem; }
+    .track-table:not(.compact) .track-line { grid-template-columns: 1.75rem minmax(0,1.5fr) minmax(0,1fr) 3rem 1.5rem 2rem; }
     .album { display: block; }
   }
   @container (min-width: 760px) {
-    .track-line { grid-template-columns: 1.75rem minmax(0,1.6fr) minmax(0,1fr) 3rem 6rem 3rem 1.5rem 2rem; }
+    .track-table:not(.compact) .track-line { grid-template-columns: 1.75rem minmax(0,1.6fr) minmax(0,1fr) 3rem 6rem 3rem 1.5rem 2rem; }
     .plays, .quality { display: block; }
   }
 </style>

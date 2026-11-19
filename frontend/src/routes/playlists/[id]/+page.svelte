@@ -1,9 +1,10 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { Pencil, Play, Trash2 } from "lucide-svelte";
   import { canPlay } from "$lib/catalog/availability";
-  import { api } from "$lib/api";
+  import { api, apiFetch } from "$lib/api";
   import { invalidatePlaylists, playlistQuery } from "$lib/catalog/playlists.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
@@ -17,7 +18,9 @@
 
   const auth = getAuthStore();
   const queue = getQueueStore();
-  const playlist = playlistQuery(() => api.get<Playlist>(`/playlists/${page.params.id}`));
+  const playlist = playlistQuery(signal => apiFetch<Playlist>(`/playlists/${page.params.id}`, { signal }));
+  let mounted = true;
+  onDestroy(() => { mounted = false; });
   let editId = $state("");
   let removing = $state(false);
   let error = $state("");
@@ -44,7 +47,7 @@
     try {
       await api.delete(`/playlists/${id}`);
       invalidatePlaylists();
-      await goto("/playlists");
+      if (mounted) await goto("/playlists");
     } catch (cause) {
       error = cause instanceof Error ? cause.message : t("common.error");
     } finally {
@@ -81,5 +84,5 @@
     {#if tracks.length}<TrackList source="playlist" {tracks} onremove={mine ? removeTrack : undefined} />{:else}<CatalogState message={t("playlists.empty")} />{/if}
   </div>
 {:else}
-  <CatalogState loading={playlist.loading} failed={playlist.failed} status={playlist.status} retry={playlist.retry} />
+  <CatalogState layout="detail" loading={playlist.loading} failed={playlist.failed} status={playlist.status} retry={playlist.retry} />
 {/if}

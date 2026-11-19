@@ -31,7 +31,7 @@ it("links to four recent public playlists and marks only the current one", async
   const { container } = render(LibraryNavigation, { props: { close } });
 
   const current = await screen.findByRole("link", { name: "On repeat" });
-  expect(get).toHaveBeenCalledWith("/playlists?per_page=4");
+  expect(get).toHaveBeenCalledWith("/playlists?per_page=4", expect.any(AbortSignal));
   expect(current).toHaveAttribute("aria-current", "page");
   expect(screen.getByRole("link", { name: "Playlists" })).not.toHaveAttribute("aria-current");
   expect(container.querySelectorAll("[aria-current]")).toHaveLength(1);

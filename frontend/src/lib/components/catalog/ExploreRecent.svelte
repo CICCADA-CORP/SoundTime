@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ChevronRight, Shuffle } from "lucide-svelte";
   import { homeApi } from "$lib/api";
-  import { catalogQuery } from "$lib/catalog/query.svelte";
+  import { catalogSection } from "$lib/catalog/query.svelte";
   import { canPlay } from "$lib/catalog/availability";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { t } from "$lib/i18n/index.svelte";
@@ -9,10 +9,11 @@
   import AlbumCard from "$lib/components/AlbumCard.svelte";
   import TrackList from "$lib/components/TrackList.svelte";
   import CatalogState from "./CatalogState.svelte";
+  import CatalogLoading from "./CatalogLoading.svelte";
   import RecordShelf from "./RecordShelf.svelte";
 
-  const albums = catalogQuery(() => homeApi.recentAlbums(4));
-  const tracks = catalogQuery(() => homeApi.recentlyAdded(6));
+  const albums = catalogSection(signal => homeApi.recentAlbums(4, signal));
+  const tracks = catalogSection(signal => homeApi.recentlyAdded(6, signal));
   const queue = getQueueStore();
   const hasMusic = $derived(Boolean(albums.data?.data.length || tracks.data?.data.length));
   let shuffling = $state(false);
@@ -39,7 +40,9 @@
   }
 </script>
 
-{#if !hasMusic}
+{#if albums.initialLoading || tracks.initialLoading}
+  <CatalogLoading layout="shelf" mobileRow />
+{:else if !hasMusic}
   <CatalogState loading={albums.loading || tracks.loading} failed={albums.failed || tracks.failed}
     retry={retryFailed} message={t("explore.emptyCatalog")} />
 {:else}
@@ -50,7 +53,7 @@
           <h2 class="text-lg font-semibold tracking-tight">{t("explore.recentAlbums")}</h2>
           <a class="catalog-link" href="/albums">{t("explore.allAlbums")} <ChevronRight size={15} /></a>
         </div>
-        <RecordShelf>{#each albums.data.data as album (album.id)}<AlbumCard {album} />{/each}</RecordShelf>
+        <RecordShelf mobileRow>{#each albums.data.data as album (album.id)}<AlbumCard {album} />{/each}</RecordShelf>
       </section>
     {/if}
     {#if tracks.data?.data.length}

@@ -203,6 +203,7 @@ export default {
   // Explore
   "explore.title": "发现",
   "explore.newInCatalog": "最新添加",
+  "explore.searchHint": "歌曲、专辑或艺人",
   "explore.searchCatalog": "搜索曲库",
   "explore.recentTracks": "最近添加的歌曲",
   "explore.allAlbums": "全部专辑",

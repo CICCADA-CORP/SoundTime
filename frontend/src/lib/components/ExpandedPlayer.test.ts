@@ -81,13 +81,15 @@ describe("expanded player", () => {
     expect(screen.getByText("Queue is empty")).toBeInTheDocument();
   });
 
-  it("keeps absolute cover URLs, falls back for missing metadata and disables seeking without a duration", () => {
-    selected.set({ ...track, cover_url: "https://cdn.test/image.webp", artist_name: undefined, album_title: undefined, bitrate: null, sample_rate: null });
+  it("keeps cover art and album navigation when an artist ID has no display credit", () => {
+    selected.set({ ...track, cover_url: "https://cdn.test/image.webp", artist_name: null, bitrate: null, sample_rate: null });
     player.duration = 0;
     player.progress = 0;
     show();
     expect(screen.getByRole("dialog").querySelector("img")).toHaveAttribute("src", "https://cdn.test/image.webp");
-    expect(screen.getByRole("link", { name: "Unknown Artist" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog").querySelector('a[href^="/artists/"]')).toBeNull();
+    expect(screen.getByRole("link", { name: track.album_title })).toHaveAttribute("href", "/albums/album-1");
+    expect(screen.queryByText("Unknown Artist")).toBeNull();
     expect(screen.queryByText(/kbps|kHz/)).toBeNull();
     expect(screen.getByRole("slider", { name: "Playback position" })).toBeDisabled();
   });

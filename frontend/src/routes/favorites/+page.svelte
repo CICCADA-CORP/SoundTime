@@ -15,7 +15,7 @@
 
   const auth = getAuthStore();
   const current = $derived(currentCatalogPage());
-  const favorites = favoriteQuery(() => auth.isAuthenticated ? api.get<PaginatedResponse<Track>>(`/favorites?page=${current}&per_page=100`) : null);
+  const favorites = favoriteQuery(signal => auth.isAuthenticated ? api.get<PaginatedResponse<Track>>(`/favorites?page=${current}&per_page=100`, signal) : null);
 </script>
 
 <svelte:head><title>{t("favorites.title")} — SoundTime</title></svelte:head>

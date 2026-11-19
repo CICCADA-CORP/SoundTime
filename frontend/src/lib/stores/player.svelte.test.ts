@@ -707,10 +707,10 @@ describe('Player Store', () => {
       }
     });
 
-    it('uses "Unknown Artist" when artist_name is undefined', () => {
+    it('leaves media session artist empty when artist_name is undefined', () => {
       player.play(trackWithoutCover);
       if ('mediaSession' in navigator && navigator.mediaSession.metadata) {
-        expect(navigator.mediaSession.metadata.artist).toBe('Unknown Artist');
+        expect(navigator.mediaSession.metadata.artist).toBe('');
       }
     });
 

@@ -184,6 +184,7 @@ export function getRadioStore() {
   return {
     get active() { return active; },
     get seedType() { return seedType; },
+    get seedId() { return seedId; },
     get seedLabel() { return seedLabel; },
     get loading() { return loading; },
     get exhausted() { return exhausted; },

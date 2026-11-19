@@ -44,7 +44,7 @@
       <Button variant="ghost" size="icon" onclick={close} aria-label={t("common.close")}><X size={17} /></Button>
     </div>
     {#if selected.tracks.length}
-      <TrackList source="playlist" tracks={selected.tracks} />
+      <TrackList source="playlist" compact tracks={selected.tracks} />
     {:else}
       <p class="text-sm text-muted-foreground">{t("explore.noTracks")}</p>
     {/if}

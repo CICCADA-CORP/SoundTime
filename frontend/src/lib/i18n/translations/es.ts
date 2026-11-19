@@ -203,6 +203,7 @@ export default {
   // Explore
   "explore.title": "Explorar",
   "explore.newInCatalog": "Novedades",
+  "explore.searchHint": "Canción, álbum o artista",
   "explore.searchCatalog": "Buscar en el catálogo",
   "explore.recentTracks": "Últimas canciones añadidas",
   "explore.allAlbums": "Todos los álbumes",

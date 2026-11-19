@@ -4,6 +4,7 @@
   import { Button } from "$lib/components/ui/button";
   import { showcaseTracks } from "$lib/showcase";
   import CatalogSections from "$lib/components/home/CatalogSections.svelte";
+  import CatalogLoading from "$lib/components/catalog/CatalogLoading.svelte";
   import FeaturedSession from "$lib/components/home/FeaturedSession.svelte";
   import PicksShelf from "$lib/components/home/PicksShelf.svelte";
   import { createCatalog } from "$lib/components/home/catalog.svelte";
@@ -26,7 +27,10 @@
 
 <svelte:head><title>{copy.title} — SoundTime</title></svelte:head>
 
-{#if catalog.offline && !demoSelected}
+{#if catalog.initialLoading}
+  <h1 class="text-2xl font-semibold">{copy.title}</h1>
+  <div class="browser"><CatalogLoading layout="shelf" mobileRow /></div>
+{:else if catalog.offline && !demoSelected}
   <section>
     <h1 class="text-2xl font-semibold">{copy.title}</h1>
     <p class="my-4 text-sm text-muted-foreground">{t("access.retryHint")}</p>

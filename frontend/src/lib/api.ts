@@ -156,7 +156,7 @@ export async function apiFetch<T = unknown>(
 }
 
 export const api = {
-  get: <T = unknown>(path: string) => apiFetch<T>(path),
+  get: <T = unknown>(path: string, signal?: AbortSignal) => apiFetch<T>(path, { signal }),
 
   post: <T = unknown>(path: string, body?: unknown) =>
     apiFetch<T>(path, {
@@ -308,49 +308,49 @@ export const themeApi = {
 
 export const homeApi = {
   /** Get random tracks, optionally filtered by genre */
-  randomTracks: (count = 10, genre?: string) => {
+  randomTracks: (count = 10, genre?: string, signal?: AbortSignal) => {
     const params = new URLSearchParams({ count: String(count) });
     if (genre) params.set("genre", genre);
-    return api.get<import("./types").Track[]>(`/tracks/random?${params}`);
+    return api.get<import("./types").Track[]>(`/tracks/random?${params}`, signal);
   },
 
   /** Get recently added tracks */
-  recentlyAdded: (perPage = 10) =>
-    api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/tracks/recently-added?per_page=${perPage}`),
+  recentlyAdded: (perPage = 10, signal?: AbortSignal) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/tracks/recently-added?per_page=${perPage}`, signal),
 
   /** Get popular tracks (enriched with artist/album) */
-  popularTracks: (perPage = 10) =>
-    api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/tracks/popular?per_page=${perPage}`),
+  popularTracks: (perPage = 10, signal?: AbortSignal) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/tracks/popular?per_page=${perPage}`, signal),
 
   /** Get trending tracks (time-windowed, Redis-backed with PostgreSQL fallback) */
-  trendingTracks: (limit = 10, window: "1h" | "24h" | "7d" = "24h") =>
-    api.get<import("./types").Track[]>(`/tracks/trending?limit=${limit}&window=${window}`),
+  trendingTracks: (limit = 10, window: "1h" | "24h" | "7d" = "24h", signal?: AbortSignal) =>
+    api.get<import("./types").Track[]>(`/tracks/trending?limit=${limit}&window=${window}`, signal),
 
   /** Get all genres as a string array */
-  genres: () => api.get<string[]>("/genres"),
+  genres: (signal?: AbortSignal) => api.get<string[]>("/genres", signal),
 
   /** Get tracks for a specific genre */
   genreTracks: (genre: string, perPage = 10) =>
     api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/genres/${encodeURIComponent(genre)}/tracks?per_page=${perPage}`),
 
   /** Get recent listening history (requires auth) */
-  recentHistory: (perPage = 6) =>
-    api.get<import("./types").HistoryEntry[]>(`/history/recent?per_page=${perPage}`),
+  recentHistory: (perPage = 6, signal?: AbortSignal) =>
+    api.get<import("./types").HistoryEntry[]>(`/history/recent?per_page=${perPage}`, signal),
 
   /** Get stats overview (total tracks, albums, artists, genres, duration, peers) */
-  statsOverview: () => api.get<import("./types").StatsOverview>("/stats/overview"),
+  statsOverview: (signal?: AbortSignal) => api.get<import("./types").StatsOverview>("/stats/overview", signal),
 
   /** Get recently added albums */
-  recentAlbums: (perPage = 10) =>
-    api.get<import("./types").PaginatedResponse<import("./types").Album>>(`/albums/recent?per_page=${perPage}`),
+  recentAlbums: (perPage = 10, signal?: AbortSignal) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Album>>(`/albums/recent?per_page=${perPage}`, signal),
 
   /** Get top artists by play count */
-  topArtists: (perPage = 10) =>
-    api.get<import("./types").PaginatedResponse<import("./types").Artist>>(`/artists/top?per_page=${perPage}`),
+  topArtists: (perPage = 10, signal?: AbortSignal) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Artist>>(`/artists/top?per_page=${perPage}`, signal),
 
   /** Get editorial playlists */
-  editorialPlaylists: () =>
-    api.get<import("./types").EditorialPlaylist[]>("/editorial-playlists"),
+  editorialPlaylists: (signal?: AbortSignal) =>
+    api.get<import("./types").EditorialPlaylist[]>("/editorial-playlists", signal),
 };
 
 // ─── Last.fm API ─────────────────────────────────────────────────────

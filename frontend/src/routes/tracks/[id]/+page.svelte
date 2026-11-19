@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { page } from "$app/state";
   import { Flag, Pause, Pencil, Play, Trash2 } from "lucide-svelte";
   import { goto } from "$app/navigation";
@@ -7,7 +8,7 @@
   import CatalogState from "$lib/components/catalog/CatalogState.svelte";
   import ReleaseHeader from "$lib/components/catalog/ReleaseHeader.svelte";
   import { availabilityLabel, canPlay } from "$lib/catalog/availability";
-  import { api } from "$lib/api";
+  import { api, apiFetch } from "$lib/api";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { Button } from "$lib/components/ui/button";
@@ -22,8 +23,9 @@
   const auth = getAuthStore();
   const queue = getQueueStore();
   const player = getPlayerStore();
-  const track = catalogQuery(() => api.get<Track>(`/tracks/${page.params.id}`));
-  const result = catalogQuery(() => api.get<TrackCredits>(`/tracks/${page.params.id}/credits`));
+  const track = catalogQuery(signal => apiFetch<Track>(`/tracks/${page.params.id}`, { signal }));
+  const item = $derived(track.data);
+  const result = catalogQuery(signal => apiFetch<TrackCredits>(`/tracks/${page.params.id}/credits`, { signal }));
   const credits = $derived(result.data);
   let editing = $state(false);
   let deleting = $state(false);
@@ -32,38 +34,34 @@
   let success: string | null = $state(null);
   let showReportForm = $state(false);
 
-  let isOwner = $derived(credits?.uploaded_by && auth.user?.id === credits.uploaded_by);
+  const isOwner = $derived(item?.uploaded_by && auth.user?.id === item.uploaded_by);
 
-  $effect(() => {
-    void page.params.id;
-    editing = false;
-    deleting = false;
-    showReportForm = false;
-    error = success = null;
-  });
+  let mounted = true;
+  onDestroy(() => { mounted = false; });
 
   function toggleEdit() {
-    if (!credits) return;
+    if (!item) return;
     editForm = {
-      title: credits.title, genre: credits.genre ?? "", year: credits.year?.toString() ?? "",
-      track_number: credits.track_number?.toString() ?? "", disc_number: credits.disc_number?.toString() ?? "",
+      title: item.title, genre: item.genre ?? "", year: item.year?.toString() ?? "",
+      track_number: item.track_number?.toString() ?? "", disc_number: item.disc_number?.toString() ?? "",
     };
     editing = !editing;
     success = null;
   }
 
   async function saveEdit() {
-    if (!credits) return;
+    if (!item) return;
     error = null;
     try {
       const body: Record<string, unknown> = {};
-      if (editForm.title !== credits.title) body.title = editForm.title;
-      if (editForm.genre !== (credits.genre ?? "")) body.genre = editForm.genre || null;
-      if (editForm.year !== (credits.year?.toString() ?? "")) body.year = editForm.year ? parseInt(editForm.year) : null;
-      if (editForm.track_number !== (credits.track_number?.toString() ?? "")) body.track_number = editForm.track_number ? parseInt(editForm.track_number) : null;
-      if (editForm.disc_number !== (credits.disc_number?.toString() ?? "")) body.disc_number = editForm.disc_number ? parseInt(editForm.disc_number) : null;
+      if (editForm.title !== item.title) body.title = editForm.title;
+      if (editForm.genre !== (item.genre ?? "")) body.genre = editForm.genre || null;
+      if (editForm.year !== (item.year?.toString() ?? "")) body.year = editForm.year ? parseInt(editForm.year) : null;
+      if (editForm.track_number !== (item.track_number?.toString() ?? "")) body.track_number = editForm.track_number ? parseInt(editForm.track_number) : null;
+      if (editForm.disc_number !== (item.disc_number?.toString() ?? "")) body.disc_number = editForm.disc_number ? parseInt(editForm.disc_number) : null;
 
-      await api.put(`/tracks/${credits.id}`, body);
+      await api.put(`/tracks/${item.id}`, body);
+      if (!mounted) return;
       success = t('track.metadataUpdated');
       track.retry();
       editing = false;
@@ -74,11 +72,11 @@
   }
 
   async function deleteTrack() {
-    if (!credits || !confirm(t('track.deleteConfirm'))) return;
+    if (!item || !confirm(t('track.deleteConfirm'))) return;
     deleting = true;
     try {
-      await api.delete(`/tracks/${credits.id}`);
-      await goto("/explore");
+      await api.delete(`/tracks/${item.id}`);
+      if (mounted) await goto("/explore");
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
       deleting = false;
@@ -91,42 +89,35 @@
   }
 </script>
 
-<svelte:head><title>{credits?.title ?? t("track.trackLabel")} — SoundTime</title></svelte:head>
+<svelte:head><title>{item?.title ?? t("track.trackLabel")} — SoundTime</title></svelte:head>
 
-{#if credits}
+{#if item}
   <div class="max-w-4xl space-y-8">
-    <ReleaseHeader kind="album" title={credits.title} image={credits.album_cover_url} label={t("track.trackLabel")}>
+    <ReleaseHeader kind="album" title={item.title} image={item.cover_url} label={t("track.trackLabel")}>
       {#snippet info()}
-        <a href="/artists/{credits.artist_id}" class="hover:underline">{credits.artist_name}</a>
-        {#if credits.album_title && credits.album_id}
-          · <a href="/albums/{credits.album_id}" class="hover:underline">{credits.album_title}</a>
-        {/if}
-        · {credits.play_count} {credits.play_count === 1 ? t("track.play") : t("track.plays")}
+        {#if item.artist_name}<a href="/artists/{item.artist_id}" class="hover:underline">{item.artist_name}</a> · {/if}
+        {#if item.album_title && item.album_id}<a href="/albums/{item.album_id}" class="hover:underline">{item.album_title}</a> · {/if}
+        {item.play_count} {item.play_count === 1 ? t("track.play") : t("track.plays")}
       {/snippet}
       {#snippet actions()}
-        {#if track.data}
-          {@const item = track.data}
-          {@const playing = player.currentTrack?.id === item.id && player.isPlaying}
-          <Button disabled={!canPlay(item)} onclick={() => play(item)}>
-            {#if playing}<Pause size={16} fill="currentColor" />{t("shell.pause")}
-            {:else}<Play size={16} fill="currentColor" />{t("track.play")}{/if}
-          </Button>
-          {#if !canPlay(item)}<span class="text-sm text-muted-foreground">{availabilityLabel(item)}</span>{/if}
-          {#if auth.isAuthenticated}<PlayerSaveActions track={item} />{/if}
-          <CachePin scope="tracks" id={item.id} />
-        {:else if track.failed}
-          <Button variant="outline" onclick={track.retry}>{t("radio.tryAgain")}</Button>
-        {/if}
+        {@const playing = player.currentTrack?.id === item.id && player.isPlaying}
+        <Button disabled={!canPlay(item)} onclick={() => play(item)}>
+          {#if playing}<Pause size={16} fill="currentColor" />{t("shell.pause")}
+          {:else}<Play size={16} fill="currentColor" />{t("track.play")}{/if}
+        </Button>
+        {#if !canPlay(item)}<span class="text-sm text-muted-foreground">{availabilityLabel(item)}</span>{/if}
+        {#if auth.isAuthenticated}<PlayerSaveActions track={item} />{/if}
+        <CachePin scope="tracks" id={item.id} />
         {#if isOwner}
           <Button variant="outline" onclick={toggleEdit}><Pencil size={15} />{t(editing ? "track.cancelEdit" : "track.editMetadata")}</Button>
-          <Button variant="ghost" class="text-destructive" onclick={deleteTrack} disabled={deleting}><Trash2 size={15} />{t(deleting ? "track.deleting" : "track.deleteTrack")}</Button>
-        {:else if auth.isAuthenticated && track.data}
+          <Button variant="ghost" class="text-destructive" disabled={deleting} onclick={deleteTrack}><Trash2 size={15} />{t(deleting ? "track.deleting" : "track.deleteTrack")}</Button>
+        {:else if auth.isAuthenticated}
           <Button variant="ghost" onclick={() => showReportForm = true}><Flag size={15} />{t("track.reportTitle")}</Button>
         {/if}
       {/snippet}
     </ReleaseHeader>
 
-    {#if showReportForm && track.data}<TrackActions track={track.data} action="report" close={() => showReportForm = false} />{/if}
+    {#if showReportForm}<TrackActions track={item} action="report" close={() => showReportForm = false} />{/if}
     {#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
     {#if success}<p role="status" class="text-sm">{success}</p>{/if}
 
@@ -167,74 +158,78 @@
       <div class="divide-y divide-[hsl(var(--border))]">
         <div class="grid grid-cols-2 p-4">
           <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.duration')}</span>
-          <span class="text-sm">{formatDuration(credits.duration_secs)}</span>
+          <span class="text-sm">{formatDuration(item.duration_secs)}</span>
         </div>
         <div class="grid grid-cols-2 p-4">
           <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.format')}</span>
-          <span class="text-sm uppercase">{credits.format}</span>
+          <span class="text-sm uppercase">{item.format}</span>
         </div>
-        {#if credits.bitrate}
+        {#if item.bitrate}
           <div class="grid grid-cols-2 p-4">
             <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.bitrate')}</span>
-            <span class="text-sm">{credits.bitrate} kbps</span>
+            <span class="text-sm">{item.bitrate} kbps</span>
           </div>
         {/if}
-        {#if credits.sample_rate}
+        {#if item.sample_rate}
           <div class="grid grid-cols-2 p-4">
             <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.sampleRate')}</span>
-            <span class="text-sm">{(credits.sample_rate / 1000).toFixed(1)} kHz</span>
+            <span class="text-sm">{(item.sample_rate / 1000).toFixed(1)} kHz</span>
           </div>
         {/if}
-        {#if credits.genre}
+        {#if item.genre}
           <div class="grid grid-cols-2 p-4">
             <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.genre')}</span>
-            <span class="text-sm">{credits.genre}</span>
+            <span class="text-sm">{item.genre}</span>
           </div>
         {/if}
-        {#if credits.year}
+        {#if item.year}
           <div class="grid grid-cols-2 p-4">
             <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.year')}</span>
-            <span class="text-sm">{credits.year}</span>
+            <span class="text-sm">{item.year}</span>
           </div>
         {/if}
-        {#if credits.track_number}
+        {#if item.track_number}
           <div class="grid grid-cols-2 p-4">
             <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.trackLabel')}</span>
-            <span class="text-sm">{credits.track_number}{credits.disc_number ? ` (${t('track.disc', { n: credits.disc_number })})` : ""}</span>
+            <span class="text-sm">{item.track_number}{item.disc_number ? ` (${t('track.disc', { n: item.disc_number })})` : ""}</span>
           </div>
         {/if}
-        {#if credits.musicbrainz_id}
+        {#if item.musicbrainz_id}
           <div class="grid grid-cols-2 p-4">
             <span class="text-sm text-[hsl(var(--muted-foreground))]">MusicBrainz ID</span>
-            <a href="https://musicbrainz.org/recording/{credits.musicbrainz_id}" target="_blank" rel="noopener" class="text-sm text-[hsl(var(--primary))] hover:underline font-mono">{credits.musicbrainz_id.slice(0,8)}…</a>
+            <a href="https://musicbrainz.org/recording/{item.musicbrainz_id}" target="_blank" rel="noopener" class="text-sm text-[hsl(var(--primary))] hover:underline font-mono">{item.musicbrainz_id.slice(0,8)}…</a>
           </div>
         {/if}
         <div class="grid grid-cols-2 p-4">
           <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.addedOn')}</span>
-          <span class="text-sm">{new Date(credits.created_at).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}</span>
+          <span class="text-sm">{new Date(item.created_at).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}</span>
         </div>
       </div>
     </div>
 
-    <!-- Artist Info -->
-    <div class="overflow-hidden rounded-xl border bg-card">
-      <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">{t('track.artistSection')}</h2>
-      <div class="p-5 flex items-center gap-4">
-        <div class="size-16 shrink-0"><CatalogArtwork kind="artist" source={credits.artist_image} title={credits.artist_name} /></div>
-        <div>
-          <a href="/artists/{credits.artist_id}" class="font-medium hover:text-[hsl(var(--primary))] transition">{credits.artist_name}</a>
-          {#if credits.artist_bio}
-            <p class="text-sm text-[hsl(var(--muted-foreground))] mt-1 line-clamp-2">{credits.artist_bio}</p>
-          {/if}
-          {#if credits.artist_musicbrainz_id}
-            <a href="https://musicbrainz.org/artist/{credits.artist_musicbrainz_id}" target="_blank" rel="noopener" class="text-xs text-[hsl(var(--primary))] hover:underline mt-1 inline-block">MusicBrainz ↗</a>
-          {/if}
+    {#if result.loading || result.failed}
+      <CatalogState loading={result.loading} failed={result.failed} status={result.status} retry={result.retry} />
+    {/if}
+    {#if credits?.artist_name}
+      <div class="overflow-hidden rounded-xl border bg-card">
+        <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">{t('track.artistSection')}</h2>
+        <div class="p-5 flex items-center gap-4">
+          <div class="size-16 shrink-0"><CatalogArtwork kind="artist" source={credits.artist_image} title={credits.artist_name} /></div>
+          <div>
+            <a href="/artists/{credits.artist_id}" class="font-medium hover:text-[hsl(var(--primary))] transition">{credits.artist_name}</a>
+            {#if credits.artist_bio}
+              <p class="text-sm text-[hsl(var(--muted-foreground))] mt-1 line-clamp-2">{credits.artist_bio}</p>
+            {/if}
+            {#if credits.artist_musicbrainz_id}
+              <a href="https://musicbrainz.org/artist/{credits.artist_musicbrainz_id}" target="_blank" rel="noopener" class="text-xs text-[hsl(var(--primary))] hover:underline mt-1 inline-block">MusicBrainz ↗</a>
+            {/if}
+          </div>
         </div>
       </div>
-    </div>
+    {/if}
 
     <!-- Album Info -->
-    {#if credits.album_id}
+    {#if credits?.album_id}
       <div class="overflow-hidden rounded-xl border bg-card">
         <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">{t('track.albumSection')}</h2>
         <div class="p-5 flex items-center gap-4">
@@ -256,5 +251,5 @@
     {/if}
   </div>
 {:else}
-  <CatalogState loading={result.loading} failed={result.failed} status={result.status} retry={result.retry} message={t("track.notFound")} />
+  <CatalogState layout="detail" loading={track.loading} failed={track.failed} status={track.status} retry={track.retry} message={t("track.notFound")} />
 {/if}

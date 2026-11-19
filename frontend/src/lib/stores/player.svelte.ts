@@ -61,7 +61,7 @@ function updateMediaSession(track: Track) {
 
   navigator.mediaSession.metadata = new MediaMetadata({
     title: track.title,
-    artist: track.artist_name ?? "Unknown Artist",
+    artist: track.artist_name ?? "",
     album: track.album_title ?? "",
     artwork,
   });

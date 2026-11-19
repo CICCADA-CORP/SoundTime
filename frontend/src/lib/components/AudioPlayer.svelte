@@ -63,7 +63,7 @@
           <span class="metadata">
             <span class="song">{track.title}</span>
             {#if player.failed}<span class="artist" role="alert">{availabilityLabel(track) || t("player.playbackError")}</span>
-            {:else}<span class="artist">{track.artist_name ?? t("track.unknownArtist")}</span>{/if}
+            {:else if track.artist_name}<span class="artist">{track.artist_name}</span>{/if}
             {#if radio.active}<span class="radio-status">{t(radio.autoplayMode ? "player.autoplayActive" : "radio.nowPlaying")}</span>{/if}
           </span>
           <ChevronUp size={15} class="mobile-chevron" />

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { page } from "$app/state";
   import { Play } from "lucide-svelte";
-  import { api } from "$lib/api";
+  import { apiFetch } from "$lib/api";
+  import { canPlay } from "$lib/catalog/availability";
   import { catalogQuery } from "$lib/catalog/query.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import type { Album } from "$lib/types";
@@ -14,7 +15,7 @@
   import TrackList from "$lib/components/TrackList.svelte";
 
   const queue = getQueueStore();
-  const album = catalogQuery(() => api.get<Album>(`/albums/${page.params.id}`));
+  const album = catalogQuery(signal => apiFetch<Album>(`/albums/${page.params.id}`, { signal }));
   let tracks = $derived(album.data?.tracks ?? []);
 </script>
 
@@ -25,16 +26,16 @@
   <div class="space-y-7">
     <ReleaseHeader kind="album" title={data.title} image={data.cover_url} label={t("track.album")}>
       {#snippet info()}
-        <a class="hover:underline" href="/artists/{data.artist_id}">{data.artist_name ?? t("track.unknownArtist")}</a>
-        {#if data.year} · {data.year}{/if} · {tracks.length} {t("album.tracks")} · {formatDuration(tracks.reduce((sum, track) => sum + track.duration_secs, 0))}
+        {#if data.artist_name}<a class="hover:underline" href="/artists/{data.artist_id}">{data.artist_name}</a> · {/if}
+        {#if data.year}{data.year} · {/if}{tracks.length} {t("album.tracks")} · {formatDuration(tracks.reduce((sum, track) => sum + track.duration_secs, 0))}
       {/snippet}
       {#snippet actions()}
-        <Button disabled={!tracks.length} onclick={() => queue.playQueue(tracks, 0, "album")}><Play size={15} fill="currentColor" />{t("album.playAll")}</Button>
-          <CachePin scope="albums" id={data.id} />
+        <Button disabled={!tracks.some(canPlay)} onclick={() => queue.playQueue(tracks, 0, "album")}><Play size={15} fill="currentColor" />{t("album.playAll")}</Button>
+        <CachePin scope="albums" id={data.id} />
       {/snippet}
     </ReleaseHeader>
     {#if tracks.length}<TrackList source="album" {tracks} showAlbum={false} />{:else}<CatalogState message={t("explore.noTracks")} />{/if}
   </div>
 {:else}
-  <CatalogState loading={album.loading} failed={album.failed} status={album.status} retry={album.retry} />
+  <CatalogState layout="detail" loading={album.loading} failed={album.failed} status={album.status} retry={album.retry} />
 {/if}

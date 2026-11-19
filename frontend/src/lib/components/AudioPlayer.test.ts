@@ -141,10 +141,11 @@ resetMocks();
     }
   });
 
-  it('uses an artist fallback and an accessible expand button without artwork', () => {
+  it('keeps the track and its expand button available without an artist or artwork', () => {
     mockPlayerStore.currentTrack = { ...mockTrack, artist_name: null };
     render(AudioPlayer);
-    expect(screen.getByText('track.unknownArtist')).toBeInTheDocument();
+    expect(screen.queryByText('track.unknownArtist')).toBeNull();
+    expect(screen.getByText(mockTrack.title)).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'player.expand' }).length).toBeGreaterThan(0);
   });
 
