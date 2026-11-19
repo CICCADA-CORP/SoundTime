@@ -155,28 +155,6 @@ fn stop_owner(holder: Uuid, generation: i64, reason: impl std::fmt::Display) -> 
     std::process::exit(75)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_transient_database_failures_are_retried() {
-        let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
-        assert!(transient_renewal(&DbErr::Exec(RuntimeErr::SqlxError(
-            sea_orm::sqlx::Error::Io(reset),
-        ))));
-        assert!(transient_renewal(&DbErr::ConnectionAcquire(
-            ConnAcquireErr::Timeout
-        )));
-        assert!(!transient_renewal(&DbErr::ConnectionAcquire(
-            ConnAcquireErr::ConnectionClosed
-        )));
-        assert!(!transient_renewal(&DbErr::Exec(RuntimeErr::Internal(
-            "invalid renewal SQL".into()
-        ))));
-    }
-}
-
 pub async fn serve_catalogue(db: DatabaseConnection, domain: String, jwt_secret: String) {
     // These handlers select metadata only; all mutations and byte transfers go
     // through the owner, whose budgets apply across all public reverse proxies.
@@ -202,4 +180,26 @@ pub async fn serve_catalogue(db: DatabaseConnection, domain: String, jwt_secret:
         .route("/healthz", get(crate::healthz))
         .with_state(state);
     crate::serve(api).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_transient_database_failures_are_retried() {
+        let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        assert!(transient_renewal(&DbErr::Exec(RuntimeErr::SqlxError(
+            sea_orm::sqlx::Error::Io(reset),
+        ))));
+        assert!(transient_renewal(&DbErr::ConnectionAcquire(
+            ConnAcquireErr::Timeout
+        )));
+        assert!(!transient_renewal(&DbErr::ConnectionAcquire(
+            ConnAcquireErr::ConnectionClosed
+        )));
+        assert!(!transient_renewal(&DbErr::Exec(RuntimeErr::Internal(
+            "invalid renewal SQL".into()
+        ))));
+    }
 }

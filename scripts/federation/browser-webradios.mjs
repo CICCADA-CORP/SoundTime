@@ -263,6 +263,8 @@ async function run(chrome,tokens) {
   await capture("mobile");
   await clickCss(navSlot);
   await dom("mobile menu closed","!document.querySelector('[role=dialog]')");
+  await dom("mobile station grid",card("Night Wave"));
+  await capture("grid-mobile");
   await viewport(false);
   check("mobile_tabs_and_drawer_radio_then_webradios");
 

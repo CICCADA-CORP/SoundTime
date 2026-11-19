@@ -149,17 +149,20 @@ pub(super) fn playable_filter(state: &AppState) -> sea_orm::sea_query::SimpleExp
     )
 }
 
-/// Personal collections retain their saved rows. Resolve policy once for the page,
-/// including repeated appearances of a track in the listening history.
+/// Hydrate the whole page with current availability, credit and artwork. Personal
+/// collections keep their saved order, including repeated listening-history rows.
 pub(super) async fn attach_availability<'a>(
     state: &AppState,
     tracks: impl IntoIterator<Item = &'a mut TrackResponse>,
 ) -> Result<(), (StatusCode, String)> {
     use sea_orm::{DbBackend, FromQueryResult, Statement};
     #[derive(FromQueryResult)]
-    struct Decision {
+    struct CatalogRow {
         track_id: Uuid,
         availability: String,
+        artist_name: Option<String>,
+        album_title: Option<String>,
+        cover_url: Option<String>,
     }
     let tracks: Vec<_> = tracks.into_iter().collect();
     if tracks.is_empty() {
@@ -167,11 +170,18 @@ pub(super) async fn attach_availability<'a>(
     }
     let ids: std::collections::HashSet<_> = tracks.iter().map(|t| t.id).collect();
     let [strict, enabled] = policy_flags(state);
-    let query = Statement::from_sql_and_values(DbBackend::Postgres,
-        "SELECT track_id, availability FROM federation_track_availability($1,$2)
-         WHERE track_id IN (SELECT value::uuid FROM jsonb_array_elements_text($3) AS requested(value))",
-        [strict.into(), enabled.into(), serde_json::json!(ids).into()]);
-    let rows = Decision::find_by_statement(query)
+    let query = Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT t.id AS track_id, av.availability, a.name AS artist_name, al.title AS album_title,
+                COALESCE(t.cover_url, al.cover_url) AS cover_url
+         FROM jsonb_array_elements_text($3) AS requested(value)
+         JOIN tracks t ON t.id = requested.value::uuid
+         JOIN federation_track_availability($1,$2) av ON av.track_id = t.id
+         LEFT JOIN artists a ON a.id = t.artist_id AND NOT a.is_placeholder
+         LEFT JOIN albums al ON al.id = t.album_id",
+        [strict.into(), enabled.into(), serde_json::json!(ids).into()],
+    );
+    let rows = CatalogRow::find_by_statement(query)
         .all(&state.db)
         .await
         .map_err(|e| {
@@ -181,13 +191,13 @@ pub(super) async fn attach_availability<'a>(
                 "Track availability unavailable".to_owned(),
             )
         })?;
-    let states: HashMap<_, _> = rows
-        .into_iter()
-        .map(|row| (row.track_id, row.availability))
-        .collect();
+    let catalog: HashMap<_, _> = rows.into_iter().map(|row| (row.track_id, row)).collect();
     for track in tracks {
-        if let Some(state) = states.get(&track.id) {
-            track.availability.clone_from(state);
+        if let Some(row) = catalog.get(&track.id) {
+            track.availability.clone_from(&row.availability);
+            track.artist_name.clone_from(&row.artist_name);
+            track.album_title.clone_from(&row.album_title);
+            track.cover_url = row.cover_url.clone().map(media_cover_url);
         }
     }
     Ok(())
@@ -309,58 +319,7 @@ pub async fn my_uploads(
 
     let total_pages = total.div_ceil(per_page);
 
-    // Batch-fetch artist and album data
-    let artist_ids: Vec<Uuid> = tracks
-        .iter()
-        .map(|t| t.artist_id)
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-    let album_ids: Vec<Uuid> = tracks
-        .iter()
-        .filter_map(|t| t.album_id)
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::credited()
-            .filter(artist::Column::Id.is_in(artist_ids))
-            .all(&state.db)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|a| (a.id, a))
-            .collect()
-    } else {
-        HashMap::new()
-    };
-
-    let albums: HashMap<Uuid, album::Model> = if !album_ids.is_empty() {
-        album::Entity::find()
-            .filter(album::Column::Id.is_in(album_ids))
-            .all(&state.db)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|a| (a.id, a))
-            .collect()
-    } else {
-        HashMap::new()
-    };
-
-    let mut data: Vec<_> = tracks
-        .into_iter()
-        .map(|t| {
-            let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let album = t.album_id.and_then(|id| albums.get(&id));
-            let mut resp = TrackResponse::from(t);
-            resp.artist_name = artist_name;
-            resp.attach_album(album);
-            resp
-        })
-        .collect();
-
+    let mut data: Vec<_> = tracks.into_iter().map(TrackResponse::from).collect();
     attach_availability(&state, &mut data).await?;
     Ok(Json(PaginatedResponse {
         data,
@@ -383,22 +342,6 @@ pub async fn get_track(
         .ok_or((StatusCode::NOT_FOUND, "Track not found".to_string()))?;
 
     let mut resp = TrackResponse::from(track_model.clone());
-
-    // Fetch artist name
-    if let Ok(Some(a)) = artist::Entity::credited()
-        .filter(artist::Column::Id.eq(track_model.artist_id))
-        .one(&state.db)
-        .await
-    {
-        resp.artist_name = Some(a.name);
-    }
-
-    // Fetch album title & cover
-    if let Some(album_id) = track_model.album_id {
-        if let Ok(Some(a)) = album::Entity::find_by_id(album_id).one(&state.db).await {
-            resp.attach_album(Some(&a));
-        }
-    }
 
     // Compute best available bitrate across local and remote sources
     let local_bitrate = track_model.bitrate.unwrap_or(0);

@@ -727,7 +727,7 @@ mod tests {
         let limit = 4 * (size + 16 * block);
         let cache = CacheVolume::open(root.clone(), limit, 0, 0)?;
         let payloads = [1, 2, 3, 4].map(|byte| vec![byte; size as usize]);
-        let [staged, published, evicting, unlinking] = payloads.each_ref().map(|p| Hash::new(p));
+        let [staged, published, evicting, unlinking] = payloads.each_ref().map(Hash::new);
         for (i, payload) in payloads.iter().enumerate() {
             let mut writer = cache.reserve(Hash::new(payload), size)?.unwrap();
             writer.append(payload).await?;

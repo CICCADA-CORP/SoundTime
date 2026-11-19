@@ -192,7 +192,17 @@ try {
       "Playlist or metadata operation opened an audio stream");
     assert.ok(!paths.includes("/api/p2p/search"),"Normal search queried the wider network");
   }
-  async function addToPlaylists(listeners, capture) {
+  async function checkRowCredit(credit) {
+    const labels = await evaluate(`(() => {
+      const item = ${row};
+      return {
+        artist_name: item.querySelector('a[href^="/tracks/"] ~ span')?.innerText.trim(),
+        album_title: item.querySelector('a[href^="/albums/"]')?.innerText.trim(),
+      };
+    })()`);
+    assert.deepEqual(labels, credit, "The indexed recording must retain its artist and album in this view");
+  }
+  async function addToPlaylists(listeners, capture, credit) {
     const start=requests.length;
     const added=[];
     const screenshots = {};
@@ -204,6 +214,7 @@ try {
         await viewport(false);
         await until("desktop search result", () => evaluate("location.pathname==='/search' && Boolean(" +
           row + "?.getClientRects().length)"));
+        if (credit) await checkRowCredit(credit);
         screenshots["search-desktop"] = await screenshot();
       }
       await click(row + "?.querySelector('[aria-haspopup=menu]')","indexed remote track");
@@ -305,11 +316,12 @@ try {
       `Array.from(document.querySelectorAll('[role=dialog] h2')).some(h => h.textContent.trim() === ${JSON.stringify(title)})
         && Boolean(${visibleSeek("[role=dialog]")})`));
   }
-  async function playback(capture = false) {
+  async function playback(capture = false, credit) {
     await send("Page.navigate", { url: origin + "/playlists/" + encodeURIComponent(playlist) });
     await until("the remote track in its playlist", () => evaluate(
       "location.pathname===" + JSON.stringify("/playlists/" + playlist) + " && Boolean(" + button + ")"));
     if (capture) await viewport(false);
+    if (credit) await checkRowCredit(credit);
     const checkpoint = responses.length;
     const started = performance.now();
     // Observe the detached HTMLAudioElement actually used by SoundTime.
@@ -343,11 +355,22 @@ try {
     const result = { first_progress_ms:firstProgressMs, ...seek, stream_responses:currentResponses };
     if (capture) {
       assert.ok(compact, "Desktop playlist has no visible player timeline");
+      if (credit) {
+        const artist = await evaluate(`document.querySelector('${playerSelector} .artist')?.innerText.trim()`);
+        assert.equal(artist, credit.artist_name, "The mini-player lost the saved artist credit");
+      }
       const desktop = await screenshot();
       await viewport(true);
       assert.equal(await evaluate("Boolean(" + visibleSeek(playerSelector) + ")"), false,
         "Mobile mini-player should expose seeking via the expanded player");
       await openExpandedPlayer();
+      if (credit) {
+        const details = await evaluate(`({
+          artist_name: document.querySelector('[role=dialog] a[href^="/artists/"]')?.innerText.trim(),
+          album_title: document.querySelector('[role=dialog] a[href^="/albums/"]')?.innerText.trim(),
+        })`);
+        assert.deepEqual(details, credit, "The expanded player lost the saved credit");
+      }
       result.mobile_seek = await seekThroughPlayer("[role=dialog]");
       result.screenshots = {"playlist-desktop":desktop, "player-mobile":await screenshot()};
     }
@@ -357,9 +380,9 @@ try {
   if (process.argv.includes("--session")) {
     const commands=createInterface({input:process.stdin,crlfDelay:Infinity});
     for await(const line of commands) {
-      const {phase,listeners,capture=false}=JSON.parse(line);
+      const {phase,listeners,capture=false,credit}=JSON.parse(line);
       let result;
-      if (phase==="add") result=await addToPlaylists(listeners, capture);
+      if (phase==="add") result=await addToPlaylists(listeners, capture, credit);
       else if (phase==="authenticate") {
         await asListener(listeners[0]);
         result={authenticated:true, attempts:logins.length};
@@ -378,7 +401,7 @@ try {
       }
       else if (phase==="play") {
         await asListener(listeners[0]);
-        result=await playback(capture);
+        result=await playback(capture, credit);
         await send("Page.navigate",{url:"about:blank"});
         if (capture) await viewport(false);
       } else if (phase==="withdraw") result=await withdrawals(listeners);

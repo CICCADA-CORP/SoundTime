@@ -42,7 +42,13 @@ def run(args, report):
     def listing_reads():
         return requests("GET", "/api/nodes", 200)
 
+    report["multicast_routes"] = {}
     for node in (a,b,c):
+        namespace = "lan-" + node.name.lower()
+        linked = compose("exec", "-T", namespace, "ip", "-4", "route", "get", "224.0.0.251")
+        require("dev lan0" in linked and not compose("exec", "-T", namespace, "ip", "-4", "route", "show", "default").strip(),
+                "Discovery must have a private mDNS route and no default gateway")
+        report["multicast_routes"][node.name] = linked.strip()
         require(not node.call("/setup/status")["has_admin"], "Expected fresh databases")
         node.account("admin" + node.name.lower(), admin=True)
         node.identify()

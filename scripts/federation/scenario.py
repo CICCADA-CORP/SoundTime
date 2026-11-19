@@ -128,12 +128,14 @@ class Instance:
         expected = "Catalogue followed" if followed else "Catalogue unfollowed"
         require(result["message"] == expected, f"{self.name}: {result['message']}")
 
-    def upload(self, title, pcm, extension="wav", mime="audio/wav", *, token=None, artist="SoundTime fixture"):
+    def upload(self, title, pcm, extension="wav", mime="audio/wav", *, token=None, artist="SoundTime fixture", album=None):
         boundary = secrets.token_hex(24)
         fields = [
             f'--{boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n{title}\r\n'.encode(),
             (f'--{boundary}\r\nContent-Disposition: form-data; name="artist"\r\n\r\n{artist}\r\n'.encode()
              if artist is not None else b""),
+            (f'--{boundary}\r\nContent-Disposition: form-data; name="album"\r\n\r\n{album}\r\n'.encode()
+             if album is not None else b""),
             (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{title}.{extension}"'
              f'\r\nContent-Type: {mime}\r\n\r\n').encode(),
             pcm, f"\r\n--{boundary}--\r\n".encode(),
@@ -163,7 +165,8 @@ class Instance:
         tracks = self.call("/playlists/" + playlist_id, token=token)["tracks"]
         # Older responses expose position only through the ordering of the array.
         return [{"position": t.get("position", i), "track_id": t["id"], "title": t["title"],
-                 "availability": t.get("availability")} for i, t in enumerate(tracks)]
+                 "availability": t.get("availability"), "artist_name": t.get("artist_name"),
+                 "album_title": t.get("album_title")} for i, t in enumerate(tracks)]
 
 
 def wav_fixture(frames, seed):
@@ -464,7 +467,7 @@ def webradio_browser(node, directory):
     evidence = json.loads(proc.stdout)
     result = evidence["report"]
     expected = {"webradios-desktop.png": (1366, 900), "webradios-mobile.png": (390, 844),
-                "webradios-live.png": (1366, 900), "webradios-disabled.png": (1366, 900)}
+                "webradios-grid-mobile.png": (390, 844), "webradios-live.png": (1366, 900), "webradios-disabled.png": (1366, 900)}
     for name, image in evidence["screenshots"].items():
         require(name in expected, "Unexpected webradio screenshot")
         write_screenshot(folder / name, image, expected[name])
@@ -501,11 +504,11 @@ class BrowserSession:
         )
         stack.push(self._exit)
 
-    def phase(self, name, screenshot_dir=None):
+    def phase(self, name, screenshot_dir=None, credit=None):
         require(self.proc is not None, f"Browser session already closed during {name}")
         try:
             self.proc.stdin.write(json.dumps({"phase": name, "listeners": self.listeners,
-                                               "capture": screenshot_dir is not None}) + "\n")
+                                               "capture": screenshot_dir is not None, "credit": credit}) + "\n")
             self.proc.stdin.flush()
         except BrokenPipeError as error:
             raise self.failure(name, "input pipe closed") from error
@@ -708,7 +711,8 @@ def _exercise(args, report, stack):
     cancel_audio = wav_fixture(8 * 1024 * 1024, 11)
     main_title, other_title, cancel_title = "Fedaudio", "Independentcopy", "Cancellationaudio"
     tracks = report["tracks"] = {}
-    tracks["origin_A"] = a.upload(main_title, main_audio)
+    credit = {"artist_name": "SoundTime fixture", "album_title": "Federation sessions"} if args.mode == "acceptance" else None
+    tracks["origin_A"] = a.upload(main_title, main_audio, album=credit["album_title"] if credit else None)
     tracks["cancel_C"] = c.upload(cancel_title, cancel_audio)
     if pilot:
         cancel_a_audio = wav_fixture(8 * 1024 * 1024, 17)
@@ -742,7 +746,7 @@ def _exercise(args, report, stack):
     browser = BrowserSession(stack, b, tracks["from_A_on_B"], main_title, playlists, listeners)
     screenshot_dir = args.report.parent / "screenshots" if args.mode == "acceptance" else None
     if pilot:
-        measurements["browser_playlist_additions"] = browser.phase("add", screenshot_dir)
+        measurements["browser_playlist_additions"] = browser.phase("add", screenshot_dir, credit)
         require(measurements["browser_playlist_additions"]["added"] == playlists,
                 "The browser did not add both listeners' memberships")
         for pid, (_, token) in zip(playlists, listeners):
@@ -752,6 +756,18 @@ def _exercise(args, report, stack):
     require(all([(t["position"], t["track_id"]) for t in rows] == list(enumerate(order))
                 for rows in before.values()),
             "Playlist does not contain the three expected tracks in order")
+    if credit:
+        hits = b.call("/search?" + urlencode({"q": main_title, "include_p2p": "false"}))["tracks"]
+        searched = [row for row in hits if row["id"] == tracks["from_A_on_B"]]
+        require(len(searched) == 1 and all(searched[0].get(k) == v for k, v in credit.items()),
+                "Search lost the remote artist or album credit")
+        for rows in before.values():
+            saved = rows[1]
+            require(saved["track_id"] == searched[0]["id"] and saved["position"] == 1
+                    and saved["availability"] == searched[0]["availability"] == "playable"
+                    and all(saved.get(k) == searched[0].get(k) for k in credit),
+                    "Playlist credit, position or availability disagrees with the indexed search hit")
+        check(report, "remote_credit_matches_search_and_both_playlists", True)
     origin_before = a.positions(origin_list)
     require([t["track_id"] for t in origin_before] == [tracks["origin_A"]], "Origin playlist is incomplete")
     report["playlists"] = {"on_B_before": before, "on_A_before": {origin_list: origin_before}}
@@ -858,7 +874,7 @@ def _exercise(args, report, stack):
         origin_failure_cycle(nodes, tracks, main_audio, playlists, measurements)
         check(report, "ban_outage_and_authenticated_recovery", True, milestone=11)
         before_browser = counters([b])
-    measurements["browser_playback"] = browser.phase("play", screenshot_dir)
+    measurements["browser_playback"] = browser.phase("play", screenshot_dir, credit)
     if pilot:
         # The play phase has decoded, sought and navigated away from the media page.
         played = difference(before_browser, counters([b]))["B"]
@@ -899,6 +915,10 @@ def _exercise(args, report, stack):
         favorites = b.call("/favorites", token=token)["data"]
         history = [entry["track"] for entry in b.call("/history", token=token)["data"]]
         for name, saved in (("favorites", favorites), ("history", history)):
+            if credit:
+                retained = [t for t in saved if t["id"] == tracks["from_A_on_B"]]
+                require(retained and all(t.get(k) == v for t in retained for k, v in credit.items()),
+                        f"Listener {i} lost the saved recording credit in {name} after withdrawal")
             check(report, f"listener_{i}_{name}_retains_withdrawn_track",
                   any(t["id"] == tracks["from_A_on_B"] and t.get("availability") == "withdrawn"
                       for t in saved), milestone=8)
