@@ -35,9 +35,9 @@ Some endpoints are conditionally authenticated based on instance settings:
 
 ---
 
-## Webradios
+## Radio and podcasts
 
-The **Webradios** navigation entry opens `/webradios`. Each instance queries the external directory on demand and keeps bounded, short-lived pages in memory. Station listings and live broadcasts are separate from SoundTime tracks, storage quotas and federation. [Radio Browser API](https://api.radio-browser.info/)
+The **Radio & podcasts** entry opens `/webradios`. This route supports direct links to station filters and podcast shows. The backend shares short-lived directory responses between listeners. Browsing transfers metadata and cover art. Audio starts when the listener selects a station or episode. [Radio Browser API](https://api.radio-browser.info/) · [Apple iTunes Search API](https://performance-partners.apple.com/search-api)
 
 | Endpoint | Result |
 | --- | --- |
@@ -45,10 +45,14 @@ The **Webradios** navigation entry opens `/webradios`. Each instance queries the
 | `GET /api/webradios/stations` | Accepts optional `name`, `tag`, `offset` and `limit` (1–60, default 30). Returns `stations` and a nullable `next_offset`. Each station includes its UUID, name, icon when available, description or broadcast details, tags, country, language, codec, bitrate and HLS flag. |
 | `POST /api/webradios/stations/{id}/play` | Resolves the selected station, reports the click to Radio Browser and returns `url`, `hls` and an optional `relay_url`. |
 | `GET /api/webradios/stations/{id}/stream` | Relays compatible continuous HTTP audio by station UUID. SoundTime applies its streaming limits and checks the access setting during playback. |
+| `GET /api/webradios/podcasts` | Accepts `q`, a two-letter storefront `country` (API default US), and `offset`. An empty query returns the local Apple chart of up to 25 shows. A text search returns up to 200 matches in pages of 25, with `shows` and nullable `next_offset`. |
+| `GET /api/webradios/podcasts/{id}/episodes` | Looks up the numeric Apple show ID and reads the publisher’s public RSS audio enclosures. Returns `show`, `episodes`, nullable `next_offset` and `truncated`. Pass `country` and reuse `next_offset` in `offset` for the next 50 episodes. Feed parsing is bounded to 2 MiB and 500 episodes. |
 | `PUT /api/webradios/preference` | Saves `{"enabled":false}` or `{"enabled":true}` for the signed-in listener. Guests can change their preference in the browser. |
 | `PUT /api/admin/settings/webradios_enabled` | An administrator supplies `{"value":"false"}` or `{"value":"true"}` for the whole instance. |
 
 Directory and playback endpoints follow instance privacy. A disabled directory returns HTTP 403 for list and play requests, including known station UUIDs. HTTPS broadcasters serve listeners directly and receive the listener’s IP. An HTTP-only continuous audio station can use the same-origin relay when the site uses HTTPS. An HTTP-only HLS playlist may require an external player. Broadcasters control availability, codec support and cross-origin access to HLS segments.
+
+Apple’s catalogue includes the shows indexed in each storefront. Some publishers restrict their RSS archives or offer episodes exclusively through a subscription. The app plays publicly available episodes from their publisher’s media URLs. The publisher receives the listener’s IP. A personal or global opt-out also disables podcast lookups and stops the SoundTime episode player. [Apple podcast feed requirements](https://podcasters.apple.com/support/823-podcast-requirements)
 
 ## Health Check
 

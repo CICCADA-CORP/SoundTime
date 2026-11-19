@@ -52,21 +52,21 @@ it("lets a guest search, open and close the mobile sidebar and sign in back to t
   await waitFor(() => expect(search).toHaveFocus());
 });
 
-it("puts Webradios directly after Radio on mobile and keeps a settings link when a guest opts out", async () => {
+it("puts radio and podcasts directly after Radio on mobile and keeps a settings link when a guest opts out", async () => {
   viewport(false);
   const { webPreferences } = await import("$lib/webradios/preferences.svelte");
   localStorage.removeItem("soundtime_webradios_guest");
   vi.stubGlobal("fetch", vi.fn(async (url: string) => Response.json(url.endsWith("/webradios/status")
     ? { instance_enabled: true, user_enabled: true, enabled: true } : { data: [] })));
   render(AppShell, { children });
-  const link = await screen.findByRole("link", { name: "Webradios" });
+  const link = await screen.findByRole("link", { name: "Radio & podcasts" });
   expect(link).toHaveAttribute("href", "/webradios");
   expect(link.previousElementSibling).toHaveAttribute("href", "/radio");
   await webPreferences.setEnabled(false, null);
-  await waitFor(() => expect(screen.queryByRole("link", { name: "Webradios" })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole("link", { name: "Radio & podcasts" })).toBeNull());
   await fireEvent.click(screen.getByRole("button", { name: "Show navigation" }));
   const drawer = await screen.findByRole("dialog");
-  expect(within(drawer).getByRole("link", { name: "Webradio settings" })).toHaveAttribute("href", "/settings#webradios");
+  expect(within(drawer).getByRole("link", { name: "Radio and podcast settings" })).toHaveAttribute("href", "/settings#webradios");
   await webPreferences.setEnabled(true, null);
 });
 

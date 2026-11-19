@@ -1,6 +1,7 @@
 //! Radio Browser is an external directory. Permission checks precede every
 //! catalogue and playback lookup, including responses served from the page cache.
 mod directory;
+mod podcasts;
 mod relay;
 
 use crate::auth::middleware::AuthUser;
@@ -25,6 +26,8 @@ pub fn routes(directory: Arc<Directory>) -> Router<Arc<AppState>> {
     Router::new()
         .route("/webradios/status", get(status))
         .route("/webradios/stations", get(stations))
+        .route("/webradios/podcasts", get(podcasts::shows))
+        .route("/webradios/podcasts/{id}/episodes", get(podcasts::episodes))
         .route("/webradios/stations/{id}/play", post(play))
         .layer(Extension(directory))
         .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(

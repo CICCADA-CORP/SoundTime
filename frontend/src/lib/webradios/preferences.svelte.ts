@@ -1,5 +1,6 @@
 import { api } from "$lib/api";
 import { live } from "./live.svelte";
+import { podcast } from "./podcast.svelte";
 import type { WebradioStatus } from "./types";
 
 const guestKey = "soundtime_webradios_guest";
@@ -12,6 +13,18 @@ let revision = 0;
 let pending: Promise<void> | null = null;
 let saving: number | undefined;
 
+function stopBroadcasts() {
+  live.stop();
+  podcast.stop();
+}
+
+async function verifyPlayback() {
+  const id = member;
+  if (id === undefined) return false;
+  await refresh(id);
+  return member === id && allowed();
+}
+
 function readGuest() {
   try { return localStorage.getItem(guestKey) !== "false"; }
   catch { return guestEnabled; }
@@ -20,7 +33,7 @@ function allowed() { return status?.enabled === true && (member != null || guest
 
 function refresh(id: string | null) {
   if (member !== id) {
-    if (member !== undefined) live.stop();
+    if (member !== undefined) stopBroadcasts();
     revision++;
     pending = null;
     status = null;
@@ -39,14 +52,14 @@ function refresh(id: string | null) {
     } else {
       status = value;
     }
-    if (!allowed()) live.stop();
+    if (!allowed()) stopBroadcasts();
   }, () => {
     if (revision !== request) return;
     failed = true;
     // A direct external stream outlives its resolution response. Revalidate
     // permission on a bounded interval and fail closed if it cannot be checked.
     status = null;
-    live.stop();
+    stopBroadcasts();
   }).finally(() => { if (revision === request) pending = null; });
   return pending;
 }
@@ -71,7 +84,7 @@ async function setEnabled(enabled: boolean, id: string | null) {
       status = result;
     } finally { if (saving === request) saving = undefined; }
   }
-  if (!allowed()) live.stop();
+  if (!allowed()) stopBroadcasts();
   notify();
 }
 
@@ -79,7 +92,7 @@ function instanceChanged(enabled: boolean) {
   revision++;
   pending = null;
   if (status) status = { ...status, instance_enabled: enabled, enabled: enabled && status.user_enabled };
-  if (!enabled) live.stop();
+  if (!enabled) stopBroadcasts();
   notify();
   if (member !== undefined) void refresh(member);
 }
@@ -90,7 +103,7 @@ if (typeof window !== "undefined") {
   });
   window.addEventListener("storage", event => {
     if ((event.key === guestKey || event.key === changeKey) && member !== undefined) {
-      if (member === null && !readGuest()) live.stop();
+      if (member === null && !readGuest()) stopBroadcasts();
       revision++;
       pending = null;
       void refresh(member);
@@ -101,7 +114,7 @@ if (typeof window !== "undefined") {
     pending = null;
     member = undefined;
     status = null;
-    live.stop();
+    stopBroadcasts();
   });
 }
 
@@ -114,4 +127,5 @@ export const webPreferences = {
   refresh,
   setEnabled,
   instanceChanged,
+  verifyPlayback,
 };

@@ -96,7 +96,7 @@ async fn broadcaster(url: &Url) -> Result<reqwest::Response, StatusCode> {
         .map_err(|_| bad)
 }
 
-async fn open(mut url: Url) -> Result<(reqwest::Response, &'static str), StatusCode> {
+pub(super) async fn open_public(mut url: Url) -> Result<reqwest::Response, StatusCode> {
     for _ in 0..=3 {
         let response = broadcaster(&url).await?;
         if response.status().is_redirection() {
@@ -111,30 +111,35 @@ async fn open(mut url: Url) -> Result<(reqwest::Response, &'static str), StatusC
         if !response.status().is_success() {
             return Err(StatusCode::BAD_GATEWAY);
         }
-        let value = response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("")
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        let mime = match value.as_str() {
-            "audio/mpeg" | "audio/mp3" | "audio/mpeg3" => "audio/mpeg",
-            "audio/aac" | "audio/aacp" => "audio/aac",
-            "audio/ogg" | "application/ogg" => "audio/ogg",
-            "audio/flac" | "audio/x-flac" => "audio/flac",
-            "audio/opus" => "audio/opus",
-            "audio/mp4" | "audio/x-m4a" => "audio/mp4",
-            "audio/webm" => "audio/webm",
-            "audio/wav" | "audio/wave" | "audio/x-wav" => "audio/wav",
-            _ => return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE),
-        };
-        return Ok((response, mime));
+        return Ok(response);
     }
     Err(StatusCode::BAD_GATEWAY)
+}
+
+async fn open(url: Url) -> Result<(reqwest::Response, &'static str), StatusCode> {
+    let response = open_public(url).await?;
+    let value = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let mime = match value.as_str() {
+        "audio/mpeg" | "audio/mp3" | "audio/mpeg3" => "audio/mpeg",
+        "audio/aac" | "audio/aacp" => "audio/aac",
+        "audio/ogg" | "application/ogg" => "audio/ogg",
+        "audio/flac" | "audio/x-flac" => "audio/flac",
+        "audio/opus" => "audio/opus",
+        "audio/mp4" | "audio/x-m4a" => "audio/mp4",
+        "audio/webm" => "audio/webm",
+        "audio/wav" | "audio/wave" | "audio/x-wav" => "audio/wav",
+        _ => return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    };
+    Ok((response, mime))
 }
 
 pub async fn stream_station(

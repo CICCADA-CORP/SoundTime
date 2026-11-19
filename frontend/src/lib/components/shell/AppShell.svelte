@@ -6,6 +6,7 @@
   import { Dialog } from "bits-ui";
   import { LibraryBig } from "lucide-svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
+  import { podcast } from "$lib/webradios/podcast.svelte";
   import { live } from "$lib/webradios/live.svelte";
   import { webPreferences } from "$lib/webradios/preferences.svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
@@ -35,7 +36,7 @@
   });
 
   $effect(() => {
-    if (!live.station) return;
+    if (!live.station && !podcast.episode) return;
     const id = auth.user?.id ?? null;
     const refresh = () => { void webPreferences.refresh(id); };
     const interval = window.setInterval(refresh, 30_000);
@@ -63,7 +64,7 @@
   <div class="frame">
     <WorkspaceHeader {expanded} {toggleSidebar} openSearch={() => searchOpen = true} />
     {#if auth.isAdmin}<TaskBanner />{/if}
-    <main id="main-content" tabindex="-1" bind:this={main} class={{ playing: !!player.currentTrack || !!live.station }}>
+    <main id="main-content" tabindex="-1" bind:this={main} class={{ playing: !!player.currentTrack || !!live.station || !!podcast.episode }}>
       <div class="page-content">{@render children()}</div>
     </main>
   </div>
@@ -121,6 +122,7 @@
     }
     .mobile-tabs a { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: center; flex-direction: column; gap: 3px; color: hsl(var(--muted-foreground)); font-size: 11px; }
     .mobile-tabs a span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mobile-tabs a[href="/webradios"] span { white-space: normal; text-align: center; line-height: 1.05; }
     .mobile-tabs a[aria-current] { color: hsl(var(--foreground)); font-weight: 650; }
     .mobile-tabs a[aria-current] :global(svg) { stroke-width: 2.15; }
     .mobile-tabs :focus-visible { outline-offset: -3px; }

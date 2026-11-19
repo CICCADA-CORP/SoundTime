@@ -467,7 +467,7 @@ def webradio_browser(node, directory):
     evidence = json.loads(proc.stdout)
     result = evidence["report"]
     expected = {"webradios-desktop.png": (1366, 900), "webradios-mobile.png": (390, 844),
-                "webradios-grid-mobile.png": (390, 844), "webradios-live.png": (1366, 900), "webradios-disabled.png": (1366, 900)}
+                "webradios-grid-mobile.png": (390, 844), "webradios-podcast.png": (1366, 900), "webradios-live.png": (1366, 900), "webradios-disabled.png": (1366, 900)}
     for name, image in evidence["screenshots"].items():
         require(name in expected, "Unexpected webradio screenshot")
         write_screenshot(folder / name, image, expected[name])

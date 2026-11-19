@@ -79,7 +79,7 @@ fn clean(value: &str, limit: usize) -> String {
         .collect()
 }
 
-fn web_url(value: &str) -> Option<String> {
+pub(super) fn web_url(value: &str) -> Option<String> {
     let value = value.trim();
     if value.len() > 2048 || value.chars().any(char::is_control) {
         return None;
@@ -197,6 +197,7 @@ struct Entry {
 }
 
 pub struct Directory {
+    pub(super) podcasts: super::podcasts::Podcasts,
     client: Client,
     mirrors: Vec<String>,
     preferred: AtomicUsize,
@@ -219,6 +220,7 @@ impl Directory {
             .pool_max_idle_per_host(MAX_PARALLEL)
             .build()?;
         Ok(Self {
+            podcasts: super::podcasts::Podcasts::new(client.clone()),
             client,
             mirrors,
             preferred: AtomicUsize::new(0),

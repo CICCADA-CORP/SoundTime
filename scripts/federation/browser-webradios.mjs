@@ -22,6 +22,9 @@ const ids = {
   playlist:"4c34a12d-4000-4000-8400-000000000001", tracks:["8dcdb546-4000-4000-8400-000000000001","8dcdb546-4000-4000-8400-000000000002"],
 };
 const liveUrl = "https://soundtime-fixture.invalid/live.wav";
+const podcastUrl = "https://soundtime-fixture.invalid/episode.wav";
+const show = {id:"123456",title:"After Hours",author:"Studio West",artwork_url:null,genre:"Music"};
+const episode = {id:"episode-a",title:"Inside the sound booth",description:"How the desk works.",published_at:"2026-10-01T14:00:00Z",audio_url:podcastUrl,duration:24};
 const station = {id:ids.station,name:"Night Wave",icon_url:null,description:"Night-time jazz from the fixture studio.",
   tags:["jazz","live"],country:"France",language:"French",codec:"PCM",bitrate:128,hls:false};
 const tracks = ids.tracks.map((id,i)=>({id,title:"Queue witness "+(i+1),artist_name:"Fixture Ensemble",artist_id:ids.playlist,
@@ -182,19 +185,25 @@ async function run(chrome,tokens) {
       body:Buffer.from(body).toString("base64")});
     const json=v=>fulfill(200,"application/json",JSON.stringify(v));
     const track=ids.tracks.find(id=>u.origin===origin && u.pathname==="/api/tracks/"+id+"/stream");
-    if(request.url===liveUrl || track) {
+    if(request.url===liveUrl || request.url===podcastUrl || track) {
       const range=Object.entries(request.headers).find(([k])=>k.toLowerCase()==="range")?.[1];
       const match=range && /^bytes=(\d+)-(\d*)$/.exec(range);
       const start=match?Number(match[1]):0, end=match?.[2]?Math.min(wav.length-1,Number(match[2])):wav.length-1;
       if(start>end) return fulfill(416,"audio/wav","",{"Content-Range":"bytes */"+wav.length});
       const payload=wav.subarray(start,end+1);
-      report.media.push({source:track || "live",bytes:payload.length});
+      report.media.push({source:track || (request.url===podcastUrl ? "episode" : "live"),bytes:payload.length});
       return fulfill(match?206:200,"audio/wav",payload,{"Content-Length":String(payload.length),"Accept-Ranges":"bytes",
         "Access-Control-Allow-Origin":"*",...(match?{"Content-Range":`bytes ${start}-${end}/${wav.length}`}:{})});
     }
     if(u.origin!==origin) {
       report.blocked_external_requests++;
       return command("Fetch.failRequest",{requestId,errorReason:"BlockedByClient"});
+    }
+    if(u.pathname==="/api/webradios/podcasts") {
+      return json({shows:[show],next_offset:null});
+    }
+    if(u.pathname==="/api/webradios/podcasts/"+show.id+"/episodes") {
+      return json({show,episodes:[episode],next_offset:null,truncated:false});
     }
     if(u.pathname==="/api/webradios/stations" && request.method==="GET") {
       const name=u.searchParams.get("name")||"", tag=u.searchParams.get("tag")||"", offset=Number(u.searchParams.get("offset")||0);
@@ -244,7 +253,7 @@ async function run(chrome,tokens) {
   const navRadio='a[href="/webradios"]', navSlot='#workspace-sidebar a[href="/radio"] + a[href="/webradios"]';
   const radioPlay='article button[aria-label="Play Night Wave"]';
   const field=(label)=>`[...document.querySelectorAll("label")].find(el=>el.textContent.trim()===${q(label)})?.querySelector('input[role=switch]')`;
-  const globalSwitch=field("Allow webradios on this instance"), personalSwitch=field("Show and play webradios");
+  const globalSwitch=field("Allow radio and podcasts on this instance"), personalSwitch=field("Show and play radio and podcasts");
   const witness=(path)=>`window.fixtureMedia?.find(el=>el.currentSrc.endsWith(${q(path)}) && !el.paused && el.readyState>=2)?.currentTime`;
   const check=s=>report.checks.push(s);
   const card=title=>`Array.from(document.querySelectorAll("main article h2")).some(h=>h.textContent.trim()===${q(title)})`;
@@ -307,8 +316,21 @@ async function run(chrome,tokens) {
   report.resume_position_seconds=pausedAt;
   check("decoded_live_stop_resume_preserves_queue");
 
+  await clickCss('main a[href*="show=123456"]');
+  await dom("podcast show detail", `Boolean(document.querySelector('main a[href*="podcasts.apple.com"]'))`);
+  assert.equal(report.media.filter(entry=>entry.source==="episode").length,0);
+  await clickCss('main button[aria-label="Play Inside the sound booth"]');
+  await dom("podcast audio is decoded",`(${witness("/episode.wav")})>0.35 && !!document.querySelector("section.episode-bar")`);
+  assert.equal(await evaluate("window.fixtureMedia.filter(el=>!el.paused).length"),1);
+  await clickCss('section.episode-bar button[aria-label="Pause Inside the sound booth"]');
+  await dom("episode can pause","window.fixtureMedia.every(el=>el.paused)");
+  await clickCss('section.episode-bar button[aria-label="Play Inside the sound booth"]');
+  await dom("episode can resume",`(${witness("/episode.wav")})>0.45`);
+  await capture("podcast");
+  check("episode_selection_decodes_and_pauses");
   await click(personalSwitch,"personal switch");
   await dom("personal opt-out",`!(${personalSwitch})?.checked && !document.querySelector('form input[name=name]') && !(${visible(navSlot)})`);
+  await dom("opt-out closes podcast",'!document.querySelector("section.episode-bar") && window.fixtureMedia.every(el=>el.paused)');
   assert.equal((await api("/webradios/status")).user_enabled,false);
   const personalLimit=report.directory.length;
   await page("/webradios?name=Wave&tag=jazz");

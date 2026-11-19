@@ -1,3 +1,4 @@
+import { podcast } from "$lib/webradios/podcast.svelte";
 import { live } from "$lib/webradios/live.svelte";
 import { canPlay } from "$lib/catalog/availability";
 import type { RadioSeedType } from "$lib/types";
@@ -29,6 +30,7 @@ async function startRadio(
   opts: { seedId?: string; genre?: string; label: string; autoplay?: boolean }
 ) {
   live.stop();
+  podcast.stop();
   const current = ++session;
   active = true;
   error = null;

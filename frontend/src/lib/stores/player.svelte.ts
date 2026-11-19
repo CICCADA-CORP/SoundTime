@@ -1,5 +1,6 @@
 import { webPreferences } from "$lib/webradios/preferences.svelte";
 import { live } from "$lib/webradios/live.svelte";
+import { podcast, type PodcastEpisode, type PodcastShow } from "$lib/webradios/podcast.svelte";
 import type { WebradioStation } from "$lib/webradios/types";
 import { canPlay } from "$lib/catalog/availability";
 import type { Track } from "$lib/types";
@@ -202,6 +203,7 @@ function initAudio() {
     });
 
     audio.addEventListener("pause", () => {
+      if (live.station || podcast.episode) return;
       isPlaying = false;
       if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
         navigator.mediaSession.playbackState = "paused";
@@ -259,17 +261,37 @@ function logListen(track: Track, durationListened: number, completed: boolean) {
   api.post("/history", body).catch(() => {});
 }
 
-function playStation(station: WebradioStation) {
-  if (typeof window === "undefined" || (webPreferences.status && !webPreferences.enabled)) return;
+function parkCatalogue() {
   live.stop();
-  pause();
+  podcast.stop();
+  if (audio && currentTrack && loadedTrackId === currentTrack.id && restorePosition === null && Number.isFinite(audio.currentTime)) {
+    progress = audio.currentTime;
+  }
   loadedTrackId = null;
+  pause();
   if (audio) {
     audio.removeAttribute("src");
     audio.load();
   }
   getRadioStore().stopRadio();
   updateFavicon(null);
+}
+
+function restoreCatalogueSession() {
+  if (!("mediaSession" in navigator)) return;
+  navigator.mediaSession.playbackState = "paused";
+  try {
+    navigator.mediaSession.setPositionState?.();
+    navigator.mediaSession.setActionHandler("stop", null);
+  } catch { /* optional controls */ }
+  registerMediaSessionHandlers();
+  if (currentTrack) updateMediaSession(currentTrack);
+  else navigator.mediaSession.metadata = null;
+}
+
+function playStation(station: WebradioStation) {
+  if (typeof window === "undefined" || (webPreferences.status && !webPreferences.enabled)) return;
+  parkCatalogue();
   if ("mediaSession" in navigator) {
     if (typeof MediaMetadata === "function") navigator.mediaSession.metadata = new MediaMetadata({ title: station.name });
     try { navigator.mediaSession.setPositionState?.(); } catch { /* live streams have no seekable length */ }
@@ -279,20 +301,36 @@ function playStation(station: WebradioStation) {
     navigator.mediaSession.setActionHandler("pause", live.stop);
     try { navigator.mediaSession.setActionHandler("stop", live.stop); } catch { /* optional system control */ }
   }
-  void live.start(station, volume, () => {
-    if ("mediaSession" in navigator) {
-      navigator.mediaSession.playbackState = "paused";
-      try { navigator.mediaSession.setActionHandler("stop", null); } catch { /* optional system control */ }
-      registerMediaSessionHandlers();
-      if (currentTrack) updateMediaSession(currentTrack);
-      else navigator.mediaSession.metadata = null;
+  void live.start(station, volume, restoreCatalogueSession);
+}
+
+function playPodcast(show: PodcastShow, episode: PodcastEpisode, country?: string) {
+  if (typeof window === "undefined" || !webPreferences.enabled) return;
+  parkCatalogue();
+  if ("mediaSession" in navigator) {
+    if (typeof MediaMetadata === "function") {
+      navigator.mediaSession.metadata = new MediaMetadata({ title: episode.title, artist: show.author, album: show.title });
     }
-  });
+    const session = navigator.mediaSession;
+    try { session.setPositionState?.(); } catch { /* optional control */ }
+    const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler | null>> = {
+      play: podcast.resume, pause: podcast.pause, stop: podcast.stop,
+      previoustrack: null, nexttrack: null,
+      seekto: ({ seekTime }) => { if (seekTime != null) podcast.seek(seekTime); },
+      seekbackward: ({ seekOffset }) => podcast.seek(podcast.progress - (seekOffset ?? 10)),
+      seekforward: ({ seekOffset }) => podcast.seek(podcast.progress + (seekOffset ?? 10)),
+    };
+    for (const [action, handler] of Object.entries(handlers)) {
+      try { session.setActionHandler(action as MediaSessionAction, handler); } catch { /* optional OS control */ }
+    }
+  }
+  void podcast.start(show, episode, volume, webPreferences.verifyPlayback, restoreCatalogueSession, country);
 }
 
 function play(track: Track, automatic = false) {
   if (!canPlay(track)) return;
   live.stop();
+  podcast.stop();
   initAudio();
   if (!audio) return;
 
@@ -348,6 +386,7 @@ function pause() {
 
 function resume() {
   live.stop();
+  podcast.stop();
   if (!audio || !currentTrack) return;
   const track = currentTrack;
   if (!canPlay(track)) {
@@ -409,6 +448,7 @@ function seek(time: number) {
 
 function stopOnLogout() {
   live.stop();
+  podcast.stop();
   pause();
   currentTrack = null;
   loadedTrackId = null;
@@ -434,6 +474,7 @@ function setVolume(vol: number) {
   volume = Math.max(0, Math.min(1, vol));
   if (audio) audio.volume = volume;
   live.setVolume(volume);
+  podcast.setVolume(volume);
   try { localStorage.setItem(volumeKey, String(volume)); }
   catch { /* The active player still applies the volume. */ }
 }
@@ -451,6 +492,7 @@ function cycleRepeat() {
 /** Reset all player state. Intended for test isolation. */
 function _resetForTests() {
   live.stop();
+  podcast.stop();
   playbackRequest++;
   loadedTrackId = null;
   restorePosition = null;
@@ -469,7 +511,7 @@ function _resetForTests() {
 
 export function getPlayerStore() {
   return {
-    get currentTrack() { return live.station ? null : currentTrack; },
+    get currentTrack() { return live.station || podcast.episode ? null : currentTrack; },
     get isPlaying() { return isPlaying; },
     get failed() { return failed; },
     get volume() { return volume; },
@@ -479,6 +521,7 @@ export function getPlayerStore() {
     get repeat() { return repeat; },
     play,
     playStation,
+    playPodcast,
     pause,
     resume,
     togglePlay,

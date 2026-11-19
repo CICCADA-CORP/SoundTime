@@ -112,6 +112,8 @@ async fn user_and_instance_can_each_disable_browsing_and_playback() {
     );
     for (method, uri) in [
         (Method::GET, "/webradios/stations"),
+        (Method::GET, "/webradios/podcasts?country=FR"),
+        (Method::GET, "/webradios/podcasts/123/episodes?country=FR"),
         (Method::POST, station),
     ] {
         assert_eq!(
@@ -142,6 +144,8 @@ async fn user_and_instance_can_each_disable_browsing_and_playback() {
     );
     for (method, uri) in [
         (Method::GET, "/webradios/stations"),
+        (Method::GET, "/webradios/podcasts?country=FR"),
+        (Method::GET, "/webradios/podcasts/123/episodes?country=FR"),
         (Method::POST, station),
     ] {
         assert_eq!(
