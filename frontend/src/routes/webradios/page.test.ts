@@ -116,3 +116,25 @@ it("opens a show by URL, reads its public episodes and starts audio only on the 
   await fireEvent.click(play);
   expect(playPodcast).toHaveBeenCalledWith(show,episode,"FR");
 });
+
+it("keeps the search page when opening a podcast from later results", async () => {
+  Object.assign(page, {url:new URL("https://app.test/webradios?view=podcasts&q=Studio&country=CA&offset=25")});
+  vi.stubGlobal("fetch",vi.fn(async (url:string) => url.endsWith("/status") ? Response.json(enabled)
+    : Response.json({shows:[show],next_offset:50})));
+  render(Stations);
+  const link = await screen.findByRole("link",{name:/Studio Notes/});
+  expect(link).toHaveAttribute("href","/webradios?view=podcasts&country=CA&q=Studio&show=123456&listOffset=25");
+  expect(screen.getByRole("link",{name:"Next"})).toHaveAttribute("href","/webradios?view=podcasts&country=CA&q=Studio&offset=50");
+  expect(screen.getByRole("link",{name:"Previous"})).toHaveAttribute("href","/webradios?view=podcasts&country=CA&q=Studio");
+});
+
+it("shows the Apple page and return link for shows with no public episodes", async () => {
+  Object.assign(page, {url:new URL("https://app.test/webradios?view=podcasts&show=123456&country=CA&listOffset=25&q=Studio")});
+  vi.stubGlobal("fetch",vi.fn(async (url:string) => url.endsWith("/status") ? Response.json(enabled)
+    : Response.json({show,episodes:[],next_offset:null,truncated:false})));
+  render(Stations);
+  expect(await screen.findByText("This show has no public audio episodes in its feed.")).toBeTruthy();
+  expect(screen.getByRole("link",{name:"Apple Podcasts"})).toHaveAttribute("href","https://podcasts.apple.com/ca/podcast/id123456");
+  expect(screen.getAllByRole("link",{name:"Podcasts"}).some(link=>link.getAttribute("href")==="/webradios?view=podcasts&country=CA&q=Studio&offset=25")).toBe(true);
+  expect(playPodcast).not.toHaveBeenCalled();
+});

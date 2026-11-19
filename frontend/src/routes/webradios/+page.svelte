@@ -28,7 +28,7 @@
   }
   function link(genre: string, start = 0) {
     const p = parameters(name, genre, start).toString();
-    return p ? "/webradios?" + p : "/webradios";
+    return "/webradios?" + (p || "view=radios");
   }
   const section = $derived.by(() => {
     const value = page.url.searchParams.get("view");
@@ -70,6 +70,7 @@
       {#if section === "discover"}<a class="see-all" href="/webradios?view=radios">{t("broadcast.allStations")} <ArrowRight size={15} /></a>{/if}
     </div>
     <form action="/webradios" method="GET" class="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_auto] sm:items-end">
+      <input type="hidden" name="view" value="radios" />
       <label class="space-y-1 text-sm font-medium">
         <span>{t("webradios.stationName")}</span>
         <input type="search" name="name" value={name} maxlength="160" class="block h-10 w-full rounded-md border border-input bg-background px-3 font-normal" />
