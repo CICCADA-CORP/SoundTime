@@ -1,0 +1,25 @@
+# Apply with docker-compose.yml when running a SoundTime image with catalogue workers.
+services:
+  backend:
+    environment:
+      SOUNDTIME_ROLE: worker
+  catalog-http:
+    image: ghcr.io/ciccada-corp/soundtime-backend:latest
+    restart: unless-stopped
+    environment:
+      SOUNDTIME_ROLE: catalog-http
+      DATABASE_URL: postgres://${POSTGRES_USER:-soundtime}:${POSTGRES_PASSWORD:-soundtime}@postgres:5432/${POSTGRES_DB:-soundtime}
+      JWT_SECRET: ${JWT_SECRET}
+      SOUNDTIME_DOMAIN: ${SOUNDTIME_DOMAIN:-localhost}
+      P2P_ENABLED: ${P2P_ENABLED:-true}
+      P2P_EXPLICIT_CATALOG: ${P2P_EXPLICIT_CATALOG:-false}
+      DB_MIN_CONNECTIONS: 1
+      DB_MAX_CONNECTIONS: ${CATALOG_DB_MAX_CONNECTIONS:-8}
+    depends_on:
+      postgres: {condition: service_healthy}
+  nginx:
+    volumes:
+      - ./docker/catalog-upstreams.conf:/etc/nginx/conf.d/catalog-upstreams.conf:ro
+      - ./docker/catalog-read.conf:/etc/nginx/soundtime-catalog.d/read.conf:ro
+    depends_on:
+      - catalog-http

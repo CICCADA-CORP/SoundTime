@@ -23,6 +23,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 mod api;
 mod auth;
+mod cluster;
 #[allow(dead_code)] // Public API for future recommendation endpoints (Phase 4.5+)
 mod embeddings;
 mod listing_worker;
@@ -93,6 +94,31 @@ async fn main() {
         .await
         .expect("failed to run migrations");
     tracing::info!("migrations complete");
+    // Build application state
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .unwrap_or_else(|_| "dev-secret-change-me-in-production".to_string());
+
+    if !valid_signing_secret(&jwt_secret) {
+        if std::env::var("SOUNDTIME_ENV").as_deref() == Ok("production") {
+            panic!("Set JWT_SECRET to a random secret of at least 32 bytes before starting in production");
+        }
+        tracing::warn!("JWT_SECRET is short or uses a documented placeholder");
+    }
+    let domain = std::env::var("SOUNDTIME_DOMAIN").unwrap_or_else(|_| "localhost:8080".to_string());
+    let role = cluster::Role::configured();
+    if role == cluster::Role::Catalogue {
+        cluster::serve_catalogue(db, domain, jwt_secret).await;
+        return;
+    }
+    // Returning to the standalone profile takes over the existing generation too.
+    let fenced = role == cluster::Role::Worker || cluster::has_lease(&db).await;
+    let db = if fenced {
+        let active = cluster::claim(db, &db_config).await;
+        tokio::spawn(soundtime_db::media_access::watch_policy(active.clone()));
+        active
+    } else {
+        db
+    };
     let search_db = db.clone();
     tokio::spawn(async move {
         loop {
@@ -119,18 +145,6 @@ async fn main() {
             }
         }
     });
-
-    // Build application state
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "dev-secret-change-me-in-production".to_string());
-
-    if !valid_signing_secret(&jwt_secret) {
-        if std::env::var("SOUNDTIME_ENV").as_deref() == Ok("production") {
-            panic!("Set JWT_SECRET to a random secret of at least 32 bytes before starting in production");
-        }
-        tracing::warn!("JWT_SECRET is short or uses a documented placeholder");
-    }
-    let domain = std::env::var("SOUNDTIME_DOMAIN").unwrap_or_else(|_| "localhost:8080".to_string());
 
     tracing::info!("instance domain: {}", domain);
 
@@ -192,6 +206,9 @@ async fn main() {
                     Some(node as Arc<dyn std::any::Any + Send + Sync>)
                 }
                 Err(e) => {
+                    if fenced {
+                        panic!("cannot start federation owner: {e}");
+                    }
                     tracing::error!("failed to start P2P node: {e}");
                     tracing::warn!("continuing without P2P support");
                     None
@@ -286,6 +303,7 @@ async fn main() {
     let storage_task_tracker = storage_worker::new_tracker();
     storage_worker::spawn(state.clone(), storage_task_tracker.clone());
     publications::spawn_cleanup(state.clone());
+    api::cache_pins::spawn(state.clone());
 
     // Spawn the listing heartbeat worker (announces to public directory)
     listing_worker::spawn(state.clone());
@@ -589,6 +607,16 @@ async fn main() {
                     "/tos",
                     axum::routing::put(api::reports::update_tos).delete(api::reports::reset_tos),
                 )
+                .route(
+                    "/cache/{scope}/{id}/pin",
+                    get(api::cache_pins::status)
+                        .put(api::cache_pins::pin)
+                        .delete(api::cache_pins::unpin),
+                )
+                .route(
+                    "/storage/cache",
+                    axum::routing::put(api::cache_pins::set_quota),
+                )
                 .route("/storage/status", get(api::admin::storage_status))
                 .route(
                     "/storage/integrity-check",
@@ -599,6 +627,7 @@ async fn main() {
                 .layer(Extension(storage_task_tracker))
                 // P2P admin routes
                 .route("/p2p/transport", get(api::p2p::transport_stats))
+                .route("/p2p/tracks/{id}/mirrors", get(api::p2p::track_mirrors))
                 .route(
                     "/p2p/peers",
                     get(api::p2p::list_peers).post(api::p2p::add_peer),
@@ -790,6 +819,10 @@ async fn main() {
         ))
         .with_state(state);
 
+    serve(app).await;
+}
+
+async fn serve(app: Router) {
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())

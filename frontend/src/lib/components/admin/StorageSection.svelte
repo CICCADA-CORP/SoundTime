@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { api } from "$lib/api";
   import { AlertDialog } from "bits-ui";
   import { Button, buttonVariants } from "$lib/components/ui/button";
   import { t } from "$lib/i18n/index.svelte";
@@ -19,6 +20,23 @@
   let confirmedSources = $state<string[]>([]);
   const taskProgress = $derived(section.progress);
 
+  let savingBudget = $state(false);
+  let budgetError = $state("");
+  async function saveBudget(event: SubmitEvent & { currentTarget: HTMLFormElement }) {
+    event.preventDefault();
+    const value = Math.round(Number(new FormData(event.currentTarget).get("budget")) * 1024 * 1024);
+    if (!Number.isSafeInteger(value) || value < 0 || savingBudget) return;
+    savingBudget = true;
+    budgetError = "";
+    try {
+      await api.put("/admin/storage/cache", { maximum_bytes: value });
+      await section.load("storage");
+    } catch (error) {
+      budgetError = error instanceof Error ? error.message : t("admin.unknownError");
+    } finally {
+      savingBudget = false;
+    }
+  }
   const cacheRows = [
     "maximum_bytes", "evictable_bytes", "pinned_bytes", "reserved_bytes",
     "legacy_and_unclassified_bytes", "available_bytes", "reserve_free_bytes",
@@ -76,6 +94,16 @@
             </div>
           {/each}
         </dl>
+        <form class="mt-4 flex flex-wrap items-end gap-3" onsubmit={saveBudget}>
+          <label class="grid gap-1 text-sm">{t("admin.cache.limitMiB")}
+            <input name="budget" type="number" min="0" step="any" required
+              max={storageStatus.cache.configured_ceiling_bytes / 1048576}
+              value={storageStatus.cache.maximum_bytes / 1048576}
+              class="rounded border bg-background px-2 py-1" />
+          </label>
+          <button class="rounded border px-3 py-1" type="submit" disabled={savingBudget}>{t("admin.cache.save")}</button>
+          {#if budgetError}<span role="alert" class="text-sm text-destructive">{budgetError}</span>{/if}
+        </form>
       {/if}
       <div class="mt-4 p-4 bg-[hsl(var(--secondary))] rounded-lg">
         <h3 class="text-sm font-medium mb-2">{t('admin.storage.configuration')}</h3>

@@ -35,6 +35,11 @@ pub trait StorageBackend: Send + Sync {
 
     fn full_path(&self, relative_path: &str) -> PathBuf;
 
+    /// Available only on a filesystem explicitly configured with immutable originals.
+    fn immutable_upload_path(&self, _relative_path: &str) -> Option<PathBuf> {
+        None
+    }
+
     async fn open_media(&self, relative_path: &str) -> Result<OpenedMedia, StorageError> {
         validate_storage_path(relative_path)?;
         OpenedMedia::local(&self.full_path(relative_path)).await
@@ -117,6 +122,12 @@ impl AudioStorage {
 
 #[async_trait]
 impl StorageBackend for AudioStorage {
+    fn immutable_upload_path(&self, relative_path: &str) -> Option<PathBuf> {
+        let enabled = std::env::var("P2P_REFERENCE_IMMUTABLE_UPLOADS").is_ok_and(|v| v == "true");
+        (enabled && validate_storage_path(relative_path).is_ok())
+            .then(|| self.full_path(relative_path))
+    }
+
     async fn store_file(
         &self,
         user_id: Uuid,

@@ -222,7 +222,7 @@ pub async fn search(
         .p2p
         .as_ref()
         .and_then(|n| n.clone().downcast::<soundtime_p2p::P2pNode>().ok());
-    let strict = node.as_ref().is_some_and(|n| n.explicit_catalog());
+    let [strict, p2p_enabled] = super::tracks::policy_flags(&state);
     let limit = params.per_page.unwrap_or(10).clamp(1, 50) as i64;
     let offset = (params.page.unwrap_or(1).clamp(1, 1000) as i64 - 1) * limit;
     let statement = |sql: &'static str| {
@@ -234,7 +234,7 @@ pub async fn search(
                 limit.into(),
                 offset.into(),
                 strict.into(),
-                node.is_some().into(),
+                p2p_enabled.into(),
             ],
         )
     };

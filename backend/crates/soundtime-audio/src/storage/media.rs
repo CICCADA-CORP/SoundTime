@@ -214,4 +214,64 @@ mod tests {
             .unwrap();
         assert!(reader.next_chunk().await.is_err());
     }
+    #[tokio::test]
+    async fn s3_seek_reads_only_the_conditioned_range_and_rejects_a_changed_object() {
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+            thread,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let responder = thread::spawn(move || {
+            for (index, connection) in listener.incoming().take(4).enumerate() {
+                let mut connection = connection.unwrap();
+                connection
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let header: Vec<_> = BufReader::new(&connection)
+                    .lines()
+                    .map(Result::unwrap)
+                    .take_while(|s| !s.is_empty())
+                    .collect();
+                let header = header.join("\n").to_lowercase();
+                if index % 2 == 0 {
+                    assert!(header.starts_with("head /music/test.flac "));
+                    connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\nETag: \"original\"\r\nConnection: close\r\n\r\n").unwrap();
+                } else {
+                    assert!(header.contains("range: bytes=999996-999999"), "{header}");
+                    assert!(header.contains("if-match: \"original\""), "{header}");
+                    if index == 1 {
+                        connection.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 999996-999999/1000000\r\nContent-Length: 4\r\nConnection: close\r\n\r\nTAIL").unwrap();
+                    } else {
+                        connection.write_all(b"HTTP/1.1 412 Precondition Failed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    }
+                }
+            }
+        });
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version_latest()
+            .credentials_provider(aws_sdk_s3::config::Credentials::new(
+                "test", "test", None, None, "fixture",
+            ))
+            .region(aws_sdk_s3::config::Region::new("us-east-1"))
+            .endpoint_url(url)
+            .force_path_style(true)
+            .build();
+        let client = Client::from_conf(config);
+        let object = OpenedMedia::object(&client, "music", "test.flac".into())
+            .await
+            .unwrap();
+        let mut reader = object.range(999996, 4).await.unwrap();
+        assert_eq!(
+            reader.next_chunk().await.unwrap().as_deref(),
+            Some(b"TAIL".as_slice())
+        );
+        assert!(reader.next_chunk().await.unwrap().is_none());
+        let changed = OpenedMedia::object(&client, "music", "test.flac".into())
+            .await
+            .unwrap();
+        assert!(changed.range(999996, 4).await.is_err());
+        responder.join().unwrap();
+    }
 }

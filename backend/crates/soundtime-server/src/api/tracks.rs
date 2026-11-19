@@ -108,7 +108,13 @@ impl TrackResponse {
     }
 }
 
-fn policy_flags(state: &AppState) -> [bool; 2] {
+pub(super) fn policy_flags(state: &AppState) -> [bool; 2] {
+    if crate::cluster::Role::configured() == crate::cluster::Role::Catalogue {
+        return [
+            std::env::var("P2P_EXPLICIT_CATALOG").is_ok_and(|v| v.eq_ignore_ascii_case("true")),
+            std::env::var("P2P_ENABLED").is_ok_and(|v| v.eq_ignore_ascii_case("true")),
+        ];
+    }
     let node = state
         .p2p
         .as_ref()

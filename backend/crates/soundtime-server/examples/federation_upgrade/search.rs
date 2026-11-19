@@ -87,6 +87,20 @@ pub async fn check(db: &DatabaseConnection) -> Result<()> {
     assert_eq!(ids(&tx, TRACKS, "scanned:*", 0, false).await?, [scanned]);
     drain(&tx, 1).await?;
     assert_eq!(ids(&tx, TRACKS, "scanned:*", 0, false).await?, [scanned]);
+    tx.execute_unprepared(
+        "UPDATE artists SET name='Updated historical artist' WHERE id='20000000-0000-4000-8000-000000000001'",
+    ).await?;
+    drain(&tx, 1).await?;
+    let names = tx
+        .query_one(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT count(*) AS count FROM federation_events
+         WHERE origin_publication_id='30000000-0000-4000-8000-000000000001'
+           AND payload->>'artist_name'='Updated historical artist' AND kind='upsert'",
+        ))
+        .await?
+        .ok_or("no events result")?;
+    assert_eq!(names.try_get::<i64>("", "count")?, 1);
     tx.execute_unprepared(include_str!("search_fixture.sql"))
         .await?;
     let row = tx

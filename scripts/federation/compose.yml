@@ -24,6 +24,7 @@ x-env: &env
   P2P_DHT_DISCOVERY: "false"
   P2P_SHARE_IDENTITY: "false"
   P2P_VERSIONED_CATALOG: ${FEDERATION_VERSIONED:-false}
+  P2P_SHARE_CACHED: ${FEDERATION_SHARE_CACHED:-false}
   P2P_BIND_PORT: "11204"
   PLUGIN_ENABLED: "false"
   SOUNDTIME_SCHEME: http
@@ -98,6 +99,8 @@ services:
       DATABASE_URL: postgres://soundtime:federation-test@db-b/soundtime
       SOUNDTIME_DOMAIN: b.federation.test
       P2P_EXPLICIT_CATALOG: ${FEDERATION_EXPLICIT_B:-false}
+      P2P_CACHE_ON_PLAY: ${FEDERATION_RETAIN_B:-false}
+      P2P_SHARE_CACHED: ${FEDERATION_RETAIN_B:-false}
     volumes: [files-b:/data]
     depends_on:
       db-b: {condition: service_healthy}

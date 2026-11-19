@@ -159,3 +159,81 @@ async fn interrupted_inventory_replay_lease_scoping_and_origin_withdrawal() -> R
     assert!(apply_withdrawal(&db, b, &bytes).await.is_err());
     Ok(())
 }
+
+#[test]
+fn a_mirror_cannot_sign_for_another_provider_or_another_publication() -> Result<()> {
+    let a = SecretKey::from_bytes(&[37; 32]);
+    let b = SecretKey::from_bytes(&[41; 32]);
+    let c = SecretKey::from_bytes(&[43; 32]);
+    let original = release(&a, Uuid::new_v4(), 3)?;
+    let offer = lease::Offer::issue(&b, original.publication, 1, true)?;
+    offer.verify(a.public())?;
+    offer.verify(b.public())?;
+    assert!(offer.verify(c.public()).is_err());
+    let mut other_content = offer.clone();
+    other_content.provider.lease.hash = "aa".repeat(32);
+    assert!(other_content.verify(b.public()).is_err());
+    let mut forged = offer.clone();
+    forged.provider.lease.active = false;
+    assert!(forged.verify(b.public()).is_err());
+    let mut substituted = offer;
+    substituted.publication = release(&a, Uuid::new_v4(), 3)?.publication;
+    assert!(substituted.verify(b.public()).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires a disposable TEST_DATABASE_URL with migration 40"]
+async fn origin_subscriber_accepts_mirror_without_following_it() -> Result<()> {
+    let db = Database::connect(std::env::var("TEST_DATABASE_URL")?).await?;
+    let a = SecretKey::generate();
+    let b = SecretKey::generate();
+    let c = SecretKey::generate().public();
+    let publication = Uuid::new_v4();
+    let main = release(&a, publication, 1)?;
+    let independent = release(&a, Uuid::new_v4(), 1)?;
+    crate::peer_policy::follow(&db, &a.public().to_string(), true).await?;
+    let snap = Uuid::new_v4();
+    begin(&db, a.public(), snap, 5).await?;
+    apply_page(
+        &db,
+        a.public(),
+        &serde_json::to_vec(&Page {
+            snapshot: snap,
+            cut: 5,
+            number: 0,
+            last: true,
+            entries: vec![main.clone(), independent.clone()],
+        })?,
+    )
+    .await?;
+    let b_id = b.public().to_string();
+    let available = |pub_id: Uuid| {
+        let issuer = a.public().to_string();
+        let provider = b_id.clone();
+        let db = &db;
+        async move {
+            Ok::<_,anyhow::Error>(db.query_one(sql("SELECT 1 FROM federation_track_providers s JOIN track_publications p USING(track_id)
+               JOIN federation_catalogs c ON c.id=p.catalog_id WHERE c.node_id=$1 AND p.origin_publication_id=$2 AND s.provider=$3 AND s.allowed AND s.followed AND s.online",
+               [issuer.into(),pub_id.into(),provider.into()])).await?.is_some())
+        }
+    };
+    let first = lease::Offer::issue(&b, main.publication.clone(), 1, true)?;
+    assert!(lease::accept(&db, c, a.public(), &first, Some(1)).await?);
+    assert!(available(publication).await?);
+    assert!(!available(independent.publication.manifest.publication).await?);
+    assert!(!crate::peer_policy::get(&db, &b_id).await?.followed);
+    let gone = lease::Offer::issue(&b, main.publication.clone(), 2, false)?;
+    assert!(lease::accept(&db, c, b.public(), &gone, None).await?);
+    assert!(!lease::accept(&db, c, b.public(), &first, None).await?);
+    assert!(!available(publication).await?);
+    let newer = lease::Offer::issue(&b, main.publication, 3, true)?;
+    assert!(lease::accept(&db, c, b.public(), &newer, None).await?);
+    db.execute(sql("UPDATE federation_mirror_leases SET expires_at=now()-interval '1 second' WHERE provider=$1",[b_id.clone().into()])).await?;
+    assert!(!available(publication).await?);
+    crate::peer_policy::disconnect(&db, &b_id).await?;
+    let latest = lease::Offer::issue(&b, newer.publication, 4, true)?;
+    lease::accept(&db, c, a.public(), &latest, Some(2)).await?;
+    assert!(!available(publication).await?);
+    Ok(())
+}

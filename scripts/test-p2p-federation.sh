@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: scripts/test-p2p-federation.sh baseline|compatibility|acceptance"
+    echo "Usage: scripts/test-p2p-federation.sh baseline|compatibility|acceptance|retention"
     echo "Set FEDERATION_ARTIFACT_DIR to choose where each run stores its report and logs."
 }
 
@@ -10,19 +10,22 @@ if [[ $# == 1 && $1 == --help ]]; then
     usage
     exit 0
 fi
-if [[ $# != 1 ]] || [[ $1 != baseline && $1 != compatibility && $1 != acceptance ]]; then
+if [[ $# != 1 ]] || [[ $1 != baseline && $1 != compatibility && $1 != acceptance && $1 != retention ]]; then
     usage >&2
     exit 2
 fi
 
 mode=$1
 export FEDERATION_EXPLICIT_A=false FEDERATION_EXPLICIT_B=false FEDERATION_EXPLICIT_C=false FEDERATION_RANGES=false
-export FEDERATION_CACHE_SIZE=1GB FEDERATION_VERSIONED=false
+export FEDERATION_CACHE_SIZE=1GB FEDERATION_VERSIONED=false FEDERATION_RETAIN_B=false
 if [[ $mode != baseline ]]; then
     export FEDERATION_EXPLICIT_A=true FEDERATION_EXPLICIT_B=true
 fi
-if [[ $mode == acceptance ]]; then
+if [[ $mode == acceptance || $mode == retention ]]; then
     export FEDERATION_EXPLICIT_C=true FEDERATION_RANGES=true FEDERATION_CACHE_SIZE=0 FEDERATION_VERSIONED=true
+fi
+if [[ $mode == retention ]]; then
+    export FEDERATION_CACHE_SIZE=256MB FEDERATION_RETAIN_B=true
 fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -120,7 +123,9 @@ url_b=$(proxy_url b)
 url_c=$(proxy_url c)
 stage=scenario
 export SOUNDTIME_TEST_COMPOSE_PROJECT="$project"
-python3 scripts/federation/scenario.py \
+scenario=scripts/federation/scenario.py
+if [[ $mode == retention ]]; then scenario=scripts/federation/retention.py; fi
+python3 "$scenario" \
     --a "$url_a" --b "$url_b" --c "$url_c" \
     --mode "$mode" --report "$run_dir/report.json" 2>&1 | redact_audio_tokens | tee "$run_dir/scenario.log"
 stage=complete

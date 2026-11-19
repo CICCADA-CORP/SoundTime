@@ -8,6 +8,7 @@
   import { formatDuration } from "$lib/utils";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { Button } from "$lib/components/ui/button";
+  import CachePin from "$lib/components/catalog/CachePin.svelte";
   import CatalogState from "$lib/components/catalog/CatalogState.svelte";
   import ReleaseHeader from "$lib/components/catalog/ReleaseHeader.svelte";
   import TrackList from "$lib/components/TrackList.svelte";
@@ -29,6 +30,7 @@
       {/snippet}
       {#snippet actions()}
         <Button disabled={!tracks.length} onclick={() => queue.playQueue(tracks, 0, "album")}><Play size={15} fill="currentColor" />{t("album.playAll")}</Button>
+          <CachePin scope="albums" id={data.id} />
       {/snippet}
     </ReleaseHeader>
     {#if tracks.length}<TrackList source="album" {tracks} showAlbum={false} />{:else}<CatalogState message={t("explore.noTracks")} />{/if}

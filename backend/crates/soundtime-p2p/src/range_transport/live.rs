@@ -1,4 +1,6 @@
 //! Admission, provider selection and in-flight sharing for publication-scoped windows.
+#[path = "budget.rs"]
+mod budget;
 use super::{ConnectionPool, P2pError, P2pNode};
 use crate::range_transport::{self, WindowRequest};
 use anyhow::{anyhow, bail, ensure, Context, Result};
@@ -17,14 +19,16 @@ use uuid::Uuid;
 
 const MAX_PROVIDERS: i64 = 12;
 const MAX_QUEUED_WINDOWS: usize = 512;
-const MAX_ACTIVE: usize = 32;
-const MAX_PER_PEER: usize = 4;
+
 const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
 
 type Transfer = BoxFuture<'static, Result<Bytes, Arc<str>>>;
 
 pub(super) struct RangeTransfers {
     pool: ConnectionPool,
+    per_peer: usize,
+    upload: budget::Budget,
+    download: budget::Budget,
     reads: Arc<Semaphore>,
     writes: Arc<Semaphore>,
     readers_by_peer: Mutex<HashMap<EndpointId, Weak<Semaphore>>>,
@@ -37,10 +41,20 @@ pub(super) struct RangeTransfers {
 
 impl RangeTransfers {
     pub(super) fn new(endpoint: Endpoint) -> Self {
+        let active = budget::setting("P2P_MAX_RANGE_TRANSFERS", 32, 2048).max(1) as usize;
         Self {
+            per_peer: budget::setting("P2P_MAX_RANGES_PER_PEER", 4, 256).max(1) as usize,
+            upload: budget::Budget::new(
+                "P2P_UPLOAD_BYTES_PER_SECOND",
+                "P2P_PEER_UPLOAD_BYTES_PER_SECOND",
+            ),
+            download: budget::Budget::new(
+                "P2P_DOWNLOAD_BYTES_PER_SECOND",
+                "P2P_PEER_DOWNLOAD_BYTES_PER_SECOND",
+            ),
             pool: ConnectionPool::new(endpoint, range_transport::ALPN),
-            reads: Arc::new(Semaphore::new(MAX_ACTIVE)),
-            writes: Arc::new(Semaphore::new(MAX_ACTIVE)),
+            reads: Arc::new(Semaphore::new(active)),
+            writes: Arc::new(Semaphore::new(active)),
             readers_by_peer: Mutex::default(),
             writers_by_peer: Mutex::default(),
             in_flight: Mutex::default(),
@@ -67,6 +81,7 @@ impl RangeTransfers {
     }
 
     fn peer_slots(
+        &self,
         peers: &Mutex<HashMap<EndpointId, Weak<Semaphore>>>,
         peer: EndpointId,
     ) -> Arc<Semaphore> {
@@ -75,7 +90,7 @@ impl RangeTransfers {
             return slots;
         }
         peers.retain(|_, sem| sem.strong_count() > 0);
-        let slots = Arc::new(Semaphore::new(MAX_PER_PEER));
+        let slots = Arc::new(Semaphore::new(self.per_peer));
         peers.insert(peer, Arc::downgrade(&slots));
         slots
     }
@@ -129,7 +144,9 @@ impl P2pNode {
         for row in rows {
             let id: String = row.try_get("", "provider")?;
             if let Ok(id) = id.parse() {
-                providers.push(id);
+                if id != self.node_id() || self.cache_contains(req.hash) {
+                    providers.push(id);
+                }
             }
         }
         let mut failures = self.ranges.failed.lock().expect("range supplier cooldown");
@@ -144,8 +161,8 @@ impl P2pNode {
         Ok(providers)
     }
 
-    pub async fn can_retain_version(&self,id:Uuid,req:&WindowRequest)->Result<bool>{
-        Ok(!self.providers(id,req).await?.is_empty())
+    pub async fn can_retain_version(&self, id: Uuid, req: &WindowRequest) -> Result<bool> {
+        Ok(!self.providers(id, req).await?.is_empty())
     }
 
     pub async fn verified_range(self: &Arc<Self>, id: Uuid, req: WindowRequest) -> Result<Bytes> {
@@ -173,7 +190,7 @@ impl P2pNode {
             let result = track
                 .during(
                     peer_grant.during(tokio::time::timeout(ATTEMPT_TIMEOUT, async {
-                        let slots = RangeTransfers::peer_slots(&self.ranges.readers_by_peer, peer);
+                        let slots = self.ranges.peer_slots(&self.ranges.readers_by_peer, peer);
                         let _peer = slots.acquire_owned().await?;
                         let _global = self.ranges.reads.acquire().await?;
                         ensure!(
@@ -184,6 +201,12 @@ impl P2pNode {
                             let encoded = self.encode_range(req).await?;
                             range_transport::decode_window(req, &encoded)?
                         } else {
+                            // Pace admission of useful incoming audio; proof overhead is measured separately.
+                            self.ranges
+                                .download
+                                .admit(peer, req.length as usize)
+                                .await?;
+
                             let conn = self.ranges.pool.get_connection(peer).await?;
                             range_transport::fetch_window(&conn, req, track.subscription()).await?
                         };
@@ -233,7 +256,7 @@ impl P2pNode {
             conn.close(1u32.into(), b"range transfer unavailable");
             return Ok(());
         }
-        let per_peer = RangeTransfers::peer_slots(&self.ranges.writers_by_peer, peer);
+        let per_peer = self.ranges.peer_slots(&self.ranges.writers_by_peer, peer);
         while let Ok(Ok((mut send, mut recv))) = connection_grant.during(conn.accept_bi()).await {
             let permits = (
                 per_peer.clone().try_acquire_owned(),
@@ -271,10 +294,10 @@ impl P2pNode {
                AND NOT EXISTS(SELECT FROM federation_hidden_publications h WHERE h.track_id=p.track_id)
                AND NOT EXISTS(SELECT FROM federation_content_blocks b WHERE b.content_hash=v.content_hash)
                AND ((c.is_local AND NOT EXISTS(SELECT FROM federation_missing_sources m WHERE m.track_id=p.track_id))
-                 OR EXISTS(SELECT FROM publication_offers o WHERE o.track_id=p.track_id AND o.revision=p.revision
-                           AND o.provider_node_id=$6 AND o.expires_at>now()))",
+                 OR ($6 AND EXISTS(SELECT FROM federation_cached_publications cp WHERE cp.track_id=p.track_id
+                       AND cp.revision=p.revision AND cp.content_hash=v.content_hash)))",
             [req.origin.to_string().into(),req.publication.into(),i64::try_from(req.revision)?.into(),
-             req.hash.to_string().into(), i64::try_from(req.file_size)?.into(), self.node_id().to_string().into()])).await?;
+             req.hash.to_string().into(), i64::try_from(req.file_size)?.into(),self.cache_contains(req.hash).into()])).await?;
         Ok(row.context("publication denied")?.try_get("", "track_id")?)
     }
 
@@ -296,8 +319,11 @@ impl P2pNode {
                 _ = stopped => bail!("reader disconnected"),
                 result = track.during(async {
                     ensure!(!crate::peer_policy::get(&self.db,&peer.to_string()).await?.banned, "peer banned");
-                    ensure!(!self.explicit_catalog() || self.subscribers.read().await.contains(&peer), "peer has no subscription");
+                    ensure!(self.allows_range_export(peer,id,i64::try_from(req.revision)?,req.origin).await?, "publication export denied");
                     let bytes = self.encode_range(&req).await?;
+                    self.local_publication(&req).await?;
+                    ensure!(self.allows_range_export(peer,id,i64::try_from(req.revision)?,req.origin).await?, "publication export revoked");
+                    self.ranges.upload.admit(peer, bytes.len()).await?;
                     self.local_publication(&req).await?;
                     send.write_all(&bytes).await?;
                     send.finish()?;

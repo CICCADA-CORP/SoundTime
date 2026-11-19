@@ -15,6 +15,7 @@ pub const PAGE_ENTRIES: usize = 64;
 const MAX_PAGES: i32 = 16384;
 const MAX_LEASE_SECS: i64 = 24 * 60 * 60;
 const SIGNING_DOMAIN: &[u8] = b"soundtime/publication/1\0";
+pub mod lease;
 pub(crate) mod source;
 pub const ALPN: &[u8] = b"soundtime/catalog/2";
 
@@ -71,8 +72,15 @@ impl Manifest {
                 m.duration_ms >= 0 && m.size > 0,
                 "invalid track size or duration"
             );
-            ensure!(m.genre.as_deref().is_none_or(|s|s.chars().count()<=128 && !s.contains('\0')) &&
-                m.musicbrainz_id.as_deref().is_none_or(|s|s.len()<=36 && !s.contains('\0')), "invalid extended metadata");
+            ensure!(
+                m.genre
+                    .as_deref()
+                    .is_none_or(|s| s.chars().count() <= 128 && !s.contains('\0'))
+                    && m.musicbrainz_id
+                        .as_deref()
+                        .is_none_or(|s| s.len() <= 36 && !s.contains('\0')),
+                "invalid extended metadata"
+            );
             ensure!(
                 m.hash.len() == 64 && m.hash.bytes().all(|b| matches!(b,b'0'..=b'9'|b'a'..=b'f')),
                 "invalid BLAKE3 root"
@@ -170,6 +178,10 @@ async fn lock_policy(
     ensure!(
         !require_follow || row.try_get::<bool>("", "is_followed")?,
         "catalogue is not followed"
+    );
+    ensure!(
+        !crate::peer_policy::get(tx, provider).await?.banned,
+        "blocked provider"
     );
     Ok(row.try_get("", "applied_cursor")?)
 }

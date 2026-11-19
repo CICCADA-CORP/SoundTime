@@ -3,6 +3,7 @@
   import { Flag, Pause, Pencil, Play, Trash2 } from "lucide-svelte";
   import { goto } from "$app/navigation";
   import { catalogQuery } from "$lib/catalog/query.svelte";
+  import CachePin from "$lib/components/catalog/CachePin.svelte";
   import CatalogState from "$lib/components/catalog/CatalogState.svelte";
   import ReleaseHeader from "$lib/components/catalog/ReleaseHeader.svelte";
   import { availabilityLabel, canPlay } from "$lib/catalog/availability";
@@ -112,6 +113,7 @@
           </Button>
           {#if !canPlay(item)}<span class="text-sm text-muted-foreground">{availabilityLabel(item)}</span>{/if}
           {#if auth.isAuthenticated}<PlayerSaveActions track={item} />{/if}
+          <CachePin scope="tracks" id={item.id} />
         {:else if track.failed}
           <Button variant="outline" onclick={track.retry}>{t("radio.tryAgain")}</Button>
         {/if}

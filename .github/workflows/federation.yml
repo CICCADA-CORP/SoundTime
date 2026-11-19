@@ -51,6 +51,11 @@ jobs:
           CHROME_BIN: ${{ steps.browser.outputs.chrome-path }}
         run: scripts/test-p2p-federation.sh acceptance
 
+      - name: Check durable retention and reseeding after restart
+        env:
+          FEDERATION_ARTIFACT_DIR: ${{ runner.temp }}/soundtime-federation/retention
+        run: scripts/test-p2p-federation.sh retention
+
       - name: Retain scenario reports and logs
         if: always()
         uses: actions/upload-artifact@v4

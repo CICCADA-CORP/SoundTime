@@ -50,11 +50,33 @@ pub async fn follow(db: &impl ConnectionTrait, id: &str, followed: bool) -> Resu
     db.execute(Statement::from_sql_and_values(
         DbBackend::Postgres,
         "INSERT INTO federation_peer_policies(node_id,is_followed) VALUES ($1,$2)
-         ON CONFLICT(node_id) DO UPDATE SET is_followed=excluded.is_followed",
+         ON CONFLICT(node_id) DO UPDATE SET
+           source_disabled=CASE WHEN excluded.is_followed THEN false
+                               ELSE federation_peer_policies.is_followed OR federation_peer_policies.source_disabled END,
+           is_followed=excluded.is_followed",
         [id.into(), followed.into()],
     ))
     .await?;
     Ok(())
+}
+
+pub async fn disconnect(db: &impl ConnectionTrait, id: &str) -> Result<(), DbErr> {
+    db.execute(Statement::from_sql_and_values(DbBackend::Postgres,
+        "INSERT INTO federation_peer_policies(node_id,is_followed,source_disabled) VALUES($1,false,true)
+         ON CONFLICT(node_id) DO UPDATE SET is_followed=false,source_disabled=true",[id.into()])).await?;
+    Ok(())
+}
+
+/// Public federation serves known identities unless blocked. A private operator
+/// chooses their federation counterpart by following it locally.
+pub async fn permits_export(db: &impl ConnectionTrait, id: &str) -> Result<bool, DbErr> {
+    let row=db.query_one(Statement::from_sql_and_values(DbBackend::Postgres,
+        "SELECT NOT EXISTS(SELECT FROM federation_peer_policies WHERE node_id=$1 AND is_banned)
+         AND NOT EXISTS(SELECT FROM blocked_domains WHERE domain=$1)
+         AND (NOT EXISTS(SELECT FROM instance_settings WHERE key='instance_private' AND value='true')
+              OR EXISTS(SELECT FROM federation_peer_policies WHERE node_id=$1 AND is_followed)) AS allowed",
+        [id.into()])).await?.ok_or_else(||DbErr::Custom("missing federation export policy".into()))?;
+    row.try_get("", "allowed")
 }
 
 /// Only the authenticated owner of this identity supplies this value.
@@ -80,13 +102,20 @@ pub async fn shareable(
     recipient: &str,
     limit: i64,
 ) -> Result<Vec<String>, DbErr> {
+    // Pick a point on the keyspace and wrap once. Both ranges use the index;
+    // an instance with hundreds of subscriptions can expose different samples.
+    let pivot=data_encoding::HEXLOWER.encode(&rand::random::<[u8;32]>());
     db.query_all(Statement::from_sql_and_values(
         DbBackend::Postgres,
-        "SELECT p.node_id FROM federation_peer_policies p
+        "WITH eligible AS NOT MATERIALIZED (SELECT p.node_id FROM federation_peer_policies p
          WHERE p.share_identity AND NOT p.is_banned AND p.node_id <> $1
-           AND NOT EXISTS (SELECT 1 FROM blocked_domains b WHERE b.domain=p.node_id)
-         ORDER BY p.node_id LIMIT $2",
-        [recipient.into(), limit.into()],
+           AND NOT EXISTS (SELECT 1 FROM blocked_domains b WHERE b.domain=p.node_id))
+         SELECT node_id FROM (
+           (SELECT node_id,0 AS part FROM eligible WHERE node_id >= $3 ORDER BY node_id LIMIT $2)
+           UNION ALL
+           (SELECT node_id,1 AS part FROM eligible WHERE node_id < $3 ORDER BY node_id LIMIT $2)
+         ) sampled ORDER BY part,node_id LIMIT $2",
+        [recipient.into(), limit.into(),pivot.into()],
     ))
     .await?
     .iter()
@@ -120,7 +149,7 @@ mod tests {
         let db = Database::connect(std::env::var("TEST_DATABASE_URL")?).await?;
         let txn = db.begin().await?;
         txn.execute_unprepared(
-            "CREATE TEMP TABLE federation_peer_policies(node_id text PRIMARY KEY, is_followed boolean DEFAULT false, is_banned boolean DEFAULT false, share_identity boolean DEFAULT false);
+            "CREATE TEMP TABLE federation_peer_policies(node_id text PRIMARY KEY, is_followed boolean DEFAULT false, is_banned boolean DEFAULT false, share_identity boolean DEFAULT false, source_disabled boolean DEFAULT false);
              CREATE TEMP TABLE blocked_domains(domain text PRIMARY KEY);
              INSERT INTO blocked_domains VALUES ('blocked-by-admin')"
         ).await?;

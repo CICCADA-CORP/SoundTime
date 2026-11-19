@@ -38,6 +38,7 @@ class Instance:
         self.token = None
         self.node_id = None
         self.addresses = []
+        self.login_credentials = {}
 
     def open(self, path, method="GET", body=None, headers=None, token=None):
         headers = dict(headers or {})
@@ -71,6 +72,8 @@ class Instance:
         account_id = str(UUID(result["user"]["id"]))
         token = result["tokens"]["access_token"]
         require(self.call("/auth/me", token=token)["id"] == account_id, "Unexpected account")
+        if not admin:
+            self.login_credentials[account_id] = {"username": username, "password": payload["password"]}
         if admin:
             self.token = token
             self.call("/setup/instance", method="POST",
@@ -323,15 +326,15 @@ def probe_stream(node, track_id, audio):
 
 
 class BrowserSession:
-    """Drive successive phases using one Chrome profile. Tokens travel only over stdin."""
+    """Log into the actual UI with fixture credentials sent over the private stdin pipe."""
 
-    def __init__(self, stack, base, track, title, playlists, listeners):
-        self.listeners = [{"name": f"Listener {i}", "playlist": pid, "token": account[1]}
+    def __init__(self, stack, node, track, title, playlists, listeners):
+        self.listeners = [{"name": f"Listener {i}", "playlist": pid, **node.login_credentials[account[0]]}
                           for i, (pid, account) in enumerate(zip(playlists, listeners), 1)]
         self.errors = stack.enter_context(tempfile.TemporaryFile(mode="w+"))
         self.proc = subprocess.Popen(
             ["node", str(Path(__file__).with_name("browser-playback.mjs")),
-             base, playlists[0], track, title, "--session"],
+             node.url, playlists[0], track, title, "--session"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.errors, text=True,
         )
         stack.callback(self.close)
@@ -360,8 +363,9 @@ class BrowserSession:
             self.proc.stdout.close()
 
 
-def switch_origin(running):
-    """Operate only the disposable A process selected by the three-instance runner."""
+def switch_backend(name, running):
+    """Operate only disposable audio backends owned by this scenario."""
+    require(name in {"A", "B", "C"}, "Invalid disposable backend")
     action = "start" if running else "stop"
     project = os.getenv("SOUNDTIME_TEST_COMPOSE_PROJECT", "")
     native_driver = os.getenv("SOUNDTIME_TEST_FAULT_DRIVER")
@@ -370,13 +374,17 @@ def switch_origin(running):
                    "--file", str(Path(__file__).with_name("compose.yml")), action]
         if not running:
             command += ["--timeout", "3"]
-        command.append("backend-a")
+        command.append("backend-" + name.lower())
     elif native_driver:
-        command = [native_driver, action, "A"]
+        command = [native_driver, action, name]
     else:
         raise ScenarioError("Acceptance needs the disposable Compose project or a native fault driver")
     attempt = subprocess.run(command, capture_output=True, text=True, timeout=45)
-    require(attempt.returncode == 0, f"Failed to {action} test backend A: {attempt.stderr[-400:]}")
+    require(attempt.returncode == 0, f"Failed to {action} test backend {name}: {attempt.stderr[-400:]}")
+
+
+def switch_origin(running):
+    switch_backend("A", running)
 
 
 def origin_failure_cycle(nodes, tracks, audio, playlists, measurements):
@@ -518,7 +526,7 @@ def _exercise(args, report, stack):
     initial_order = [anchors[0]] if pilot else order
     playlists = [b.playlist(user, f"Listener {i}", initial_order) for i, user in enumerate(listeners, 1)]
     require(len(set(playlists)) == 2, "Two separate playlists are required")
-    browser = BrowserSession(stack, b.url, tracks["from_A_on_B"], main_title, playlists, listeners)
+    browser = BrowserSession(stack, b, tracks["from_A_on_B"], main_title, playlists, listeners)
     if pilot:
         measurements["browser_playlist_additions"] = browser.phase("add")
         require(measurements["browser_playlist_additions"]["added"] == playlists,
@@ -558,6 +566,12 @@ def _exercise(args, report, stack):
         require(remote["B"]["verified_windows"] == 1 and remote["B"]["proof_bytes"] > 0 and
                 remote["B"]["received"] == delivered, "Seek did not use one verified Bao window")
         proxy_range_contract(b, tracks["from_A_on_B"], main_audio)
+        try:
+            with b.open("/admin/cache/tracks/" + tracks["from_A_on_B"] + "/pin", method="PUT"):
+                raise ScenarioError("Zero quota admitted a pin")
+        except HTTPError as exc:
+            with exc:
+                require(exc.code == 507, f"Zero quota pin returned HTTP {exc.code}")
         cancel_id = wait_for("v2 cancellation fixture on B", lambda: b.search("CancelatA"))
         cancel_audio = wav_fixture(8 * 1024 * 1024, 17)
     before_cancel = counters(nodes)

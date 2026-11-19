@@ -16,7 +16,7 @@ const profile = await mkdtemp(join(tmpdir(), "soundtime-browser-"));
 const chrome = process.env.CHROME_BIN || (process.platform === "darwin"
   ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "google-chrome");
 const browser = spawn(chrome, [
-  "--headless", "--disable-background-networking", "--no-first-run", "--mute-audio",
+  "--headless", "--lang=en-US", "--disable-background-networking", "--no-first-run", "--mute-audio",
   "--autoplay-policy=no-user-gesture-required", "--remote-debugging-port=0",
   "--remote-debugging-address=127.0.0.1", "--user-data-dir=" + profile, "about:blank",
 ], { stdio: "ignore" });
@@ -54,6 +54,7 @@ try {
   const responses = [];
   const requests = [];
   const mutations = [];
+  const logins = [];
   let sequence = 0;
   socket.addEventListener("message", ({ data }) => {
     const msg = JSON.parse(data);
@@ -70,6 +71,7 @@ try {
     if (msg.method === "Network.responseReceived") {
       const response = msg.params.response;
       const url = new URL(response.url);
+      if (url.origin === origin && url.pathname === "/api/auth/login") logins.push(response.status);
       if (url.origin === origin && url.pathname.startsWith("/api/playlists/") && response.status >= 200) {
         mutations.push({path:url.pathname,status:response.status});
       }
@@ -98,23 +100,46 @@ try {
     return value.result.value;
   }
 
+  await send("Page.enable");
   await send("Network.enable");
+  await send("Emulation.setLocaleOverride", {locale:"en-US"});
   const row = `Array.from(document.querySelectorAll('[role="group"]'))
     .find(row => row.getAttribute('aria-label') === ${JSON.stringify(title)}
       && row.querySelector('a')?.getAttribute('href') === ${JSON.stringify("/tracks/" + track)})`;
   const button = row + "?.querySelector('button.play-cell')";
-  let injection;
+  let activeListener;
   async function asListener(listener) {
-    await send("Page.navigate", {url:"about:blank"});
-    await until("clean navigation", () => evaluate("location.href === 'about:blank'"));
-    if (injection) await send("Page.removeScriptToEvaluateOnNewDocument",{identifier:injection});
-    const result=await send("Page.addScriptToEvaluateOnNewDocument",{source:
-      "if(location.origin===" + JSON.stringify(origin) + "){localStorage.setItem('soundtime_lang','en');" +
-      "localStorage.setItem('soundtime_access_token'," + JSON.stringify(listener.token) + ");}"});
-    injection=result.identifier;
+    if(activeListener===listener.username) return;
+    await send("Page.navigate",{url:"about:blank"});
+    await until("clean navigation",()=>evaluate("location.href==='about:blank'"));
+    await send("Storage.clearDataForOrigin",{origin,storageTypes:"cookies,local_storage"});
+    const destination="/playlists/"+listener.playlist;
+    await send("Page.navigate",{url:origin+"/login?next="+encodeURIComponent(destination)});
+    await until("login form",()=>evaluate("Boolean(document.querySelector('form input[name=password]'))"));
+    const checkpoint=logins.length;
+    await evaluate(`(()=>{
+      const form=document.querySelector("form input[name=password]").form;
+      for(const [name,value] of Object.entries(${JSON.stringify({username:listener.username,password:listener.password})})){
+        const input=form.elements.namedItem(name);
+        input.value=value;
+        input.dispatchEvent(new Event("input",{bubbles:true}));
+      }
+      form.requestSubmit();
+    })()`,true);
+    await until("login HTTP response",()=>logins.length>checkpoint);
+    assert.equal(logins.at(-1),200,"Fixture account could not log in through the UI");
+    await until("signed-in listener's playlist",()=>evaluate(
+      "location.pathname===" + JSON.stringify(destination) +
+      " && Boolean(document.querySelector('button.play-cell')) && !!localStorage.getItem('soundtime_access_token')"));
+    activeListener=listener.username;
   }
   async function click(expression,label) {
-    await until(label, () => evaluate(`Boolean(${expression})`));
+    try {
+      await until(label, () => evaluate(`Boolean(${expression})`));
+    } catch(error) {
+      const state=await evaluate("({path:location.pathname,menu:[...document.querySelectorAll('[role=menuitem]')].map(el=>el.textContent.trim()),dialog:document.querySelector('[role=dialog] h2')?.textContent})");
+      throw new Error(error.message+" "+JSON.stringify(state));
+    }
     await evaluate(`(${expression}).click()`,true);
   }
   function byText(selector,label) {

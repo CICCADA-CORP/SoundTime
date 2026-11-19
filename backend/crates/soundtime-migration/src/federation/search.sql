@@ -92,6 +92,22 @@ BEGIN
                              AND t.id IS DISTINCT FROM $1 ORDER BY t.id LIMIT $2 FOR SHARE OF t';
     FOR item IN EXECUTE page_sql USING job.last_track_id,batch_size,job.subject_id LOOP
         PERFORM federation_search_project(item, false);
+        -- Peers need the display change even when the lexemes stayed the same.
+        -- Read the last locally issued revision so overlapping artist/album jobs
+        -- emit at most one revision for the same final pair of display names.
+        IF job.kind <> 'initial' AND item.file_path<>'' AND item.file_path !~ '^[a-zA-Z][a-zA-Z0-9+.-]*:' THEN
+            PERFORM federation_project_track(item, true);
+            IF EXISTS (
+                SELECT FROM track_publications p JOIN federation_catalogs c ON c.id=p.catalog_id AND c.is_local
+                JOIN artists a ON a.id=item.artist_id LEFT JOIN albums al ON al.id=item.album_id
+                LEFT JOIN federation_events e ON e.catalog_id=c.id AND e.origin_publication_id=p.origin_publication_id
+                     AND e.revision=p.revision AND e.kind='upsert'
+                WHERE p.track_id=item.id AND p.state='active' AND (e.cursor IS NULL OR
+                     (e.payload->>'artist_name',e.payload->>'album_title') IS DISTINCT FROM (a.name,al.title))
+            ) THEN
+                PERFORM federation_project_track(item, false);
+            END IF;
+        END IF;
         job.last_track_id := item.id;
         processed := processed + 1;
     END LOOP;

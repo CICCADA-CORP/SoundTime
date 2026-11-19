@@ -41,9 +41,14 @@ use crate::track_health::{spawn_health_monitor, PeerTrackInfo, TrackFetcher, Tra
 #[path = "range_transport/live.rs"]
 mod ranges;
 
+#[path = "legacy_audio.rs"]
+mod legacy_audio;
+
 pub const SOUNDTIME_ALPN: &[u8] = b"soundtime/p2p/1";
 #[path = "inventory/live.rs"]
 mod catalogs;
+#[path = "inventory/mirror_runtime.rs"]
+mod mirror_runtime;
 pub const EXPLICIT_CATALOG_ALPN: &[u8] = b"soundtime/control/2";
 use crate::peer_policy::PEX_LIMIT;
 
@@ -162,6 +167,7 @@ pub enum P2pMessage {
     StopCatalog,
     CatalogChanged,
     SignedWithdrawal(crate::inventory::SignedPublication),
+    MirrorOffer(crate::inventory::lease::Offer),
     /// Peer discovery pong
     Pong {
         node_id: String,
@@ -258,8 +264,9 @@ pub struct P2pConfig {
     /// Pilot: negotiate metadata-only presence and explicit catalogue subscriptions.
     pub explicit_catalog: bool,
     pub versioned_catalog: bool,
+    pub share_cached: bool,
     pub range_streaming: bool,
-    pub cache_on_play:bool,
+    pub cache_on_play: bool,
     /// Consent to redistribute this node's identity through peer exchange.
     pub share_identity: bool,
     /// Use the public n0 address lookups and relays.
@@ -286,8 +293,9 @@ impl Default for P2pConfig {
             bind_port: 0,
             explicit_catalog: false,
             versioned_catalog: false,
+            share_cached: false,
             range_streaming: false,
-            cache_on_play:false,
+            cache_on_play: false,
             share_identity: false,
             enable_public_discovery: true,
             enable_local_discovery: true,
@@ -347,10 +355,13 @@ impl P2pConfig {
             blobs_dir,
             secret_key_path,
             bind_port,
-            cache_on_play:std::env::var("P2P_CACHE_ON_PLAY").is_ok_and(|v|v.eq_ignore_ascii_case("true")),
+            cache_on_play: std::env::var("P2P_CACHE_ON_PLAY")
+                .is_ok_and(|v| v.eq_ignore_ascii_case("true")),
             range_streaming: std::env::var("P2P_RANGE_STREAMING")
                 .is_ok_and(|v| v.eq_ignore_ascii_case("true")),
             versioned_catalog: std::env::var("P2P_VERSIONED_CATALOG")
+                .is_ok_and(|v| v.eq_ignore_ascii_case("true")),
+            share_cached: std::env::var("P2P_SHARE_CACHED")
                 .is_ok_and(|v| v.eq_ignore_ascii_case("true")),
             explicit_catalog: std::env::var("P2P_EXPLICIT_CATALOG")
                 .is_ok_and(|v| v.eq_ignore_ascii_case("true")),
@@ -390,10 +401,11 @@ pub struct TransportStats {
     pub catalog_entries_received: u64,
     pub explicit_catalog: bool,
     pub versioned_catalog: bool,
+    pub share_cached: bool,
 }
 
 /// The main P2P node. Wraps an iroh `Endpoint` and an iroh-blobs `FsStore`.
-type LegacyFetch = futures_util::future::BoxFuture<'static, Result<Bytes, Arc<str>>>;
+type LegacyFetch = futures_util::future::BoxFuture<'static, Result<(Bytes, String), Arc<str>>>;
 
 pub struct P2pNode {
     /// iroh QUIC endpoint
@@ -418,7 +430,8 @@ pub struct P2pNode {
     metadata_storage_path: Option<PathBuf>,
     /// LRU cache for P2P track blobs.
     blob_cache: Arc<BlobCache>,
-    legacy_fetches: std::sync::Mutex<HashMap<Hash, futures_util::future::WeakShared<LegacyFetch>>>,
+    legacy_fetches:
+        std::sync::Mutex<HashMap<(Uuid, Hash), futures_util::future::WeakShared<LegacyFetch>>>,
     /// Track health manager for failure tracking and auto-repair.
     health_manager: Arc<TrackHealthManager>,
     /// Semaphore to limit concurrent incoming P2P connections.
@@ -618,7 +631,7 @@ impl P2pNode {
 
         let (shutdown_tx, _) = watch::channel(false);
 
-        let registry = Arc::new(PeerRegistry::new());
+        let registry = Arc::new(PeerRegistry::persistent(db.clone()));
 
         // Load persisted peers from database (previous runs)
         match registry.load_from_db(&db).await {
@@ -635,7 +648,7 @@ impl P2pNode {
 
         let (maximum, min_free) =
             crate::blob_cache::budget_from_env().map_err(|e| P2pError::BlobStore(e.to_string()))?;
-        let legacy = crate::blob_cache::legacy_charge(&blob_store, &config.blobs_dir)
+        let legacy = crate::blob_cache::legacy_charge(&blob_store, &config.blobs_dir, &db)
             .await
             .map_err(|e| P2pError::BlobStore(e.to_string()))?;
         let cache_dir = config.blobs_dir.join("cache-v2");
@@ -646,6 +659,27 @@ impl P2pNode {
         .map_err(|e| P2pError::BlobStore(e.to_string()))?
         .map_err(|e| P2pError::BlobStore(e.to_string()))?;
 
+        {
+            use sea_orm::{ConnectionTrait, DbBackend, Statement};
+            if let Some(row) = db
+                .query_one(Statement::from_string(
+                    DbBackend::Postgres,
+                    "SELECT value FROM instance_settings WHERE key='p2p_cache_quota_bytes'",
+                ))
+                .await?
+            {
+                let value = row
+                    .try_get::<String>("", "value")?
+                    .parse::<u64>()
+                    .map_err(|e| P2pError::BlobStore(e.to_string()))?;
+                let effective = value.min(maximum);
+                let cache = Arc::clone(&blob_cache);
+                tokio::task::spawn_blocking(move || cache.restore_maximum(effective))
+                    .await
+                    .map_err(|e| P2pError::BlobStore(e.to_string()))?
+                    .map_err(|e| P2pError::BlobStore(e.to_string()))?;
+            }
+        }
         let health_manager = Arc::new(TrackHealthManager::new());
 
         let conn_pool = Arc::new(if config.explicit_catalog {
@@ -686,6 +720,7 @@ impl P2pNode {
 
         if node.versioned_catalog() {
             node.start_catalog_worker();
+            node.start_mirror_worker();
         }
 
         // Build the local Bloom filter index from existing tracks in DB
@@ -838,8 +873,10 @@ impl P2pNode {
             });
         }
 
-        // Spawn periodic health monitor for remote tracks
-        {
+        node.start_legacy_cache_recovery();
+        // The versioned catalogue tracks source leases and confirmed peer health.
+        // Its metadata worker must never download unrequested audio.
+        if !node.explicit_catalog() {
             let node_clone: Arc<P2pNode> = Arc::clone(&node);
             let health_manager = Arc::clone(&node.health_manager);
             let shutdown_rx = node.shutdown_tx.subscribe();
@@ -941,6 +978,7 @@ impl P2pNode {
             catalog_entries_received: self.catalog_entries_received.load(Ordering::Relaxed),
             explicit_catalog: self.explicit_catalog(),
             versioned_catalog: self.versioned_catalog(),
+            share_cached: self.share_cached(),
         }
     }
 
@@ -966,14 +1004,48 @@ impl P2pNode {
     /// Publish a track's audio data to the local blob store.
     /// Returns the content hash (BLAKE3) that identifies the blob.
     pub async fn publish_track(&self, data: Bytes) -> Result<Hash, P2pError> {
-        let outcome = self
-            .blob_store
-            .blobs()
-            .add_bytes(data)
-            .temp_tag()
-            .await
-            .map_err(|e| P2pError::BlobStore(e.to_string()))?;
+        self.publish_original(data, None).await
+    }
 
+    /// TryReference keeps large, operator-declared immutable originals in place.
+    /// For mutable storage, import the exact bytes captured at publication time.
+    pub async fn publish_original(
+        &self,
+        data: Bytes,
+        path: Option<PathBuf>,
+    ) -> Result<Hash, P2pError> {
+        use iroh_blobs::{
+            api::blobs::{AddPathOptions, ImportMode},
+            BlobFormat,
+        };
+        let blobs = self.blob_store.blobs();
+        let outcome = if let Some(path) = path {
+            let expected = Hash::new(&data);
+            let path = tokio::fs::canonicalize(path)
+                .await
+                .map_err(|e| P2pError::BlobStore(e.to_string()))?;
+            let tag = blobs
+                .add_path_with_opts(AddPathOptions {
+                    path,
+                    mode: ImportMode::TryReference,
+                    format: BlobFormat::Raw,
+                })
+                .temp_tag()
+                .await
+                .map_err(|err| P2pError::BlobStore(err.to_string()))?;
+            if tag.hash() != expected {
+                return Err(P2pError::BlobStore(
+                    "original changed during publication".into(),
+                ));
+            }
+            tag
+        } else {
+            blobs
+                .add_bytes(data)
+                .temp_tag()
+                .await
+                .map_err(|err| P2pError::BlobStore(err.to_string()))?
+        };
         let hash = outcome.hash();
 
         // Create a persistent tag so the blob is not garbage collected
@@ -1044,95 +1116,9 @@ impl P2pNode {
         Ok(data)
     }
 
-    /// Retrieve a P2P track by hash, fetching from the origin peer on-demand if not cached.
-    ///
-    /// 1. Try the local blob store (fast path).
-    /// 2. If missing, look up the origin peer from `remote_tracks` and fetch via P2P.
-    /// 3. Store the fetched blob locally and register it in the LRU cache.
-    /// 4. Trigger eviction if the cache exceeds the configured limit.
-    pub async fn get_or_fetch_track(self: &Arc<Self>, hash: Hash) -> Result<Bytes, P2pError> {
-        use futures_util::FutureExt;
-        if let Ok(data) = self.get_local_track(hash).await {
-            return Ok(data);
-        }
-        let transfer = {
-            let mut active = self.legacy_fetches.lock().expect("legacy fetches");
-            if let Some(existing) = active.get(&hash).and_then(|f| f.upgrade()) {
-                existing
-            } else {
-                active.retain(|_, f| f.upgrade().is_some());
-                if active.len() >= 32 {
-                    return Err(P2pError::Connection("legacy fetch budget exhausted".into()));
-                }
-                let node = Arc::clone(self);
-                let fetch: LegacyFetch = async move {
-                    node.fetch_legacy_track(hash)
-                        .await
-                        .map_err(|e| Arc::<str>::from(e.to_string()))
-                }
-                .boxed();
-                let fetch = fetch.shared();
-                active.insert(hash, fetch.downgrade().expect("new shared fetch"));
-                fetch
-            }
-        };
-        transfer
-            .await
-            .map_err(|e| P2pError::Connection(e.to_string()))
+    pub fn cache_on_play(&self) -> bool {
+        self._config.cache_on_play
     }
-
-    async fn fetch_legacy_track(&self, hash: Hash) -> Result<Bytes, P2pError> {
-        // Look up origin peer from remote_track table
-        let hash_str = hash.to_string();
-        let remote = remote_track::Entity::find()
-            .filter(remote_track::Column::RemoteUri.ends_with(format!("/{}", hash_str)))
-            .one(&self.db)
-            .await
-            .map_err(P2pError::Database)?
-            .ok_or_else(|| P2pError::TrackNotFound(hash_str.clone()))?;
-
-        let origin = remote
-            .instance_domain
-            .strip_prefix("p2p://")
-            .unwrap_or(&remote.instance_domain);
-
-        let nid: EndpointId = origin
-            .parse()
-            .map_err(|_| P2pError::Connection(format!("invalid peer id: {}", origin)))?;
-
-        // Fetch from peer
-        {
-            info!(%hash, peer = %origin, "on-demand fetch from peer");
-            let peer_addr = EndpointAddr::new(nid);
-            let data = self.fetch_track_from_peer(peer_addr, hash).await?;
-            if Hash::new(&data) != hash {
-                return Err(P2pError::Connection(
-                    "received bytes differ from requested hash".into(),
-                ));
-            }
-
-            // Reaching a cache limit affects retention, never an already authorized legacy listen.
-            match self.reserve_cached_version(hash, data.len() as u64).await {
-                Ok(Some(mut writer)) => {
-                    if let Err(error) = async {
-                        for chunk in data.chunks(64 * 1024) {
-                            writer.append(chunk).await?;
-                        }
-                        writer.commit(false).await
-                    }
-                    .await
-                    {
-                        tracing::warn!(%hash,%error,"legacy cache admission failed");
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => tracing::warn!(%hash,%error,"cache volume unavailable"),
-            }
-            Ok(data)
-        }
-    }
-
-    pub fn cache_on_play(&self)->bool{self._config.cache_on_play}
     pub async fn reserve_cached_version(
         &self,
         hash: Hash,
@@ -1160,8 +1146,26 @@ impl P2pNode {
         peer_addr: EndpointAddr,
         hash: Hash,
     ) -> Result<Bytes, P2pError> {
-        self.fetch_blob_from_peer(peer_addr, hash, BlobKind::Audio)
-            .await
+        let source = peer_addr.id.to_string();
+        let grant = soundtime_db::media_access::ReadGuard::peer(&source);
+        let raw = soundtime_db::media_access::ReadGuard::legacy_hash(&hash.to_string());
+        let allowed = async || -> Result<bool, P2pError> {
+            let policy = crate::peer_policy::get(&self.db, &source).await?;
+            Ok(!policy.banned
+                && (!self.explicit_catalog() || policy.followed)
+                && soundtime_db::media_access::allows_legacy_hash(&self.db, &hash.to_string())
+                    .await?)
+        };
+        if !allowed().await? {
+            return Err(P2pError::PeerBlocked(source));
+        }
+        let data = grant
+            .during(raw.during(self.fetch_blob_from_peer(peer_addr, hash, BlobKind::Audio)))
+            .await???;
+        if !allowed().await? {
+            return Err(P2pError::PeerBlocked(source));
+        }
+        Ok(data)
     }
 
     async fn fetch_blob_from_peer(
@@ -1252,11 +1256,22 @@ impl P2pNode {
         id: EndpointId,
         followed: bool,
     ) -> Result<bool, P2pError> {
-        self.set_followed(id, followed).await?;
         let peer = id.to_string();
+        if followed {
+            self.set_followed(id, true).await?;
+        } else {
+            if !self.explicit_catalog() || id == self.node_id() {
+                return Err(P2pError::Connection(
+                    "expected a remote subscription".into(),
+                ));
+            }
+            crate::peer_policy::disconnect(&self.db, &peer).await?;
+            soundtime_db::media_access::revoke_peer(&peer);
+        }
         if crate::peer_policy::get(&self.db, &peer).await?.banned {
             return Ok(false);
         }
+        let started = chrono::Utc::now();
         let result = if followed {
             self.request_catalog_from_peer(id).await
         } else if self
@@ -1278,7 +1293,7 @@ impl P2pNode {
         };
         if let Err(error) = result {
             warn!(%peer, %error, "subscription saved locally; peer notification deferred");
-            self.registry.mark_offline(&peer).await;
+            self.registry.failed_since(&peer, started, false).await;
             return Ok(false);
         }
         Ok(true)
@@ -1358,6 +1373,36 @@ impl P2pNode {
 
     /// Send a ping to a peer and wait for pong.
     pub async fn ping_peer(&self, peer_addr: EndpointAddr) -> Result<P2pMessage, P2pError> {
+        let started = chrono::Utc::now();
+        let source = peer_addr.id.to_string();
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(12),
+            self.probe_presence(peer_addr),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(P2pError::Connection("peer presence timed out".into())),
+        };
+        match &result {
+            Ok(P2pMessage::Pong {
+                node_id,
+                track_count,
+                version,
+            }) if node_id == &source => {
+                self.registry
+                    .upsert_peer_versioned(&source, None, *track_count, version.clone())
+                    .await;
+            }
+            Err(P2pError::Connection(_) | P2pError::Endpoint(_) | P2pError::Io(_)) => {
+                self.registry.failed_since(&source, started, false).await;
+            }
+            _ => {}
+        }
+        result
+    }
+
+    async fn probe_presence(&self, peer_addr: EndpointAddr) -> Result<P2pMessage, P2pError> {
         let policy = if self.explicit_catalog() {
             let id = peer_addr.id.to_string();
             let policy = crate::peer_policy::get(&self.db, &id).await?;
@@ -1616,6 +1661,9 @@ impl P2pNode {
                 if catalog && !self.subscribers.read().await.contains(&node_id) {
                     return Ok(());
                 }
+                if catalog && !crate::peer_policy::permits_export(&self.db, &id).await? {
+                    return Ok(());
+                }
             }
             match self.try_send_bytes(node_id, &msg_bytes).await {
                 Ok(()) => return Ok(()),
@@ -1704,9 +1752,10 @@ impl P2pNode {
 
             handles.push(tokio::spawn(async move {
                 let _permit = sem.acquire().await.ok();
+                let started = chrono::Utc::now();
                 if let Err(e) = node.send_message_to_peer(node_id, &msg).await {
                     warn!(peer = %peer_id, "failed to announce track: {e}");
-                    node.registry.mark_offline(&peer_id).await;
+                    node.registry.failed_since(&peer_id, started, false).await;
                 } else {
                     debug!(peer = %peer_id, "track announced");
                 }
@@ -1818,7 +1867,10 @@ impl P2pNode {
             return;
         }
         if self.catalogs.supports(peer_id).await {
-            if let Err(error)=self.send_message_to_peer(peer_id,&P2pMessage::CatalogChanged).await {
+            if let Err(error) = self
+                .send_message_to_peer(peer_id, &P2pMessage::CatalogChanged)
+                .await
+            {
                 debug!(%peer_id,%error,"catalogue change notification deferred");
             }
             return;
@@ -2094,11 +2146,14 @@ impl P2pNode {
         info!(peer = %peer_node_id, "initiating peer exchange");
 
         let peer_addr = EndpointAddr::new(peer_node_id);
+        let started = chrono::Utc::now();
         match self.exchange_peers(peer_addr).await {
             Ok(remote_peers) => self.verify_pex_candidates(remote_peers).await,
             Err(e) => {
                 warn!(peer = %peer_node_id, "peer exchange failed: {e}");
-                self.registry.mark_offline(&peer_node_id.to_string()).await;
+                self.registry
+                    .failed_since(&peer_node_id.to_string(), started, false)
+                    .await;
             }
         }
     }
@@ -3288,6 +3343,29 @@ impl P2pNode {
                 }
                 let _ = send.finish();
             }
+            P2pMessage::MirrorOffer(offer) => {
+                let sender: EndpointId = peer_id
+                    .parse()
+                    .map_err(|_| P2pError::Connection("invalid offer sender".into()))?;
+                if self.versioned_catalog()
+                    && negotiated_alpn == EXPLICIT_CATALOG_ALPN
+                    && self.catalogs.supports(sender).await
+                {
+                    let changed = crate::inventory::lease::accept(
+                        &self.db,
+                        self.node_id(),
+                        sender,
+                        &offer,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| P2pError::Connection(e.to_string()))?;
+                    if changed && offer.provider.lease.origin == self.node_id() {
+                        self.notify_mirror_change(offer).await;
+                    }
+                }
+                let _ = send.finish();
+            }
             P2pMessage::SignedWithdrawal(signed) => {
                 let remote: EndpointId = peer_id
                     .parse()
@@ -3312,6 +3390,12 @@ impl P2pNode {
                 let _ = send.finish();
             }
             P2pMessage::RequestCatalog => {
+                if self.explicit_catalog()
+                    && !crate::peer_policy::permits_export(&self.db, peer_id).await?
+                {
+                    let _ = send.finish();
+                    return Ok(());
+                }
                 if let Ok(id) = peer_id.parse::<EndpointId>() {
                     self.subscribers.write().await.insert(id);
                 }

@@ -55,6 +55,30 @@ function openStorageTab(tab: string) {
   return fireEvent.click(screen.getByRole("button", { name: tab }));
 }
 
+it("saves a fractional MiB quota to the nearest byte and reloads storage usage", async () => {
+  let maximum = 1048576;
+  const requests = vi.fn(async (url: string, options: RequestInit) => {
+    if (url === "/api/admin/storage/cache" && options.method === "PUT") {
+      maximum = JSON.parse(String(options.body)).maximum_bytes;
+      return Response.json({});
+    }
+    if (url === "/api/admin/storage/status") return Response.json({
+      backend: "local", total_tracks: 0, total_size_bytes: 0,
+      cache: { configured_ceiling_bytes: 2097152, maximum_bytes: maximum, evictable_bytes: 0, pinned_bytes: 0,
+        reserved_bytes: 0, legacy_and_unclassified_bytes: 0, available_bytes: 0, reserve_free_bytes: 0 },
+    });
+    return Response.json(null);
+  });
+  vi.stubGlobal("fetch", requests);
+  await openStorageTab("Storage");
+  const input = await screen.findByRole<HTMLInputElement>("spinbutton", { name: "Cache limit (MiB)" });
+  await fireEvent.input(input, { target: { value: "1.1" } });
+  expect(input.validity.valid).toBe(true);
+  await fireEvent.submit(input.form!);
+  await waitFor(() => expect(maximum).toBe(1153434));
+  await waitFor(() => expect(requests.mock.calls.filter(([url]) => url === "/api/admin/storage/status")).toHaveLength(2));
+});
+
 it.each([
   ["local", 0, "0 B", "/catalog/audio"],
   ["local", 2048, "2.0 KB", "/catalog/audio"],

@@ -11,7 +11,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use soundtime_audio::extract_metadata_from_file;
 use soundtime_audio::metadata::normalize_genre;
-use soundtime_db::entities::{album, artist, remote_track, track};
+use soundtime_db::entities::{album, artist, track};
 use soundtime_db::media_access::{self, PlaybackState, ReadGuard};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
@@ -226,19 +226,6 @@ pub async fn stream_track(
             }
         }
 
-        // Keep the last known supplier available to the health monitor.
-        let remote_record = remote_track::Entity::find()
-            .filter(remote_track::Column::RemoteUri.ends_with(format!("/{hash_str}")))
-            .one(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!("DB error looking up remote track: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": format!("DB error: {e}") })),
-                )
-            })?;
-
         let hash: soundtime_p2p::BlobHash = hash_str.parse().map_err(|_| {
             (
                 StatusCode::BAD_REQUEST,
@@ -246,57 +233,24 @@ pub async fn stream_track(
             )
         })?;
 
-        // FIX-15: When fetch fails, trigger auto_repair_on_failure for health tracking
-        let received = grant
-            .during(async {
-                if remote_record.as_ref().is_some_and(|r| !r.is_available) {
-                    p2p_node.get_local_track(hash).await
-                } else {
-                    p2p_node.get_or_fetch_track(hash).await
-                }
-            })
+        let (data, raw_grant) = grant
+            .during(p2p_node.get_or_fetch_track(id, hash))
             .await
-            .map_err(|_| stream_error(StatusCode::GONE, "Playback authorization revoked"))?;
-        let data = match received {
-            Ok(data) => data,
-            Err(e) => {
-                tracing::warn!(%hash, error = %e, "failed to fetch P2P track");
-
-                // Determine origin node from the remote_track record
-                let origin_node = remote_record
-                    .as_ref()
-                    .map(|rt| {
-                        rt.instance_domain
-                            .strip_prefix("p2p://")
-                            .unwrap_or(&rt.instance_domain)
-                            .to_string()
-                    })
-                    .unwrap_or_default();
-
-                if !origin_node.is_empty() {
-                    let health_manager = Arc::clone(p2p_node.health_manager());
-                    let p2p_clone = Arc::clone(&p2p_node);
-                    let hash_string = hash_str.to_string();
-                    tokio::spawn(async move {
-                        soundtime_p2p::auto_repair_on_failure(
-                            &health_manager,
-                            &p2p_clone,
-                            &hash_string,
-                            &origin_node,
-                        )
-                        .await;
-                    });
-                }
-
-                return Err((
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(serde_json::json!({ "error": "P2P track data not available" })),
-                ));
-            }
-        };
-
+            .map_err(|_| stream_error(StatusCode::GONE, "Playback authorization revoked"))?
+            .map_err(|e| {
+                tracing::warn!(%id,%hash,error=%e,"legacy publication unavailable");
+                stream_error(StatusCode::SERVICE_UNAVAILABLE, "Audio source unavailable")
+            })?;
         let size = data.len() as u64;
-        return media_response(std::io::Cursor::new(data), size, content_type, range, grant).await;
+        return media_response(
+            std::io::Cursor::new(data),
+            size,
+            content_type,
+            range,
+            grant,
+            raw_grant,
+        )
+        .await;
     }
 
     let original = grant
@@ -338,6 +292,7 @@ async fn media_response<R>(
     content_type: &'static str,
     range: Option<&str>,
     grant: ReadGuard,
+    raw_grant: Option<ReadGuard>,
 ) -> Result<(StatusCode, HeaderMap, Body), StreamError>
 where
     R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin + Send + 'static,
@@ -357,10 +312,18 @@ where
             })?;
     }
     let reader = ReaderStream::with_capacity(reader.take(length), 64 * 1024);
-    let chunks = stream::try_unfold((reader, grant), |(mut reader, grant)| async move {
-        let next = grant.during(reader.next()).await?.transpose()?;
-        Ok::<_, std::io::Error>(next.map(|chunk| (chunk, (reader, grant))))
-    });
+    let chunks = stream::try_unfold(
+        (reader, grant, raw_grant),
+        |(mut reader, grant, raw_grant)| async move {
+            let read = grant.during(reader.next());
+            let next = match &raw_grant {
+                Some(raw) => raw.during(read).await??,
+                None => read.await?,
+            }
+            .transpose()?;
+            Ok::<_, std::io::Error>(next.map(|chunk| (chunk, (reader, grant, raw_grant))))
+        },
+    );
     Ok((status, headers, Body::from_stream(chunks)))
 }
 
@@ -414,36 +377,33 @@ async fn remote_media_response(
         return Ok((status, headers, Body::empty()));
     }
     let cache_guard = node.blob_cache().read_guard(manifest.hash);
-    let end = start + length;
-    let next_window = move |(offset, node, grant, manifest): (
-        u64,
-        Arc<soundtime_p2p::P2pNode>,
-        ReadGuard,
-        soundtime_p2p::range_transport::WindowRequest,
-    )| async move {
-        if offset >= end {
-            return Ok::<_, std::io::Error>(None);
+    let retain = node.cache_on_play() && start == 0 && length == manifest.file_size;
+    let writer = if retain && cache_guard.is_none() {
+        match node
+            .reserve_cached_version(manifest.hash, manifest.file_size)
+            .await
+        {
+            Ok(writer) => writer,
+            Err(e) => {
+                tracing::warn!(%id,%e,"cache reservation unavailable");
+                None
+            }
         }
-        let step = u64::from(soundtime_p2p::range_transport::WINDOW_BYTES);
-        let aligned = offset / step * step;
-        let mut request = manifest.clone();
-        request.offset = aligned;
-        request.length = (manifest.file_size - aligned).min(step) as u32;
-        let bytes = grant
-            .during(node.verified_range(id, request))
-            .await?
-            .map_err(std::io::Error::other)?;
-        let next = (aligned + bytes.len() as u64).min(end);
-        let clipped = bytes.slice((offset - aligned) as usize..(next - aligned) as usize);
-        Ok(Some((clipped, (next, node, grant, manifest))))
+    } else {
+        None
     };
-    // Complete one verified window before committing 200/206 so denial or an
-    // unreachable supplier can still produce a retryable HTTP response.
+    let initial = RemoteReader {
+        offset: start,
+        end: start + length,
+        node,
+        manifest,
+        grant,
+        writer,
+        id,
+        retain,
+    };
     let first_grant = ReadGuard::track(id);
-    let mut chunks = Box::pin(stream::try_unfold(
-        (start, node, grant, manifest),
-        next_window,
-    ));
+    let mut chunks = Box::pin(stream::try_unfold(initial, RemoteReader::next));
     let first = chunks
         .next()
         .await
@@ -463,6 +423,67 @@ async fn remote_media_response(
         chunk
     });
     Ok((status, headers, Body::from_stream(body)))
+}
+
+struct RemoteReader {
+    offset: u64,
+    end: u64,
+    node: Arc<soundtime_p2p::P2pNode>,
+    manifest: soundtime_p2p::range_transport::WindowRequest,
+    grant: ReadGuard,
+    writer: Option<soundtime_p2p::blob_cache::CacheWriter>,
+    id: Uuid,
+    retain: bool,
+}
+impl RemoteReader {
+    async fn next(mut self) -> std::io::Result<Option<(axum::body::Bytes, Self)>> {
+        if self.offset >= self.end {
+            return Ok(None);
+        }
+        let step = u64::from(soundtime_p2p::range_transport::WINDOW_BYTES);
+        let aligned = self.offset / step * step;
+        let mut req = self.manifest.clone();
+        req.offset = aligned;
+        req.length = (req.file_size - aligned).min(step) as u32;
+        let bytes = self
+            .grant
+            .during(self.node.verified_range(self.id, req))
+            .await?
+            .map_err(std::io::Error::other)?;
+        let next = (aligned + bytes.len() as u64).min(self.end);
+        let clipped = bytes.slice((self.offset - aligned) as usize..(next - aligned) as usize);
+        self.offset = next;
+        if let Some(writer) = &mut self.writer {
+            if let Err(error) = self.grant.during(writer.append(&clipped)).await? {
+                tracing::warn!(track=%self.id,%error,"skipping cache admission");
+                self.writer = None;
+            }
+        }
+        if self.retain && next == self.end {
+            let mut retained = None;
+            if let Some(writer) = self.writer.take() {
+                match self.grant.during(writer.commit_guard(false)).await? {
+                    Ok(guard) => retained = Some(guard),
+                    Err(error) => {
+                        tracing::warn!(track=%self.id,%error,"cached file could not be verified")
+                    }
+                }
+            }
+            if retained.is_some() || self.node.cache_contains(self.manifest.hash) {
+                if let Err(error) = self
+                    .grant
+                    .during(
+                        self.node
+                            .offer_cached_publication(self.id, self.manifest.hash),
+                    )
+                    .await?
+                {
+                    tracing::debug!(track=%self.id,%error,"cache offer not admitted");
+                }
+            }
+        }
+        Ok(Some((clipped, self)))
+    }
 }
 
 fn parse_range_header(header: &str) -> Option<(u64, Option<u64>)> {
@@ -1036,7 +1057,13 @@ async fn process_single_upload(
     publish_track_to_p2p(
         state,
         track_id,
-        &data,
+        (
+            bytes::Bytes::from(data),
+            state
+                .storage
+                .immutable_upload_path(&relative_path)
+                .filter(|_| created),
+        ),
         &track_title,
         &artist_name,
         &album_title,
@@ -1141,7 +1168,7 @@ pub(crate) async fn check_duplicate_uploads(state: &AppState, user_id: Uuid, wav
 async fn publish_track_to_p2p(
     state: &AppState,
     track_id: Uuid,
-    data: &[u8],
+    original: (bytes::Bytes, Option<std::path::PathBuf>),
     track_title: &str,
     artist_name: &str,
     album_title: &str,
@@ -1152,8 +1179,7 @@ async fn publish_track_to_p2p(
         None => return,
     };
 
-    let data_bytes = bytes::Bytes::from(data.to_vec());
-    match p2p.publish_track(data_bytes).await {
+    match p2p.publish_original(original.0, original.1).await {
         Ok(hash) => {
             tracing::info!(%track_id, %hash, "track published to P2P blob store");
             // Update the content_hash in the DB
@@ -1365,10 +1391,16 @@ mod tests {
     async fn withdrawn_http_body_stops_before_the_next_window() {
         let id = Uuid::new_v4();
         let source = std::io::Cursor::new(vec![0x77; 192 * 1024]);
-        let (status, headers, body) =
-            media_response(source, 192 * 1024, "audio/wav", None, ReadGuard::track(id))
-                .await
-                .unwrap();
+        let (status, headers, body) = media_response(
+            source,
+            192 * 1024,
+            "audio/wav",
+            None,
+            ReadGuard::track(id),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(status, StatusCode::OK);
         assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
         let mut reader = body.into_data_stream();

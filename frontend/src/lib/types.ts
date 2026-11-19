@@ -470,6 +470,7 @@ export interface TosResponse {
 // ─── Storage Types ──────────────────────────────────────────────────
 
 export interface CacheUsage {
+  configured_ceiling_bytes: number;
   maximum_bytes: number;
   reserve_free_bytes: number;
   available_bytes: number;

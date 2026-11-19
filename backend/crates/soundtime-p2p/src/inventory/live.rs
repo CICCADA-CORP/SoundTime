@@ -26,6 +26,7 @@ pub(super) struct Catalogs {
     reads: Arc<Semaphore>,
     writes: Semaphore,
     withdrawals: Arc<Semaphore>,
+    notices: Arc<Semaphore>,
 }
 impl Catalogs {
     pub(super) fn new(endpoint: Endpoint) -> Self {
@@ -36,7 +37,13 @@ impl Catalogs {
             reads: Arc::new(Semaphore::new(8)),
             writes: Semaphore::new(16),
             withdrawals: Arc::new(Semaphore::new(2)),
+            notices: Arc::new(Semaphore::new(4)),
         }
+    }
+    pub(super) fn notice_slot(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::TryAcquireError> {
+        self.notices.clone().try_acquire_owned()
     }
     pub(super) async fn capability(&self, id: EndpointId, capable: bool) {
         let mut peers = self.capable.write().await;
@@ -66,7 +73,7 @@ impl P2pNode {
         self._config.versioned_catalog && self.explicit_catalog()
     }
 
-    async fn catalog_rpc(&self, peer: EndpointId, request: Request) -> Result<Response> {
+    pub(super) async fn catalog_rpc(&self, peer: EndpointId, request: Request) -> Result<Response> {
         let policy = crate::peer_policy::get(&self.db, &peer.to_string()).await?;
         ensure!(
             !policy.banned && (policy.followed || matches!(request, Request::Withdrawal { .. })),
@@ -102,9 +109,7 @@ impl P2pNode {
                 .context("catalogue server at capacity")?;
             tokio::time::timeout(RPC_TIMEOUT, async {
                 ensure!(
-                    !crate::peer_policy::get(&self.db, &peer.to_string())
-                        .await?
-                        .banned,
+                    crate::peer_policy::permits_export(&self.db, &peer.to_string()).await?,
                     "catalogue reader blocked"
                 );
                 let request: Request = serde_json::from_slice(&recv.read_to_end(512).await?)?;
@@ -117,9 +122,7 @@ impl P2pNode {
                     "catalogue response exceeds frame bound"
                 );
                 ensure!(
-                    !crate::peer_policy::get(&self.db, &peer.to_string())
-                        .await?
-                        .banned,
+                    crate::peer_policy::permits_export(&self.db, &peer.to_string()).await?,
                     "catalogue reader blocked"
                 );
                 if subscribing {
@@ -210,7 +213,7 @@ impl P2pNode {
                     cursor = change.cursor;
                 }
             }
-            return Ok(());
+            return self.pull_mirrors(peer).await;
         }
         let (snapshot, cut, mut number, mut after) = match previous.filter(|_| !complete) {
             Some(snap) => (
@@ -260,7 +263,7 @@ impl P2pNode {
             }
             number += 1;
         }
-        Ok(())
+        self.pull_mirrors(peer).await
     }
 
     pub(super) fn start_catalog_worker(self: &Arc<Self>) {
@@ -387,10 +390,12 @@ impl P2pNode {
         if !self.versioned_catalog() {
             return;
         }
-        let Ok(permit)=self.catalogs.withdrawals.clone().try_acquire_owned() else {return};
+        let Ok(permit) = self.catalogs.withdrawals.clone().try_acquire_owned() else {
+            return;
+        };
         let node = self.clone();
         tokio::spawn(async move {
-            let _permit=permit;
+            let _permit = permit;
             let Ok(Some(signed)) = source::withdrawal(
                 &node.db,
                 node.endpoint.secret_key(),
@@ -402,17 +407,27 @@ impl P2pNode {
                 return;
             };
             let msg = &P2pMessage::SignedWithdrawal(signed);
-            let peers=node.catalogs.capable.read().await.clone();
+            let peers = node.catalogs.capable.read().await.clone();
             use futures_util::{stream, StreamExt};
-            let node=&node;
-            stream::iter(peers).for_each_concurrent(4, |peer| async move {
-                let known=node.db.query_one(Statement::from_sql_and_values(DbBackend::Postgres,
-                    "SELECT 1 FROM federation_catalog_clients WHERE node_id=$1", [peer.to_string().into()])).await;
-                if !matches!(known,Ok(Some(_))) {return}
-                if let Err(error) = node.send_message_to_peer(peer, msg).await {
-                    tracing::debug!(%peer,%error,"signed withdrawal retained for catch-up");
-                }
-            }).await;
+            let node = &node;
+            stream::iter(peers)
+                .for_each_concurrent(4, |peer| async move {
+                    let known = node
+                        .db
+                        .query_one(Statement::from_sql_and_values(
+                            DbBackend::Postgres,
+                            "SELECT 1 FROM federation_catalog_clients WHERE node_id=$1",
+                            [peer.to_string().into()],
+                        ))
+                        .await;
+                    if !matches!(known, Ok(Some(_))) {
+                        return;
+                    }
+                    if let Err(error) = node.send_message_to_peer(peer, msg).await {
+                        tracing::debug!(%peer,%error,"signed withdrawal retained for catch-up");
+                    }
+                })
+                .await;
         });
     }
 }

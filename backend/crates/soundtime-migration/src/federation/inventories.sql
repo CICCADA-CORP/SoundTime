@@ -26,6 +26,19 @@ CREATE TABLE federation_signed_publications (
     envelope jsonb NOT NULL
 );
 CREATE TABLE federation_catalog_clients (node_id text PRIMARY KEY);
+CREATE INDEX federation_pex_consent ON federation_peer_policies(node_id) WHERE share_identity AND NOT is_banned;
+CREATE INDEX federation_followed_catalogs ON federation_peer_policies(node_id) WHERE is_followed AND NOT is_banned;
+-- Legacy administration still writes blocked_domains. Its transaction and
+-- incoming catalogue commits take the same policy row lock for this identity.
+CREATE FUNCTION federation_serialize_peer_block() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO federation_peer_policies(node_id) VALUES(NEW.domain)
+        ON CONFLICT(node_id) DO UPDATE SET node_id=excluded.node_id;
+    RETURN NULL;
+END;
+$$;
+CREATE TRIGGER federation_block_control AFTER INSERT OR UPDATE OF domain ON blocked_domains
+FOR EACH ROW EXECUTE FUNCTION federation_serialize_peer_block();
 
 -- Keyset pagination uses the latest committed event per publication at a cut.
 CREATE INDEX federation_event_snapshot ON federation_events(catalog_id,origin_publication_id,cursor DESC);

@@ -4,7 +4,10 @@ use std::{
     collections::HashMap,
     future::Future,
     io,
-    sync::{LazyLock, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        LazyLock, Mutex,
+    },
 };
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -19,6 +22,8 @@ enum Key {
 type Active = HashMap<Key, (watch::Sender<bool>, usize)>;
 static READERS: LazyLock<Mutex<Active>> = LazyLock::new(Mutex::default);
 
+static POLICY_CONNECTED: AtomicBool = AtomicBool::new(true);
+
 /// Register before the database lookup so a withdrawal committed during admission
 /// either denies the lookup or wakes the reader. Idle tracks occupy no entries.
 pub struct ReadGuard {
@@ -29,9 +34,12 @@ pub struct ReadGuard {
 impl ReadGuard {
     fn new(key: Key) -> Self {
         let mut readers = READERS.lock().expect("media reader lock");
-        let (sender, users) = readers
-            .entry(key.clone())
-            .or_insert_with(|| (watch::channel(true).0, 0));
+        let (sender, users) = readers.entry(key.clone()).or_insert_with(|| {
+            (
+                watch::channel(POLICY_CONNECTED.load(Ordering::Acquire)).0,
+                0,
+            )
+        });
         *users += 1;
         Self {
             key,
@@ -70,7 +78,10 @@ impl ReadGuard {
 impl Drop for ReadGuard {
     fn drop(&mut self) {
         let mut readers = READERS.lock().expect("media reader lock");
-        if let Some((_, users)) = readers.get_mut(&self.key) {
+        if let Some((sender, users)) = readers.get_mut(&self.key) {
+            if !sender.subscribe().same_channel(&self.receiver) {
+                return;
+            }
             *users -= 1;
             if *users == 0 {
                 readers.remove(&self.key);
@@ -80,9 +91,69 @@ impl Drop for ReadGuard {
 }
 
 fn revoke(key: Key) {
-    let readers = READERS.lock().expect("media reader lock");
-    if let Some((sender, _)) = readers.get(&key) {
+    let mut readers = READERS.lock().expect("media reader lock");
+    if let Some((sender, _)) = readers.remove(&key) {
         sender.send_replace(false);
+    }
+}
+
+fn policy_connection(connected: bool) {
+    let mut readers = READERS.lock().expect("media reader lock");
+    POLICY_CONNECTED.store(connected, Ordering::Release);
+    // A lost listener cannot safely reconstruct which open sessions missed a ban.
+    for (_, (sender, _)) in readers.drain() {
+        sender.send_replace(false);
+    }
+}
+
+/// Multi-process deployments listen on the primary PostgreSQL instance. The
+/// normal admission checks still read current policy for each new request.
+pub async fn watch_policy(db: sea_orm::DatabaseConnection) {
+    use sea_orm::sqlx::postgres::PgListener;
+    policy_connection(false);
+    loop {
+        let result = async {
+            let mut listener = PgListener::connect_with(db.get_postgres_connection_pool()).await?;
+            listener.eager_reconnect(false);
+            listener.listen("soundtime_policy").await?;
+            policy_connection(true);
+            while let Some(message) = listener.try_recv().await? {
+                let Some((action, value)) = message.payload().split_once(':') else {
+                    continue;
+                };
+                match action {
+                    "track" => {
+                        if let Ok(id) = value.parse() {
+                            revoke_track(id);
+                        }
+                    }
+                    "raw" => revoke_legacy_hash(value),
+                    "peer" => revoke_peer(value),
+                    "block" => {
+                        revoke_legacy_hash(value);
+                        let ids = db
+                            .query_all(Statement::from_sql_and_values(
+                                DbBackend::Postgres,
+                                "SELECT track_id FROM publication_versions WHERE content_hash=$1
+                             UNION SELECT id FROM tracks WHERE content_hash=$1",
+                                [value.into()],
+                            ))
+                            .await?;
+                        for row in ids {
+                            revoke_track(row.try_get("", "track_id")?);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        }
+        .await;
+        policy_connection(false);
+        if let Err(error) = result {
+            tracing::warn!(%error,"reconnecting federation policy listener");
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 

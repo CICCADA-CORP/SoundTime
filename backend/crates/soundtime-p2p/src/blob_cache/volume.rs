@@ -15,7 +15,7 @@ use iroh_blobs::{
     Hash,
 };
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
@@ -63,7 +63,17 @@ fn sync_dir(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
 
+fn complete_size(path: &Path) -> Option<u64> {
+    let data = fs::symlink_metadata(path.join("data")).ok()?;
+    let proof = fs::symlink_metadata(path.join("proof")).ok()?;
+    (data.is_file()
+        && proof.is_file()
+        && proof.len() == BaoTree::new(data.len(), IROH_BLOCK_SIZE).outboard_size())
+    .then_some(data.len())
+}
+
 struct Entry {
+    size: u64,
     bytes: u64,
     touched: SystemTime,
     readers: u32,
@@ -80,6 +90,7 @@ struct State {
 #[derive(serde::Serialize, Clone, Debug, Default)]
 pub struct CacheUsage {
     pub maximum_bytes: u64,
+    pub configured_ceiling_bytes: u64,
     pub reserve_free_bytes: u64,
     pub available_bytes: u64,
     pub evictable_bytes: u64,
@@ -90,7 +101,8 @@ pub struct CacheUsage {
 
 pub struct CacheVolume {
     root: PathBuf,
-    maximum: u64,
+    maximum: AtomicU64,
+    ceiling: u64,
     min_free: u64,
     state: Mutex<State>,
     // The file stays locked until all readers/writers and the node have gone away.
@@ -130,13 +142,11 @@ impl CacheVolume {
                     continue;
                 }
                 if let Ok(hash) = name.parse::<Hash>() {
-                    if hash.to_string() == name
-                        && path.join("data").is_file()
-                        && path.join("proof").is_file()
-                    {
+                    if let Some(size) = complete_size(&path).filter(|_| hash.to_string() == name) {
                         state.entries.insert(
                             hash,
                             Entry {
+                                size,
                                 bytes: footprint(&path)?,
                                 touched: child.metadata()?.modified()?,
                                 readers: 0,
@@ -152,7 +162,8 @@ impl CacheVolume {
         sync_dir(&root)?;
         let volume = Arc::new(Self {
             root,
-            maximum,
+            maximum: AtomicU64::new(maximum),
+            ceiling: maximum,
             min_free,
             state: Mutex::new(state),
             _lock: lock,
@@ -165,10 +176,58 @@ impl CacheVolume {
         Ok(volume)
     }
 
+    fn check_owner(&self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let held = self._lock.metadata()?;
+            let current = fs::symlink_metadata(self.root.join(".owner"))?;
+            ensure!(
+                (held.dev(), held.ino()) == (current.dev(), current.ino()),
+                "cache volume changed"
+            );
+        }
+        Ok(())
+    }
+
+    pub fn restore_maximum(&self, bytes: u64) -> Result<()> {
+        let mut state = self.state.lock().expect("cache volume");
+        self.maximum
+            .store(bytes.min(self.ceiling), Ordering::Relaxed);
+        self.make_room(&mut state, 0)?;
+        Ok(())
+    }
+    pub fn set_maximum(&self, bytes: u64) -> Result<()> {
+        ensure!(
+            bytes <= self.ceiling,
+            "cache limit exceeds configured ceiling"
+        );
+        let mut state = self.state.lock().expect("cache volume");
+        let protected = state
+            .entries
+            .values()
+            .filter(|e| e.pinned || e.readers > 0)
+            .map(|e| e.bytes)
+            .chain(state.pending.values().copied())
+            .fold(0u64, u64::saturating_add);
+        ensure!(
+            protected <= bytes,
+            "active reservations, readers or pins exceed requested budget"
+        );
+        let old = self.maximum.swap(bytes, Ordering::Relaxed);
+        if let Err(e) = self.make_room(&mut state, 0) {
+            self.maximum.store(old, Ordering::Relaxed);
+            return Err(e);
+        }
+        Ok(())
+    }
+
     pub fn usage(&self) -> Result<CacheUsage> {
+        self.check_owner()?;
         let s = self.state.lock().expect("cache volume");
         Ok(CacheUsage {
-            maximum_bytes: self.maximum,
+            maximum_bytes: self.maximum.load(Ordering::Relaxed),
+            configured_ceiling_bytes: self.ceiling,
             reserve_free_bytes: self.min_free,
             available_bytes: capacity(&self.root)?.0,
             evictable_bytes: s
@@ -184,22 +243,41 @@ impl CacheVolume {
                 .map(|e| e.bytes)
                 .sum(),
             reserved_bytes: s.pending.values().sum(),
-            legacy_and_unclassified_bytes: s.foreign,
+            legacy_and_unclassified_bytes: s
+                .foreign
+                .saturating_add(allocated(&fs::symlink_metadata(&self.root)?)),
         })
     }
 
     fn make_room(&self, state: &mut State, wanted: u64) -> Result<bool> {
+        self.check_owner()?;
+        if wanted > 0 {
+            let fixed = state
+                .entries
+                .values()
+                .filter(|e| e.pinned || e.readers > 0)
+                .fold(state.foreign, |n, e| n.saturating_add(e.bytes));
+            let protected = state
+                .pending
+                .values()
+                .fold(fixed, |n, reserved| n.saturating_add(*reserved));
+            if protected.saturating_add(wanted) > self.maximum.load(Ordering::Relaxed) {
+                return Ok(false);
+            }
+        }
         loop {
             let pending = state
                 .pending
                 .values()
                 .copied()
                 .fold(wanted, u64::saturating_add);
-            let used = state
-                .entries
-                .values()
-                .fold(state.foreign, |n, e| n.saturating_add(e.bytes));
-            if used.saturating_add(pending) <= self.maximum
+            let used = state.entries.values().fold(
+                state
+                    .foreign
+                    .saturating_add(allocated(&fs::symlink_metadata(&self.root)?)),
+                |n, e| n.saturating_add(e.bytes),
+            );
+            if used.saturating_add(pending) <= self.maximum.load(Ordering::Relaxed)
                 && capacity(&self.root)?.0 >= self.min_free.saturating_add(pending)
             {
                 return Ok(true);
@@ -222,13 +300,13 @@ impl CacheVolume {
                 state.foreign = state.foreign.saturating_add(charge);
                 return Err(error.into());
             }
-            sync_dir(&self.root)?;
             ensure!(
                 !evict.try_exists()? && !path.try_exists()?,
                 "cache unlink incomplete"
             );
             state.entries.remove(&hash);
             let _ = self.evicted.send(hash);
+            sync_dir(&self.root)?;
         }
     }
 
@@ -236,21 +314,35 @@ impl CacheVolume {
         self.evicted.subscribe()
     }
 
-    pub fn pinned(&self)->Vec<Hash>{
-        self.state.lock().expect("cache volume").entries.iter().filter(|(_,e)|e.pinned).map(|(h,_)|*h).collect()
+    pub fn pinned(&self) -> Vec<Hash> {
+        self.state
+            .lock()
+            .expect("cache volume")
+            .entries
+            .iter()
+            .filter(|(_, e)| e.pinned)
+            .map(|(h, _)| *h)
+            .collect()
     }
-    pub fn pending(&self,hash:Hash)->bool{self.state.lock().expect("cache volume").pending.contains_key(&hash)}
+    pub fn pending(&self, hash: Hash) -> bool {
+        self.state
+            .lock()
+            .expect("cache volume")
+            .pending
+            .contains_key(&hash)
+    }
 
     pub fn contains(&self, hash: Hash) -> bool {
         self.state
             .lock()
             .expect("cache volume")
             .entries
-            .contains_key(&hash)
+            .get(&hash)
+            .is_some_and(|e| complete_size(&self.root.join(hash.to_string())) == Some(e.size))
     }
 
     pub fn reserve(self: &Arc<Self>, hash: Hash, size: u64) -> Result<Option<CacheWriter>> {
-        if self.maximum == 0 {
+        if self.maximum.load(Ordering::Relaxed) == 0 {
             return Ok(None);
         }
         let mut state = self.state.lock().expect("cache volume");
@@ -263,7 +355,7 @@ impl CacheVolume {
         let bytes = round(size)
             .saturating_add(round(proof))
             .saturating_add(4 * block);
-        if bytes > self.maximum || !self.make_room(&mut state, bytes)? {
+        if bytes > self.maximum.load(Ordering::Relaxed) || !self.make_room(&mut state, bytes)? {
             return Ok(None);
         }
         let dir = self.root.join(format!(".part-{hash}"));
@@ -290,6 +382,7 @@ impl CacheVolume {
     }
 
     pub fn pin(&self, hash: Hash, pin: bool) -> Result<bool> {
+        self.check_owner()?;
         let mut state = self.state.lock().expect("cache volume");
         let Some(entry) = state.entries.get_mut(&hash) else {
             return Ok(false);
@@ -311,7 +404,17 @@ impl CacheVolume {
         let mut state = self.state.lock().expect("cache volume");
         let entry = state.entries.get_mut(&hash)?;
         entry.readers += 1;
-        entry.touched = SystemTime::now();
+        let now = SystemTime::now();
+        if now.duration_since(entry.touched).unwrap_or_default()
+            > std::time::Duration::from_secs(60)
+        {
+            if self.check_owner().is_ok() {
+                if let Ok(directory) = File::open(self.root.join(hash.to_string())) {
+                    let _ = directory.set_modified(now);
+                }
+            }
+        }
+        entry.touched = now;
         Some(CacheRead {
             volume: Arc::clone(self),
             hash,
@@ -392,7 +495,9 @@ impl Drop for Reservation {
         }
         let mut state = self.volume.state.lock().expect("cache volume");
         if let Some(bytes) = state.pending.remove(&self.hash) {
-            if fs::remove_dir_all(&self.dir).is_err() && self.dir.exists() {
+            if self.volume.check_owner().is_err()
+                || (fs::remove_dir_all(&self.dir).is_err() && self.dir.exists())
+            {
                 state.foreign = state.foreign.saturating_add(bytes);
             }
         }
@@ -421,6 +526,16 @@ impl CacheWriter {
         // A cancelled caller leaves the handle and charge in this I/O job until the write finishes.
         self.file = Some(
             tokio::task::spawn_blocking(move || {
+                guard.volume.check_owner().map_err(io::Error::other)?;
+                let (free, block) = capacity(&guard.volume.root)?;
+                if free
+                    < guard
+                        .volume
+                        .min_free
+                        .saturating_add((chunk.len() as u64).div_ceil(block).saturating_mul(block))
+                {
+                    return Err(io::Error::other("disk free-space reserve reached"));
+                }
                 let _reservation = guard;
                 file.write_all(&chunk)?;
                 Ok::<_, io::Error>(file)
@@ -431,7 +546,9 @@ impl CacheWriter {
         Ok(())
     }
 
-    pub async fn commit(self,pin:bool)->Result<()> { self.commit_guard(pin).await.map(drop) }
+    pub async fn commit(self, pin: bool) -> Result<()> {
+        self.commit_guard(pin).await.map(drop)
+    }
 
     pub async fn commit_guard(mut self, pin: bool) -> Result<CacheRead> {
         ensure!(self.written == self.size, "incomplete cached file");
@@ -441,6 +558,17 @@ impl CacheWriter {
         tokio::task::spawn_blocking(move || {
             file.sync_all()?;
             drop(file);
+            guard.volume.check_owner()?;
+            let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
+            let (available, block) = capacity(&guard.volume.root)?;
+            ensure!(
+                available
+                    >= guard
+                        .volume
+                        .min_free
+                        .saturating_add(tree.outboard_size().div_ceil(block).saturating_mul(block)),
+                "disk free-space reserve reached before Bao verification"
+            );
             let data = File::open(guard.dir.join("data"))?;
             let proof = File::create_new(guard.dir.join("proof"))?;
             let mut out = PreOrderOutboard {
@@ -474,6 +602,7 @@ impl CacheWriter {
             state.entries.insert(
                 guard.hash,
                 Entry {
+                    size,
                     bytes,
                     touched: SystemTime::now(),
                     readers: 1,
@@ -482,20 +611,39 @@ impl CacheWriter {
             );
             state.pending.remove(&guard.hash);
             drop(state);
+            let read = CacheRead {
+                volume: Arc::clone(&guard.volume),
+                hash: guard.hash,
+            };
             sync_dir(&guard.volume.root)?;
-            Ok::<_, anyhow::Error>(CacheRead{volume:Arc::clone(&guard.volume),hash:guard.hash})
+            Ok::<_, anyhow::Error>(read)
         })
         .await?
     }
 }
 
-pub async fn legacy_charge(store: &iroh_blobs::store::fs::FsStore, root: &Path) -> Result<u64> {
+pub async fn legacy_charge(
+    store: &iroh_blobs::store::fs::FsStore,
+    root: &Path,
+    db: &impl sea_orm::ConnectionTrait,
+) -> Result<u64> {
+    let rows=db.query_all(sea_orm::Statement::from_string(sea_orm::DbBackend::Postgres,
+       "SELECT DISTINCT lower(t.content_hash) AS hash FROM tracks t LEFT JOIN track_publications p ON p.track_id=t.id
+        WHERE t.content_hash IS NOT NULL AND t.file_path<>'' AND t.file_path !~ '^[a-zA-Z][a-zA-Z0-9+.-]*:'
+        AND p.state IS DISTINCT FROM 'withdrawn'")).await?;
+    let local: HashSet<String> = rows
+        .into_iter()
+        .map(|row| row.try_get("", "hash"))
+        .collect::<Result<_, _>>()?;
+
     use futures_util::StreamExt;
     let mut tags = Box::pin(store.tags().list().await?);
     let mut originals = HashSet::new();
     while let Some(tag) = tags.next().await {
         let tag = tag?;
-        if tag.name.as_ref() == format!("published-{}", tag.hash).as_bytes() {
+        if local.contains(&tag.hash.to_string())
+            && tag.name.as_ref() == format!("published-{}", tag.hash).as_bytes()
+        {
             originals.insert(tag.hash);
         }
     }

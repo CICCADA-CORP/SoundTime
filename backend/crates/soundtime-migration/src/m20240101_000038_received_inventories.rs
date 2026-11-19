@@ -17,8 +17,9 @@ impl MigrationTrait for Migration {
         manager
             .get_connection()
             .execute_unprepared(
-            "DROP FUNCTION federation_import_signed(text,uuid,bigint,jsonb,jsonb),federation_seed_events(integer);
-             DROP INDEX federation_event_snapshot;
+            "DROP TRIGGER federation_block_control ON blocked_domains;
+             DROP FUNCTION federation_serialize_peer_block(),federation_import_signed(text,uuid,bigint,jsonb,jsonb),federation_seed_events(integer);
+             DROP INDEX federation_event_snapshot,federation_pex_consent,federation_followed_catalogs;
              DROP TABLE federation_event_bootstrap,federation_catalog_clients;
              DROP TABLE federation_inventory_pages, federation_inventory_seen,
              federation_inventories, federation_signed_publications;",

@@ -121,6 +121,30 @@ pub async fn transport_stats(
     Ok(Json(node.transport_stats()))
 }
 
+#[derive(Serialize)]
+pub struct MirrorProviders {
+    providers: Vec<String>,
+}
+
+/// Inspect usable, signed mirror leases for the current version of a local track ID.
+pub async fn track_mirrors(
+    State(state): State<Arc<AppState>>,
+    Path(track): Path<Uuid>,
+) -> Result<Json<MirrorProviders>, StatusCode> {
+    use sea_orm::{ConnectionTrait, DbBackend, Statement};
+    let rows=state.db.query_all(Statement::from_sql_and_values(DbBackend::Postgres,
+        "SELECT DISTINCT l.provider FROM federation_mirror_leases l JOIN track_publications p ON p.track_id=l.track_id AND p.revision=l.revision AND p.state='active'
+         JOIN federation_track_providers s ON s.track_id=p.track_id AND s.provider=l.provider AND s.allowed AND s.followed AND s.online
+         WHERE l.track_id=$1 AND l.active AND l.expires_at>now() ORDER BY l.provider LIMIT 32",
+         [track.into()])).await.map_err(|_|StatusCode::SERVICE_UNAVAILABLE)?;
+    let providers = rows
+        .into_iter()
+        .map(|r| r.try_get("", "provider"))
+        .collect::<Result<_, _>>()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(MirrorProviders { providers }))
+}
+
 /// GET /api/admin/p2p/peers — list known peers (admin only)
 pub async fn list_peers(State(state): State<Arc<AppState>>) -> Json<Vec<PeerInfo>> {
     let Some(node) = get_p2p_node(&state) else {
@@ -187,6 +211,7 @@ pub async fn add_peer(
     for address in payload.direct_addresses {
         peer_addr = peer_addr.with_ip_addr(address);
     }
+    let started = chrono::Utc::now();
     match node.ping_peer(peer_addr).await {
         Ok(P2pMessage::Pong {
             node_id: peer_nid,
@@ -222,8 +247,9 @@ pub async fn add_peer(
         }
         Err(e) => {
             // Register as offline peer
-            node.registry().upsert_peer(&payload.node_id, None, 0).await;
-            node.registry().mark_offline(&payload.node_id).await;
+            node.registry()
+                .failed_since(&payload.node_id, started, true)
+                .await;
             tracing::warn!(peer = %payload.node_id, "ping failed: {e}");
             Ok(Json(MessageResponse {
                 message: format!("peer {} added but ping failed: {e}", payload.node_id),

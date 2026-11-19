@@ -68,7 +68,17 @@ pub struct AppState {
 
 /// Connect to the database and return a connection pool
 pub async fn connect(config: &DatabaseConfig) -> Result<DatabaseConnection, DbErr> {
+    connect_named(config, None).await
+}
+
+pub async fn connect_named(
+    config: &DatabaseConfig,
+    app_name: Option<String>,
+) -> Result<DatabaseConnection, DbErr> {
     let mut opt = ConnectOptions::new(&config.url);
+    if let Some(name) = app_name {
+        opt.map_sqlx_postgres_opts(move |options| options.application_name(&name));
+    }
     opt.max_connections(config.max_connections)
         .min_connections(config.min_connections)
         .connect_timeout(Duration::from_secs(config.connect_timeout_secs))

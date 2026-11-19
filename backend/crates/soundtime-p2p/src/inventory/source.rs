@@ -6,6 +6,9 @@ use serde_json::Value;
 #[serde(deny_unknown_fields)]
 pub(crate) enum Request {
     Head,
+    Mirrors {
+        after: i64,
+    },
     Snapshot {
         cut: i64,
         after: Option<Uuid>,
@@ -23,6 +26,7 @@ pub(crate) enum Request {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum Response {
     Head(i64),
+    Mirrors(Vec<super::lease::JournalEntry>),
     Snapshot { entries: Vec<Entry>, done: bool },
     Changes(Vec<Delta>),
     Withdrawal(Option<SignedPublication>),
@@ -120,6 +124,9 @@ pub(crate) async fn answer(
 ) -> Result<Response> {
     match request {
         Request::Head => Ok(Response::Head(head(db).await?)),
+        Request::Mirrors { after } => {
+            Ok(Response::Mirrors(super::lease::current(db, after).await?))
+        }
         Request::Snapshot { cut, after } => {
             ensure!((0..=head(db).await?).contains(&cut), "invalid snapshot cut");
             // Apply the keyset before selecting the newest event. Filtering out

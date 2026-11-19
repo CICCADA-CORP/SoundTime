@@ -2,6 +2,7 @@ pub mod admin;
 pub mod albums;
 pub mod artists;
 pub mod audio;
+pub mod cache_pins;
 pub mod editorial;
 pub mod favorites;
 pub mod history;
