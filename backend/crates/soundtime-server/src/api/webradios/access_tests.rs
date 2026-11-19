@@ -44,8 +44,12 @@ async fn user_and_instance_can_each_disable_browsing_and_playback() {
     let mut options = ConnectOptions::new(std::env::var("TEST_DATABASE_URL").unwrap());
     options.max_connections(1).min_connections(1);
     let db = Database::connect(options).await.unwrap();
-    db.execute_unprepared("CREATE TEMP TABLE instance_settings(key text PRIMARY KEY,value text NOT NULL);
-        CREATE TEMP TABLE user_settings(user_id uuid,key text,value text,updated_at timestamptz,PRIMARY KEY(user_id,key))").await.unwrap();
+    db.execute_unprepared(
+        "CREATE TEMP TABLE instance_settings (LIKE public.instance_settings INCLUDING ALL);
+        CREATE TEMP TABLE user_settings (LIKE public.user_settings INCLUDING ALL)",
+    )
+    .await
+    .unwrap();
     let state = Arc::new(AppState {
         db,
         jwt_secret: "test-radio-browser-preferences".into(),
@@ -121,7 +125,7 @@ async fn user_and_instance_can_each_disable_browsing_and_playback() {
     );
     state
         .db
-        .execute_unprepared("INSERT INTO instance_settings VALUES('webradios_enabled','false')")
+        .execute_unprepared("INSERT INTO instance_settings(id,key,value) VALUES(gen_random_uuid(),'webradios_enabled','false')")
         .await
         .unwrap();
     assert_eq!(
@@ -147,7 +151,7 @@ async fn user_and_instance_can_each_disable_browsing_and_playback() {
     }
     state
         .db
-        .execute_unprepared("INSERT INTO instance_settings VALUES('instance_private','true')")
+        .execute_unprepared("INSERT INTO instance_settings(id,key,value) VALUES(gen_random_uuid(),'instance_private','true')")
         .await
         .unwrap();
     assert_eq!(

@@ -111,7 +111,7 @@ async fn exercise(url: &str) -> Result<()> {
     );
 
     db.execute_unprepared(
-        "UPDATE tracks SET title='Other' WHERE id='00000000-0000-0000-0000-000000000000'",
+        "UPDATE tracks SET title='Mistraline' WHERE id='00000000-0000-0000-0000-000000000000'",
     )
     .await?;
     ensure!(api_ids(&app, 1).await?.first() == Some(&Uuid::from_u128(1)));
@@ -134,12 +134,12 @@ async fn exercise(url: &str) -> Result<()> {
             "SELECT federation_withdraw_local('00000000-0000-0000-0000-000000000000')",
         )
         .await?;
-    let (visible, _) = page(&app, "Other:*", 10, 0, [false, false])
+    let (visible, _) = page(&app, "Mistraline:*", 10, 0, [false, false])
         .await?
         .context("missing complete prefix")?;
     ensure!(visible.len() == 1 && visible[0].try_get::<Uuid>("", "id")? == Uuid::nil());
     removing.commit().await?;
-    let (after, _) = page(&app, "Other:*", 10, 0, [false, false])
+    let (after, _) = page(&app, "Mistraline:*", 10, 0, [false, false])
         .await?
         .context("withdrawal only changed policy")?;
     ensure!(
