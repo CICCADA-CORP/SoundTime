@@ -271,3 +271,41 @@ async fn origin_subscriber_accepts_mirror_without_following_it() -> Result<()> {
     assert!(!available(publication).await?);
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL for PostgreSQL"]
+async fn preparing_journal_answers_without_publishing_a_partial_head() -> Result<()> {
+    use super::source::{answer, Request, Response};
+    let mut options = sea_orm::ConnectOptions::new(std::env::var("TEST_DATABASE_URL")?);
+    options.max_connections(1).min_connections(1);
+    let db = Database::connect(options).await?;
+    db.execute_unprepared(
+        "CREATE TEMP TABLE federation_catalogs(is_local boolean,change_cursor bigint);
+         CREATE TEMP TABLE federation_event_bootstrap(singleton boolean,complete boolean);
+         INSERT INTO federation_catalogs VALUES(true,17);
+         INSERT INTO federation_event_bootstrap VALUES(true,false)",
+    )
+    .await?;
+    let key = SecretKey::generate();
+    for request in [
+        Request::Head,
+        Request::Snapshot {
+            cut: 10,
+            after: None,
+        },
+        Request::Changes { cut: 10, after: 8 },
+    ] {
+        let frame = serde_json::to_vec(&answer(&db, &key, request).await?)?;
+        assert!(matches!(
+            serde_json::from_slice(&frame)?,
+            Response::Preparing
+        ));
+    }
+    db.execute_unprepared("UPDATE federation_event_bootstrap SET complete=true")
+        .await?;
+    assert!(matches!(
+        answer(&db, &key, Request::Head).await?,
+        Response::Head(17)
+    ));
+    Ok(())
+}

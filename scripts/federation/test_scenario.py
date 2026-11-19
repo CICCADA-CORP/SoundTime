@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import scenario
 import load_public
+import retention
 
 
 class Response(io.BytesIO):
@@ -19,6 +20,32 @@ class Response(io.BytesIO):
 
 
 class FederationScenarioTests(unittest.TestCase):
+    def test_midstream_outage_checks_the_same_http_body_after_the_cut(self):
+        window = 65536
+        audio = scenario.wav_fixture(window * 3, 19)
+        size = len(audio)
+        nodes = [scenario.Instance(name, "http://unused") for name in "ABC"]
+        before = {name: {"sent":0, "received":0} for name in "ABC"}
+        cut = {"A":{"sent":window,"received":0},"B":{"sent":0,"received":0},
+               "C":{"sent":0,"received":window}}
+        end = {"B":{"sent":size-window,"received":0},"C":{"sent":0,"received":size}}
+        for body in (audio, audio[:-1]+bytes([audio[-1]^1])):
+            with self.subTest(correct=body==audio):
+                response = Response(body, content_range=f"bytes 0-{size-1}/{size}")
+                response.headers["Content-Length"] = str(size)
+                observation = {}
+                with patch.object(nodes[2], "open", return_value=response) as opened, \
+                     patch.object(retention, "counters", side_effect=[before,cut,end]), \
+                     patch.object(retention, "switch_backend") as stopped:
+                    if body == audio:
+                        retention.lose_origin_during_response(*nodes,"track",audio,observation)
+                        self.assertEqual(observation["verified_bytes"], size)
+                    else:
+                        with self.assertRaisesRegex(scenario.ScenarioError, "incorrect continuous audio"):
+                            retention.lose_origin_during_response(*nodes,"track",audio,observation)
+                    stopped.assert_called_once_with("A", False)
+                    opened.assert_called_once_with("/tracks/track/stream", headers={"Range":"bytes=0-"})
+
     def test_public_load_waits_for_journal_after_projection_completed(self):
         ready = json.dumps({"projection_complete":True, "journal_complete":True}).encode()
         pending = json.dumps({"projection_complete":True, "journal_complete":False}).encode()

@@ -16,6 +16,9 @@ pub enum P2pError {
     #[error("peer policy changed during presence verification: {0}")]
     PeerPolicyChanged(String),
 
+    #[error("the remote catalogue is preparing its publication journal")]
+    CatalogPreparing,
+
     #[error("track not found: {0}")]
     TrackNotFound(String),
 

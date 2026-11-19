@@ -32,6 +32,41 @@ def reconnect(restarted, neighbours, report):
         restarted.connect(other, follow=True)
 
 
+def lose_origin_during_response(a, b, c, track, audio, observation):
+    """Leave A down after verifying one complete HTTP response from two authorized suppliers."""
+    live = [b, c]
+    before = counters([a, b, c])
+    window = 65536
+    size = len(audio)
+    with c.open("/tracks/" + track + "/stream", headers={"Range": "bytes=0-"}) as stream:
+        require(stream.status == 206 and stream.headers.get("Content-Length") == str(size)
+                and stream.headers.get("Content-Range") == f"bytes 0-{size - 1}/{size}",
+                "C did not open the complete continuous range")
+        prefix = stream.read(window)
+        require(prefix == audio[:window], "Incorrect first window from A")
+        at_cut = difference(before, counters([a, b, c]))
+        observation.update(http_status=stream.status, expected_bytes=size, prefix_verified=len(prefix),
+                           upstream_before_cut=at_cut)
+        require(window <= at_cut["A"]["sent"] < size-window and at_cut["B"]["sent"] == 0
+                and at_cut["C"]["received"] >= window,
+                "A must have served the prefix with verified windows still outstanding")
+        switch_backend("A", False)
+        # Continue reading the same response object. HTTP EOF, a truncated read,
+        # a misplaced retry offset or a wrong byte must fail the scenario.
+        verified = len(prefix)
+        while verified < size:
+            data = stream.read(min(window, size-verified))
+            require(data and data == audio[verified:verified+len(data)],
+                    f"Interrupted or incorrect continuous audio at byte {verified}")
+            verified += len(data)
+        require(not stream.read(1), "Response exceeded its original advertised length")
+    after = difference({node.name: before[node.name] for node in live}, counters(live))
+    observation.update(verified_bytes=verified, single_http_response=True,
+                       upstream_after_response=after, mirror_bytes=after["B"]["sent"])
+    require(after["B"]["sent"] >= window and after["C"]["received"] == size,
+            "C did not finish the original response with verified bytes from B")
+
+
 def run(args, report):
     a, b, c = nodes = [Instance(k, getattr(args, k.lower())) for k in "ABC"]
     for node in nodes:
@@ -74,13 +109,19 @@ def run(args, report):
     require(b.node_id == identity and b.call(endpoint)["pinned"], "Restart lost the public identity or pin")
     reconnect(b, [a, c], report)
 
-    # Ban A on C to guarantee the fetch cannot accidentally select the origin;
-    # then stop A to establish that B's durable copy works independently of A.
-    ban = c.call("/admin/blocked-domains", method="POST", body={"domain":a.node_id,"reason":"retention test"})
     wait_for("unfollowed B offered the pinned publication to C",
              lambda: b.node_id in c.call(mirrors)["providers"], timeout=60)
-    switch_backend("A", False)
+    reader_quota = cache(c)["maximum_bytes"]
+    c.call("/admin/storage/cache", method="PUT", body={"maximum_bytes": 0})
     try:
+        report["continuous_failover"] = {}
+        try:
+            lose_origin_during_response(a,b,c,c_id,audio,report["continuous_failover"])
+        finally:
+            c.call("/admin/storage/cache", method="PUT", body={"maximum_bytes": reader_quota})
+        # During the outage, persist C's ban so a subsequent restart of A cannot
+        # accidentally satisfy C's withdrawal or cached-copy checks through A.
+        ban = c.call("/admin/blocked-domains", method="POST", body={"domain":a.node_id,"reason":"retention test"})
         def from_mirror():
             try:
                 fetch_range(c,c_id,audio,3*1024*1024,65536)

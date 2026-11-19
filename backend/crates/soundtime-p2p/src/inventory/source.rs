@@ -25,6 +25,7 @@ pub(crate) enum Request {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum Response {
+    Preparing,
     Head(i64),
     Mirrors(Vec<super::lease::JournalEntry>),
     Snapshot { entries: Vec<Entry>, done: bool },
@@ -107,14 +108,12 @@ fn event(key: &SecretKey, row: &QueryResult) -> Result<Delta> {
     })
 }
 
-pub(crate) async fn head(db: &DatabaseConnection) -> Result<i64> {
+async fn head(db: &DatabaseConnection) -> Result<Option<i64>> {
     let row = db.query_one(sql("SELECT change_cursor,(SELECT complete FROM federation_event_bootstrap WHERE singleton) AS ready
         FROM federation_catalogs WHERE is_local", [])).await?.context("missing local catalogue")?;
-    ensure!(
-        row.try_get::<bool>("", "ready")?,
-        "historical publication journal is still being prepared"
-    );
-    Ok(row.try_get("", "change_cursor")?)
+    Ok(row
+        .try_get::<bool>("", "ready")?
+        .then_some(row.try_get("", "change_cursor")?))
 }
 
 pub(crate) async fn answer(
@@ -123,12 +122,15 @@ pub(crate) async fn answer(
     request: Request,
 ) -> Result<Response> {
     match request {
-        Request::Head => Ok(Response::Head(head(db).await?)),
+        Request::Head => Ok(head(db).await?.map_or(Response::Preparing, Response::Head)),
         Request::Mirrors { after } => {
             Ok(Response::Mirrors(super::lease::current(db, after).await?))
         }
         Request::Snapshot { cut, after } => {
-            ensure!((0..=head(db).await?).contains(&cut), "invalid snapshot cut");
+            let Some(head) = head(db).await? else {
+                return Ok(Response::Preparing);
+            };
+            ensure!((0..=head).contains(&cut), "invalid snapshot cut");
             // Apply the keyset before selecting the newest event. Filtering out
             // invalid assets earlier would expose a superseded publication.
             let rows = db.query_all(sql(&format!("SELECT e.*,{} AS eligible FROM
@@ -150,8 +152,11 @@ pub(crate) async fn answer(
             Ok(Response::Snapshot { entries, done })
         }
         Request::Changes { cut, after } => {
+            let Some(head) = head(db).await? else {
+                return Ok(Response::Preparing);
+            };
             ensure!(
-                after >= 0 && after <= cut && cut <= head(db).await?,
+                after >= 0 && after <= cut && cut <= head,
                 "invalid changes position"
             );
             let rows = db.query_all(sql(&format!("SELECT e.*,{} AS eligible FROM federation_events e

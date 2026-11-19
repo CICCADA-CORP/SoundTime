@@ -79,18 +79,22 @@ impl P2pNode {
             !policy.banned && (policy.followed || matches!(request, Request::Withdrawal { .. })),
             "catalogue provider denied"
         );
+        let deadline = tokio::time::Instant::now() + RPC_TIMEOUT;
+        let conn = tokio::time::timeout_at(deadline, self.catalogs.pool.get_connection(peer))
+            .await
+            .context("catalogue dial timed out")??;
         let operation = async {
-            let conn = self.catalogs.pool.get_connection(peer).await?;
             let (mut send, mut recv) = conn.open_bi().await?;
             send.write_all(&serde_json::to_vec(&request)?).await?;
             send.finish()?;
             let bytes = recv.read_to_end(FRAME).await?;
             Ok::<_, anyhow::Error>(serde_json::from_slice(&bytes)?)
         };
-        match tokio::time::timeout(RPC_TIMEOUT, operation).await {
+        match tokio::time::timeout_at(deadline, operation).await {
+            Ok(Ok(Response::Preparing)) => Err(crate::P2pError::CatalogPreparing.into()),
             Ok(Ok(resp)) => Ok(resp),
             error => {
-                self.catalogs.pool.invalidate(&peer).await;
+                self.catalogs.pool.invalidate_connection(&conn);
                 error.context("catalogue RPC timed out")?
             }
         }
@@ -269,7 +273,7 @@ impl P2pNode {
         let node = self.clone();
         let mut shutdown = node.shutdown_tx.subscribe();
         tokio::spawn(async move {
-            let worker = async {
+            let prepare_local_journal = async {
                 loop {
                     let ready = node
                         .db
@@ -287,11 +291,16 @@ impl P2pNode {
                     }
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
+            };
+            // Receiving remote updates and withdrawals is independent of our own
+            // journal. Rotate over connected, followed sources, even during upgrade.
+            let sync_subscriptions = async {
                 let mut after = String::new();
-                let mut last_retained = None;
                 loop {
                     tokio::time::sleep(Duration::from_secs(15)).await;
-                    if let Ok(batch) = crate::peer_policy::followed_after(&node.db, &after).await {
+                    if let Ok(batch) =
+                        crate::peer_policy::followed_after(&node.db, &after, true).await
+                    {
                         for id in &batch {
                             if let Ok(peer) = id.parse::<EndpointId>() {
                                 if node.catalogs.supports(peer).await
@@ -311,12 +320,18 @@ impl P2pNode {
                             String::new()
                         };
                     }
+                }
+            };
+            let check_withdrawals = async {
+                let mut last_retained = None;
+                loop {
+                    tokio::time::sleep(Duration::from_secs(15)).await;
                     if let Err(error) = node.check_retained(&mut last_retained).await {
                         tracing::debug!(%error,"withdrawal catch-up deferred");
                     }
                 }
             };
-            tokio::select! {_=worker=>{},_=shutdown.changed()=>{}}
+            tokio::select! {_=async { tokio::join!(prepare_local_journal, sync_subscriptions, check_withdrawals); }=>{},_=shutdown.changed()=>{}}
         });
     }
 

@@ -57,6 +57,33 @@ def exercise(args, report):
         replicas.append(wait_for("catalogue replica", lambda: replica.search("Restoredidentity")))
     require(replicas == [track, track], "two catalogue replicas disagreed")
 
+    # Pause the readiness marker on this disposable origin after a complete
+    # catalogue has been received. No user action follows restoration of the marker.
+    b.connect(a, follow=True)
+    previous = wait_for("A's complete catalogue on B", lambda: b.search("Restoredidentity"))
+    require(sql("SELECT complete FROM federation_event_bootstrap WHERE singleton") == "t",
+            "source journal has not completed its first preparation")
+    sql("UPDATE federation_event_bootstrap SET complete=false WHERE singleton")
+    try:
+        for method, route, body in [
+            ("POST", "/admin/p2p/peers", {"node_id": a.node_id, "direct_addresses": a.addresses, "follow_catalog": True}),
+            ("PUT", "/admin/p2p/peers/" + a.node_id + "/subscription", {"followed": True}),
+        ]:
+            with b.open(route, method=method, body=body) as response:
+                require(response.status == 202 and "preparing" in json.load(response)["message"],
+                        f"{method} did not confirm the saved subscription and pending journal")
+        a.upload("Journalresume", wav_fixture(16000, 31))
+        require(b.search("Restoredidentity") == previous and not b.search("Journalresume"),
+                "receiver exposed a partial catalogue while the source was preparing")
+        require(any(peer["node_id"] == a.node_id and peer["is_online"] for peer in b.call("/admin/p2p/peers")),
+                "preparing a catalogue incorrectly marked its origin offline")
+    finally:
+        sql("UPDATE federation_event_bootstrap SET complete=true WHERE singleton")
+    resumed = wait_for("automatic journal catch-up", lambda: b.search("Journalresume"), timeout=50)
+    require(b.search("Restoredidentity") == previous, "resuming changed the previous track identity")
+    report["catalogue_preparation"] = {"add_http": 202, "subscribe_http": 202, "preserved_track": previous,
+                                       "automatically_received_track": resumed}
+
     a.call("/admin/blocked-domains", method="POST", body={"domain": b.node_id})
     a.call("/tracks/" + track, method="DELETE")
     require(probe_stream(a, track, data) == 410, "withdrawal on active owner")

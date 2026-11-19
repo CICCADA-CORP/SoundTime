@@ -1358,6 +1358,9 @@ impl P2pNode {
             return Ok(false);
         };
         if let Err(error) = result {
+            if matches!(error, P2pError::CatalogPreparing) {
+                return Err(error);
+            }
             warn!(%peer, %error, "subscription saved locally; peer notification deferred");
             self.registry.failed_since(&peer, started, false).await;
             return Ok(false);
@@ -2079,7 +2082,7 @@ impl P2pNode {
     /// Walk a bounded, indexed slice of subscriptions on each tick. This includes
     /// a peer followed through the admin API while it was completely offline.
     async fn retry_followed(&self, after: &mut String) -> Result<(), P2pError> {
-        let batch = crate::peer_policy::followed_after(&self.db, after).await?;
+        let batch = crate::peer_policy::followed_after(&self.db, after, false).await?;
         for peer in &batch {
             let Ok(id) = peer.parse::<EndpointId>() else {
                 continue;
@@ -2136,10 +2139,10 @@ impl P2pNode {
             ));
         }
         if self.catalogs.supports(peer_id).await {
-            return self
-                .pull_catalog(peer_id)
-                .await
-                .map_err(|e| P2pError::Connection(e.to_string()));
+            return self.pull_catalog(peer_id).await.map_err(|e| {
+                e.downcast::<P2pError>()
+                    .unwrap_or_else(|e| P2pError::Connection(e.to_string()))
+            });
         }
         info!(peer = %peer_id, "requesting full catalog from peer");
         self.send_message_to_peer(peer_id, &P2pMessage::RequestCatalog)

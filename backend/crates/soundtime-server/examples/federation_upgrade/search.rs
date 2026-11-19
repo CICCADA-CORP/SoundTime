@@ -87,6 +87,27 @@ pub async fn check(db: &DatabaseConnection) -> Result<()> {
     assert_eq!(ids(&tx, TRACKS, "scanned:*", 0, false).await?, [scanned]);
     drain(&tx, 1).await?;
     assert_eq!(ids(&tx, TRACKS, "scanned:*", 0, false).await?, [scanned]);
+    // Reset each bootstrap marker with all current rows already projected.
+    // One row per batch detects even a single redundant projection or journal scan.
+    tx.execute_unprepared(
+        "UPDATE federation_backfill SET last_track_id=NULL, complete=false;
+         INSERT INTO federation_search_jobs(kind,subject_id) VALUES('initial','00000000-0000-0000-0000-000000000000');",
+    ).await?;
+    assert_eq!(soundtime_db::federation::backfill_batch(&tx, 1).await?, 0);
+    assert_eq!(refresh_search_batch(&tx, 1).await?, 0);
+    tx.execute_unprepared(
+        "SELECT federation_seed_events(256);
+         UPDATE federation_event_bootstrap SET complete=false,last_track=NULL;",
+    )
+    .await?;
+    let seeded = tx
+        .query_one(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT federation_seed_events(1) AS ready",
+        ))
+        .await?
+        .ok_or("missing journal state")?;
+    assert!(seeded.try_get::<bool>("", "ready")?);
     tx.execute_unprepared(
         "UPDATE artists SET name='Updated historical artist' WHERE id='20000000-0000-4000-8000-000000000001'",
     ).await?;

@@ -8,7 +8,11 @@ impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
             .get_connection()
-            .execute_unprepared(include_str!("federation/inventories.sql"))
+            .execute_unprepared(concat!(
+                include_str!("federation/inventories.sql"),
+                "\n",
+                include_str!("federation/journal_backfill.sql")
+            ))
             .await?;
         Ok(())
     }

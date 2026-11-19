@@ -1,6 +1,10 @@
 # Only C's verified remote cache uses this small RAM filesystem. Its original
 # audio, keys and database stay on separate volumes. B exercises durable pins.
 services:
+  backend-a:
+    environment:
+      # A 4 MiB response must still have unsent windows when the client cuts A.
+      P2P_UPLOAD_BYTES_PER_SECOND: "524288"
   backend-c:
     environment:
       P2P_CACHE_MIN_FREE: 1MB

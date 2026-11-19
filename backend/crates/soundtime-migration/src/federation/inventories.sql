@@ -46,39 +46,6 @@ CREATE TABLE federation_event_bootstrap (
     singleton boolean PRIMARY KEY CHECK(singleton), last_track uuid, complete boolean NOT NULL DEFAULT false
 );
 INSERT INTO federation_event_bootstrap(singleton) VALUES(true);
-CREATE FUNCTION federation_seed_events(n integer) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE
-    c uuid;
-    checkpoint federation_event_bootstrap%ROWTYPE;
-    item record;
-    processed integer := 0;
-BEGIN
-    IF n IS NULL OR n NOT BETWEEN 1 AND 256 THEN RAISE EXCEPTION 'invalid seed batch'; END IF;
-    IF NOT (SELECT complete FROM federation_backfill WHERE singleton) THEN RETURN false; END IF;
-    SELECT * INTO STRICT checkpoint FROM federation_event_bootstrap WHERE singleton FOR UPDATE;
-    IF checkpoint.complete THEN RETURN true; END IF;
-    SELECT id INTO STRICT c FROM federation_catalogs WHERE is_local FOR UPDATE;
-    FOR item IN SELECT p.track_id,p.origin_publication_id,p.revision,p.state,t.title,t.duration_secs,t.format,
-            t.genre,t.track_number,t.disc_number,t.year,t.bitrate,t.sample_rate,t.musicbrainz_id,
-            v.file_size,v.content_hash,a.name AS artist_name,l.title AS album_title
-        FROM track_publications p JOIN publication_versions v ON v.track_id=p.track_id AND v.revision=p.revision
-        LEFT JOIN tracks t ON t.id=p.track_id LEFT JOIN artists a ON a.id=t.artist_id LEFT JOIN albums l ON l.id=t.album_id
-        WHERE p.catalog_id=c AND (checkpoint.last_track IS NULL OR p.track_id>checkpoint.last_track)
-        ORDER BY p.track_id LIMIT n LOOP
-        IF item.state='active' AND item.content_hash IS NOT NULL AND item.title IS NOT NULL AND NOT EXISTS
-            (SELECT FROM federation_events e WHERE e.catalog_id=c AND e.origin_publication_id=item.origin_publication_id
-                  AND e.revision=item.revision)
-        THEN
-            PERFORM federation_append_event(c,item.origin_publication_id,item.revision,'upsert',to_jsonb(item));
-        END IF;
-        checkpoint.last_track := item.track_id;
-        processed := processed+1;
-    END LOOP;
-    UPDATE federation_event_bootstrap SET last_track=checkpoint.last_track,complete=processed<n WHERE singleton;
-    RETURN processed<n;
-END;
-$$;
-
 -- The Rust receiver verifies the origin signature on a typed, size-limited
 -- envelope before this call. This function does not create a provider offer.
 CREATE FUNCTION federation_import_signed(issuer text, publication uuid, rev bigint,

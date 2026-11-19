@@ -159,7 +159,7 @@ pub async fn list_peers(State(state): State<Arc<AppState>>) -> Json<Vec<PeerInfo
 pub async fn add_peer(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AddPeerRequest>,
-) -> Result<Json<MessageResponse>, (StatusCode, Json<MessageResponse>)> {
+) -> Result<(StatusCode, Json<MessageResponse>), (StatusCode, Json<MessageResponse>)> {
     let Some(node) = get_p2p_node(&state) else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -214,29 +214,42 @@ pub async fn add_peer(
     let started = chrono::Utc::now();
     match node.ping_peer(peer_addr).await {
         Ok(P2pMessage::Pong { track_count, .. }) => {
-            if node.explicit_catalog() && follow {
-                node.request_catalog_from_peer(node_id)
-                    .await
-                    .map_err(peer_policy_error)?;
-            }
+            let preparing = if node.explicit_catalog() && follow {
+                match node.request_catalog_from_peer(node_id).await {
+                    Ok(()) => false,
+                    Err(soundtime_p2p::P2pError::CatalogPreparing) => true,
+                    Err(error) => return Err(peer_policy_error(error)),
+                }
+            } else {
+                false
+            };
             // Trigger peer exchange in background to discover wider network
             let p2p_clone = Arc::clone(&node);
             tokio::spawn(async move {
                 p2p_clone.discover_via_peer(node_id).await;
             });
-            Ok(Json(MessageResponse {
-                message: format!(
-                    "peer {} added and responded to ping ({} tracks)",
-                    payload.node_id, track_count
-                ),
-            }))
+            if preparing {
+                return Ok(catalog_preparing());
+            }
+            Ok((
+                StatusCode::OK,
+                Json(MessageResponse {
+                    message: format!(
+                        "peer {} added and responded to ping ({} tracks)",
+                        payload.node_id, track_count
+                    ),
+                }),
+            ))
         }
         Ok(_) => {
             // Got a response but not a Pong — register anyway
             node.registry().upsert_peer(&payload.node_id, None, 0).await;
-            Ok(Json(MessageResponse {
-                message: format!("peer {} added (unexpected response type)", payload.node_id),
-            }))
+            Ok((
+                StatusCode::OK,
+                Json(MessageResponse {
+                    message: format!("peer {} added (unexpected response type)", payload.node_id),
+                }),
+            ))
         }
         Err(e) => {
             if matches!(
@@ -250,11 +263,20 @@ pub async fn add_peer(
                     .await;
             }
             tracing::warn!(peer = %payload.node_id, "ping failed: {e}");
-            Ok(Json(MessageResponse {
-                message: format!("peer {} added but ping failed: {e}", payload.node_id),
-            }))
+            Ok((
+                StatusCode::OK,
+                Json(MessageResponse {
+                    message: format!("peer {} added but ping failed: {e}", payload.node_id),
+                }),
+            ))
         }
     }
+}
+
+fn catalog_preparing() -> (StatusCode, Json<MessageResponse>) {
+    (StatusCode::ACCEPTED, Json(MessageResponse {
+        message: "Catalogue followed. The remote journal is preparing. Synchronization will resume automatically.".into(),
+    }))
 }
 
 fn peer_policy_error(error: soundtime_p2p::P2pError) -> (StatusCode, Json<MessageResponse>) {
@@ -275,7 +297,7 @@ pub async fn update_subscription(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(payload): Json<SubscriptionRequest>,
-) -> Result<Json<MessageResponse>, (StatusCode, Json<MessageResponse>)> {
+) -> Result<(StatusCode, Json<MessageResponse>), (StatusCode, Json<MessageResponse>)> {
     let node = get_p2p_node(&state)
         .filter(|n| n.explicit_catalog())
         .ok_or_else(|| {
@@ -294,25 +316,29 @@ pub async fn update_subscription(
             }),
         )
     })?;
-    let notified = node
-        .update_subscription(id, payload.followed)
-        .await
-        .map_err(peer_policy_error)?;
-    Ok(Json(MessageResponse {
-        message: format!(
-            "Catalogue {}{}",
-            if payload.followed {
-                "followed"
-            } else {
-                "unfollowed"
-            },
-            if notified {
-                ""
-            } else {
-                " locally (peer not notified)"
-            }
-        ),
-    }))
+    let notified = match node.update_subscription(id, payload.followed).await {
+        Ok(notified) => notified,
+        Err(soundtime_p2p::P2pError::CatalogPreparing) => return Ok(catalog_preparing()),
+        Err(error) => return Err(peer_policy_error(error)),
+    };
+    Ok((
+        StatusCode::OK,
+        Json(MessageResponse {
+            message: format!(
+                "Catalogue {}{}",
+                if payload.followed {
+                    "followed"
+                } else {
+                    "unfollowed"
+                },
+                if notified {
+                    ""
+                } else {
+                    " locally (peer not notified)"
+                }
+            ),
+        }),
+    ))
 }
 
 /// POST /api/admin/p2p/peers/{node_id}/ping — ping a specific peer (admin only)

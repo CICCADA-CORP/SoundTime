@@ -126,14 +126,20 @@ pub async fn shareable(
     .collect()
 }
 
-pub async fn followed_after(db: &impl ConnectionTrait, after: &str) -> Result<Vec<String>, DbErr> {
+pub async fn followed_after(
+    db: &impl ConnectionTrait,
+    after: &str,
+    online_only: bool,
+) -> Result<Vec<String>, DbErr> {
     db.query_all(Statement::from_sql_and_values(
         DbBackend::Postgres,
         "SELECT p.node_id FROM federation_peer_policies p
-         WHERE p.node_id > $1 AND p.is_followed AND NOT p.is_banned AND NOT EXISTS
+         WHERE p.node_id > $1 AND p.is_followed AND NOT p.is_banned
+         AND (NOT $2 OR EXISTS(SELECT FROM p2p_peers peer WHERE peer.node_id=p.node_id AND peer.is_online))
+         AND NOT EXISTS
          (SELECT 1 FROM blocked_domains b WHERE b.domain=p.node_id)
          ORDER BY p.node_id LIMIT 8",
-        [after.into()],
+        [after.into(), online_only.into()],
     ))
     .await?
     .iter()
