@@ -56,7 +56,7 @@ jobs:
           file: docker/Dockerfile.${{ matrix.component }}
           platforms: linux/${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: ${{ matrix.component == 'backend' && format('SOUNDTIME_BUILD_NUMBER={0}', github.run_number) || '' }}
+          build-args: ${{ matrix.component == 'backend' && env.PUBLISH_DIGEST == 'true' && format('SOUNDTIME_BUILD_NUMBER={0}', github.run_number) || '' }}
           outputs: ${{ env.PUBLISH_DIGEST == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true', steps.image.outputs.name) || 'type=cacheonly' }}
           cache-from: type=gha,scope=${{ matrix.component }}-${{ matrix.arch }}
           cache-to: type=gha,scope=${{ matrix.component }}-${{ matrix.arch }},mode=max,ignore-error=true
@@ -66,7 +66,7 @@ jobs:
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "Invalid image digest" >&2; exit 1; }
           echo "$DIGEST" > "$RUNNER_TEMP/digest"
 
       - name: Upload image digest
