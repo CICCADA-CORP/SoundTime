@@ -1,17 +1,17 @@
-SOUNDTIME — Assistant d’installation
+SoundTime CLI
+=============
 
-1. Extrayez l’archive entière sur votre ordinateur.
-2. Vérifiez que Python 3.9 ou une version ultérieure est installé.
-   Vous pouvez le télécharger sur https://www.python.org/downloads/
-3. Ouvrez le dossier « installer ».
-   Windows   Double-cliquez sur Lancer.cmd.
-   macOS     Double-cliquez sur Lancer.command.
-   Linux     Dans un terminal ouvert dans ce dossier, tapez python3 launcher.py
-4. Dans le navigateur, choisissez cet ordinateur ou une autre machine.
-   L’assistant peut installer SoundTime localement ou par SSH sur Linux.
-   Pour un NAS Synology ou QNAP, vous pouvez exporter le projet à importer
-   dans votre gestionnaire de conteneurs. Les cibles distantes peuvent aussi
-   recevoir un projet Docker. Le mode personnalisé propose le stockage S3.
+English — Extract the entire archive. Open a terminal in the extracted folder.
+Français — Extrayez toute l’archive. Ouvrez un terminal dans le dossier extrait.
+Español — Extrae todo el archivo y abre una terminal en la carpeta extraída.
+Русский — Распакуйте архив и откройте терминал в распакованной папке.
+中文 — 解压整个压缩包，在解压后的文件夹中打开终端。
 
-Le guide complet explique aussi comment installer sur un serveur sans écran.
-https://github.com/CICCADA-CORP/SoundTime/blob/main/docs/installateur.md
+macOS / Linux                  ./soundtime
+Windows PowerShell             .\soundtime.cmd
+Windows cmd                    soundtime.cmd
+
+English  --lang en     Français --lang fr     Español --lang es
+Русский  --lang ru     中文     --lang zh
+
+https://github.com/CICCADA-CORP/SoundTime#guided-installation

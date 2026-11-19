@@ -1,127 +1,97 @@
-"""Launch an unpacked release, open its authenticated dashboard, then close it."""
-
-import io
+"""Run real commands from the packaged terminal launcher without Docker or a display."""
+import argparse
+import hashlib
 import json
+import secrets
 import os
-import queue
-import re
-import runpy
+import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
-import threading
 import zipfile
-from html.parser import HTMLParser
 from pathlib import Path
-from urllib.request import ProxyHandler, Request, build_opener
 
-from build import MAC_APP, PROGRAM
+from build import ROOT, OUT, machine, relative_binary
 
-
-class LinkedAssets(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.paths = set()
-
-    def handle_starttag(self, tag, attrs):
-        for name, value in attrs:
-            if name in ("src", "href") and value and value.startswith("/ui/"):
-                self.paths.add(value)
+sys.path.insert(0, str(ROOT))
+from installer import remote
 
 
-def verify(archive):
-    with tempfile.TemporaryDirectory(prefix="soundtime-release-test-") as tmp:
-        folder = Path(tmp)
-        runtime_tmp = folder / "runtime"
-        runtime_tmp.mkdir()
-        agent_path = None
-        if archive.name == "SoundTime-Installer-sources.zip":
-            with zipfile.ZipFile(archive) as release:
-                release.extractall(folder)
-            launcher = [sys.executable, str(folder / "installer" / "launcher.py")]
-            agent_path = folder / "installer" / "remote.py"
-        elif sys.platform == "darwin":
-            subprocess.run(["ditto", "-x", "-k", str(archive), str(folder)], check=True)
-            app = folder / f"{MAC_APP}.app" / "Contents"
-            launcher = [str(app / "MacOS" / MAC_APP)]
-            agent_path = app / "Resources" / "installer" / "remote.py"
-        elif sys.platform == "win32":
-            with zipfile.ZipFile(archive) as release:
-                release.extract(f"{PROGRAM}.exe", folder)
-            launcher = [str(folder / f"{PROGRAM}.exe")]
-        else:
-            with tarfile.open(archive, "r:gz") as release:
-                release.extract(PROGRAM, folder, filter="data")
-            launcher = [str(folder / PROGRAM)]
-        environment = dict(os.environ, TMPDIR=str(runtime_tmp), TMP=str(runtime_tmp), TEMP=str(runtime_tmp))
-        process = subprocess.Popen([*launcher, "--no-browser"], cwd=tmp, env=environment, stdout=subprocess.PIPE)
-        urls = queue.Queue()
+def verify_agent(binary, folder, system):
+    # Run the actual staging commands in the target OS shell, including the
+    # PowerShell stdin byte stream used by Windows OpenSSH.
+    env = {**os.environ, "HOME": str(folder), "TMP": str(folder), "TEMP": str(folder)}
+    shell = ["cmd.exe", "/d", "/c"] if system == "windows" else ["/bin/sh", "-c"]
+    name = ".soundtime-installer-" + secrets.token_hex(16)
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    upload, execute, cleanup = remote._staging_commands(system, name, digest)
+    try:
+        with binary.open("rb") as data:
+            subprocess.run([*shell, upload], stdin=data, env=env, check=True, timeout=120)
+        request = json.dumps({"os": system, "action": "check", "settings": {}}).encode("ascii") + b"\n"
+        result = subprocess.run([*shell, execute], input=request, env=env, check=True,
+                                capture_output=True, timeout=60)
+        payload, = [json.loads(line[len(remote.PREFIX):]) for line in result.stdout.splitlines()
+                    if line.startswith(remote.PREFIX)]
+        if payload["kind"] != "result" or payload["result"]["checks"][0]["id"] != "settings":
+            raise ValueError("Staged agent did not return a settings check")
+    finally:
+        subprocess.run([*shell, cleanup], env=env, check=True, timeout=60)
+    if (folder / name).exists():
+        raise ValueError("Temporary agent directory remains after cleanup")
 
-        def read_url():
-            for line in process.stdout:
-                match = re.search(rb"(http://127\.0\.0\.1:\d+)/#session=([A-Za-z0-9_-]+)", line)
-                if match:
-                    urls.put(tuple(part.decode("ascii") for part in match.groups()))
-                    return
-            urls.put(None)
 
-        threading.Thread(target=read_url, daemon=True).start()
-        http = build_opener(ProxyHandler({}))
-        try:
-            session = urls.get(timeout=60)
-            if not session:
-                raise RuntimeError("The packaged launcher closed without printing its session URL.")
-            if agent_path is None:
-                # One-file builds on Linux and Windows unpack here during this session.
-                agent_path, = runtime_tmp.glob("_MEI*/installer/remote.py")
-            # Exercise SSH agent assembly from the *shipped* module and its data,
-            # even on runners that have no configured SSH login.
-            agent = runpy.run_path(str(agent_path))["_bundle"]()
-            with zipfile.ZipFile(io.BytesIO(agent)) as remote:
-                for source in ("installer/engine.py", "installer/remote_agent.py",
-                               "docker-compose.yml", "docker/nginx.conf"):
-                    if not remote.read(source):
-                        raise ValueError(f"The SSH bundle has an empty {source}.")
-            origin, token = session
-            with http.open(origin, timeout=10) as page:
-                assets = LinkedAssets()
-                assets.feed(page.read().decode())
-            if not assets.paths:
-                raise ValueError("The packaged interface has no linked assets.")
-            for path in assets.paths:
-                with http.open(origin + path, timeout=10) as asset:
-                    if not asset.read(1):
-                        raise ValueError(f"Empty packaged asset: {path}")
-            headers = {"Authorization": f"Bearer {token}", "Origin": origin,
-                       "Content-Type": "application/json"}
-            with http.open(Request(origin + "/api/session", headers=headers), timeout=10) as info:
-                session_info = json.load(info)
-                if session_info["status"]["state"] != "idle":
-                    raise ValueError("The packaged assistant is not ready.")
-            params = {"target": "nas", "settings": {
-                **session_info["defaults"], "directory": "/volume1/docker/soundtime", "access": "lan"
-            }}
-            export = Request(origin + "/api/export", data=json.dumps(params).encode(), headers=headers)
-            with http.open(export, timeout=20) as result:
-                if result.headers.get_content_type() != "application/zip":
-                    raise ValueError("The NAS export did not return a Compose project.")
-                with zipfile.ZipFile(io.BytesIO(result.read())) as project:
-                    for name in ("compose.yaml", ".env", "docker/nginx.conf", "LISEZ-MOI.txt",
-                                 "qnap-compose.yaml", "qnap/backend.env", "qnap/postgres.env"):
-                        if not project.read(name).strip():
-                            raise ValueError(f"The exported project has an empty {name}.")
-            with http.open(Request(origin + "/api/close", data=b"{}", headers=headers), timeout=10):
-                pass
-            if process.wait(timeout=15):
-                raise RuntimeError("The packaged launcher failed during shutdown.")
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=15)
-            process.stdout.close()
-        print(f"Packaged installer verified: {archive.name}")
+def verify(directory):
+    system, arch = machine()
+    binary = directory / relative_binary(system, arch)
+    if not binary.is_file():
+        raise FileNotFoundError(binary)
+    with tempfile.TemporaryDirectory(prefix="SoundTime CLI test ") as tmp:
+        # A relocatable directory with spaces exercises shell quoting on all platforms.
+        work = Path(tmp) / "SoundTime release"
+        target = work / relative_binary(system, arch)
+        target.parent.mkdir(parents=True)
+        shutil.copy2(binary, target)
+        target.chmod(0o755)
+        verify_agent(target, work, system)
+        for name in ("soundtime", "soundtime.cmd"):
+            wrapper = ROOT / "installer" / "packaging" / "wrappers" / name
+            shutil.copy2(wrapper, work / name)
+        def run(args):
+            env = {**os.environ, "PYTHONIOENCODING": "utf-8", "DISPLAY": ""}
+            if system == "windows":
+                command = ["cmd.exe", "/d", "/c", "soundtime.cmd", *args]
+            else:
+                command = ["sh", str(work / "soundtime"), *args]
+            return subprocess.run(command, env=env, cwd=work, capture_output=True, timeout=90)
+
+        outputs = []
+        for lang in ("en", "fr", "es", "ru", "zh"):
+            result = run(["--lang", lang, "--help"])
+            if result.returncode or not result.stdout.strip():
+                raise RuntimeError(f"Failed to open {lang} CLI help: {result.stderr!r}")
+            outputs.append(result.stdout)
+        if len(set(outputs)) != len(outputs):
+            raise ValueError("CLI help did not change with language")
+        if run(["invalid-command"]).returncode == 0:
+            raise ValueError("Wrapper swallowed a command error")
+        result = run(["--lang", "es", "export", "--target", "nas", "--directory", "/volume1/docker/soundtime",
+                      "--output", "NAS project.zip"])
+        if result.returncode:
+            raise RuntimeError(f"Packaged NAS export failed: {result.stdout!r}, {result.stderr!r}")
+        with zipfile.ZipFile(work / "NAS project.zip") as project:
+            for name in ("compose.yaml", ".env", "qnap-compose.yaml", "docker/nginx.conf", "README.txt"):
+                if not project.read(name).strip():
+                    raise ValueError(f"Empty NAS project file: {name}")
+        if system == "windows":
+            shell = shutil.which("pwsh") or shutil.which("powershell")
+            subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
+                            r"& '.\soundtime.cmd' --lang en --help; exit $LASTEXITCODE"],
+                           cwd=work, check=True, stdout=subprocess.DEVNULL, timeout=60)
+    print(f"Console wrapper, five languages, exit status and NAS export verified on {system}-{arch}.")
 
 
 if __name__ == "__main__":
-    verify(Path(sys.argv[1]).resolve())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("directory", nargs="?", type=Path, default=OUT)
+    verify(parser.parse_args().directory.resolve())

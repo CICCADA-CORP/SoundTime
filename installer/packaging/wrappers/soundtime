@@ -1,0 +1,40 @@
+#!/bin/sh
+# Locate the engine next to this portable launcher, even when invoked via a symlink.
+set -eu
+case $0 in
+  /*|*/*) wrapper=$0 ;;
+  *) if [ -f "./$0" ]; then wrapper="./$0"; else wrapper=$(command -v "$0"); fi ;;
+esac
+links=0
+while [ -L "$wrapper" ]; do
+  links=$((links + 1))
+  if [ "$links" -gt 40 ]; then echo "SoundTime: too many symbolic links." >&2; exit 1; fi
+  target=$(readlink "$wrapper")
+  case $target in
+    /*) wrapper=$target ;;
+    *) wrapper=$(dirname "$wrapper")/$target ;;
+  esac
+done
+base=$(CDPATH= cd -P "$(dirname "$wrapper")" && pwd)
+case $(uname -s) in
+  Darwin) os=macos ;;
+  Linux) os=linux ;;
+  *) echo "SoundTime: use this launcher on macOS or Linux; on Windows use soundtime.cmd." >&2; exit 1 ;;
+esac
+case $(uname -m) in
+  x86_64|amd64) arch=x64 ;;
+  arm64|aarch64) arch=arm64 ;;
+  *) echo "SoundTime requires a 64-bit Intel/AMD or ARM processor." >&2; exit 1 ;;
+esac
+if [ "$os" = macos ] && [ "$arch" = x64 ] && [ "$(sysctl -in sysctl.proc_translated 2>/dev/null || :)" = 1 ]; then
+  arch=arm64
+fi
+engine="$base/bin/$os-$arch/soundtime"
+if [ ! -f "$engine" ]; then
+  echo "SoundTime: extract the complete archive, including bin/$os-$arch/soundtime." >&2
+  exit 1
+fi
+if [ ! -x "$engine" ]; then
+  chmod u+x "$engine" || { echo "SoundTime: the engine must be executable." >&2; exit 1; }
+fi
+exec "$engine" "$@"

@@ -1,113 +1,87 @@
-"""Produce the native SoundTime installer archive for the current OS and CPU."""
-
+"""Build one native console executable, or assemble verified builds into one portable CLI."""
 import argparse
 import hashlib
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "dist" / "installer"
-MAC_APP = "SoundTime Installer"
-PROGRAM = "SoundTime-Installer"
+ARCHIVE = "SoundTime-CLI.zip"
+SYSTEMS = ("linux", "windows", "macos")
+ARCHES = ("x64", "arm64")
 
 
-def checksum(archive):
-    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    archive.with_name(archive.name + ".sha256").write_text(
-        f"{digest}  {archive.name}\n", encoding="ascii"
-    )
-    print(archive)
+def machine():
+    system = {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}[platform.system()]
+    arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "x64", "amd64": "x64"}[platform.machine().lower()]
+    return system, arch
 
 
-def build_sources():
-    files = [
-        ROOT / relative for relative in (
-            "installer/Lancer.cmd", "installer/Lancer.command",
-            "docker-compose.yml", "docker/nginx.conf", "LICENSE",
-        )
-    ]
-    files.extend((ROOT / "installer").glob("*.py"))
-    files.extend(file for file in (ROOT / "installer" / "ui").rglob("*") if file.is_file())
-    OUT.mkdir(parents=True, exist_ok=True)
-    archive = OUT / "SoundTime-Installer-sources.zip"
-    with tempfile.TemporaryDirectory(dir=OUT) as tmp:
-        packed = Path(tmp) / archive.name
-        with zipfile.ZipFile(packed, "w", zipfile.ZIP_DEFLATED) as source:
-            for file in sorted(files):
-                source.write(file, file.relative_to(ROOT))
-            source.write(ROOT / "installer" / "packaging" / "LIRE-MOI.txt", "LIRE-MOI.txt")
-        packed.replace(archive)
-    checksum(archive)
+def relative_binary(system, arch):
+    return Path("bin", f"{system}-{arch}", "soundtime.exe" if system == "windows" else "soundtime")
 
 
 def build():
-    system = {"Darwin": "macOS", "Linux": "Linux", "Windows": "Windows"}[platform.system()]
-    arch = {"arm64": "arm64", "aarch64": "arm64", "amd64": "x64", "x86_64": "x64"}[
-        platform.machine().lower()
-    ]
-    name = MAC_APP if system == "macOS" else PROGRAM
-    extension = ".tar.gz" if system == "Linux" else ".zip"
-    archive = OUT / f"SoundTime-Installer-{system}-{arch}{extension}"
-    OUT.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="soundtime-build-") as tmp:
+    system, arch = machine()
+    output = OUT / relative_binary(system, arch)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="soundtime-console-") as tmp:
         work = Path(tmp)
-        dist = work / "dist"
         command = [
-            sys.executable, "-m", "PyInstaller", "--noconfirm", "--noupx",
-            "--name", name, "--specpath", str(work), "--workpath", str(work / "build"),
-            "--distpath", str(dist), "--log-level", "WARN",
-            "--add-data", f"{ROOT / 'installer' / 'ui'}:installer/ui",
-            "--add-data", f"{ROOT / 'docker' / 'nginx.conf'}:docker",
+            sys.executable, "-m", "PyInstaller", "--onefile", "--console", "--noupx",
+            "--noconfirm", "--log-level", "WARN", "--name", "soundtime",
+            "--paths", str(ROOT), "--specpath", str(work), "--workpath", str(work / "build"),
+            "--distpath", str(work / "dist"), "--exclude-module", "tkinter",
             "--add-data", f"{ROOT / 'docker-compose.yml'}:.",
+            "--add-data", f"{ROOT / 'docker' / 'nginx.conf'}:docker",
+            str(ROOT / "installer" / "launcher.py"),
         ]
-        # The SSH launcher builds a small Python agent for the selected host.
-        # Frozen Python modules alone do not expose their source for this copy.
-        for module in sorted((ROOT / "installer").glob("*.py")):
-            command += ["--add-data", f"{module}:installer"]
-        if system in ("Windows", "macOS"):
-            command += ["--icon", str(ROOT / "docs" / "assets" / "soundtime-logo.png")]
-        if system == "macOS":
-            command += ["--onedir", "--windowed", "--osx-bundle-identifier", "org.soundtime.installer"]
-        else:
-            command += ["--onefile"]
-            if system == "Windows":
-                command += ["--hide-console", "minimize-late"]
-        command.append(str(ROOT / "installer" / "launcher.py"))
-        # Keep PyInstaller caches per build, including on CI and read-only homes.
-        subprocess.run(command, check=True, cwd=ROOT,
-                       env={**os.environ, "PYINSTALLER_CONFIG_DIR": str(work / "cache")})
+        subprocess.run(command, cwd=ROOT, check=True, env={**os.environ, "PYINSTALLER_CONFIG_DIR": str(work / "cache")})
+        shutil.copy2(work / "dist" / output.name, output)
+    print(output)
 
-        packed = work / archive.name
-        if system == "macOS":
-            subprocess.run(["ditto", "-c", "-k", "--norsrc", "--keepParent",
-                            str(dist / f"{name}.app"), str(packed)], check=True)
-        elif system == "Windows":
-            with zipfile.ZipFile(packed, "w", zipfile.ZIP_DEFLATED) as out:
-                out.write(dist / f"{name}.exe", f"{name}.exe")
-        else:
-            with tarfile.open(packed, "w:gz") as out:
-                out.add(dist / name, arcname=name)
-        # A failed build leaves the previous package intact. Stage the rename on
-        # the destination filesystem in case the temp directory is another disk.
-        with tempfile.NamedTemporaryFile(dir=OUT, delete=False) as dest:
-            with packed.open("rb") as source:
-                shutil.copyfileobj(source, dest)
-        Path(dest.name).replace(archive)
-    checksum(archive)
+
+def assemble(directory):
+    wrappers = ROOT / "installer" / "packaging" / "wrappers"
+    files = [(wrappers / name, name) for name in ("soundtime", "soundtime.cmd")]
+    files.append((ROOT / "installer" / "packaging" / "LIRE-MOI.txt", "README.txt"))
+    for system in SYSTEMS:
+        for arch in ARCHES:
+            rel = relative_binary(system, arch)
+            files.append((directory / rel, rel.as_posix()))
+    OUT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=OUT) as tmp:
+        path = Path(tmp) / ARCHIVE
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for src, name in files:
+                if not src.is_file() or not src.stat().st_size:
+                    raise ValueError(f"Missing release file: {src}")
+                info = zipfile.ZipInfo.from_file(src, name)
+                info.create_system = 3
+                # The Actions artifact service normalizes file modes on download.
+                mode = 0o644 if name.endswith((".cmd", ".txt")) else 0o755
+                info.external_attr = (stat.S_IFREG | mode) << 16
+                info.compress_type = zipfile.ZIP_DEFLATED
+                with src.open("rb") as source, archive.open(info, "w") as target:
+                    shutil.copyfileobj(source, target)
+        path.replace(OUT / ARCHIVE)
+    checksum = hashlib.sha256((OUT / ARCHIVE).read_bytes()).hexdigest()
+    (OUT / (ARCHIVE + ".sha256")).write_bytes(f"{checksum}  {ARCHIVE}\n".encode("ascii"))
+    print(OUT / ARCHIVE)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sources", action="store_true", help="package the portable Python launcher")
-    if parser.parse_args().sources:
-        build_sources()
+    parser.add_argument("--assemble", type=Path, metavar="DIRECTORY", help="Folder containing bin/<os>-<arch> binaries")
+    args = parser.parse_args()
+    if args.assemble:
+        assemble(args.assemble)
     else:
         build()
