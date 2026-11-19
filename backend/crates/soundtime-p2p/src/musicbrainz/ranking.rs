@@ -200,7 +200,7 @@ fn evidence(input: &Hints<'_>, title: &Title<'_>, r: &Recording) -> Option<(i32,
     let candidate = Title::parse(&r.title, r.disambiguation.as_deref().unwrap_or(""));
     let exact = title.core == candidate.core;
     if title.core.is_empty()
-        || (!exact && !one_typo(&title.core, &candidate.core))
+        || (!exact && (input.title_only() || !one_typo(&title.core, &candidate.core)))
         || title.kinds != candidate.kinds
     {
         return None;

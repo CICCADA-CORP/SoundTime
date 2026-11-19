@@ -143,6 +143,12 @@ struct Hints<'a> {
     duration_ms: Option<u64>,
 }
 
+impl Hints<'_> {
+    fn title_only(&self) -> bool {
+        self.artist.is_none() && self.album.is_none() && self.duration_ms.is_none()
+    }
+}
+
 fn retry_delay(response: &Response, attempt: u32) -> Duration {
     let wait = response
         .headers()
@@ -296,17 +302,22 @@ fn text_queries(hints: &Hints<'_>) -> Vec<String> {
 }
 
 async fn search(client: &Client, base: &str, query: &str) -> Result<Page> {
+    search_from(client, base, query, 0).await
+}
+
+async fn search_from(client: &Client, base: &str, query: &str, offset: usize) -> Result<Page> {
     let url = format!("{}/recording", base.trim_end_matches('/'));
     let limit = PAGE_SIZE.to_string();
-    Ok(request(
-        client,
-        &url,
-        &[("query", query), ("fmt", "json"), ("limit", &limit)],
-    )
-    .await?
-    .error_for_status()?
-    .json()
-    .await?)
+    let offset_text = offset.to_string();
+    let mut params = vec![("query", query), ("fmt", "json"), ("limit", limit.as_str())];
+    if offset > 0 {
+        params.push(("offset", &offset_text));
+    }
+    Ok(request(client, &url, &params)
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
 }
 
 async fn details(
@@ -443,23 +454,12 @@ pub async fn resolve_tagged_recording(
     let mut seen: Vec<Recording> = Vec::new();
     let mut complete_ids = std::collections::HashSet::new();
     let mut decision = RecordingMatch::Absent;
+    let mut next_offset = None;
     for query in text_queries(&hints) {
         let page = search(client, base_url, &query).await?;
         let truncated = page.truncated();
-        for recording in page.recordings.into_iter().take(PAGE_SIZE) {
-            ensure!(
-                Uuid::parse_str(&recording.id).is_ok(),
-                "Invalid recording MBID in search response"
-            );
-            if !truncated {
-                complete_ids.insert(recording.id.clone());
-            }
-            if let Some(previous) = seen.iter_mut().find(|r| r.id == recording.id) {
-                previous.score = previous.score.max(recording.score);
-            } else {
-                seen.push(recording);
-            }
-        }
+        next_offset = truncated.then_some(page.recordings.len().min(PAGE_SIZE));
+        merge_recordings(page, &mut seen, &mut complete_ids)?;
         decision = ranking::choose(&hints, &seen);
         if let RecordingMatch::Reliable(found) = decision {
             if !complete_ids.contains(&found.id) {
@@ -473,7 +473,61 @@ pub async fn resolve_tagged_recording(
             }
         }
     }
+    if hints.title_only() && matches!(decision, RecordingMatch::Absent) {
+        if let Some(offset) = next_offset {
+            // A full page of partial title matches is inconclusive. Spend at most
+            // one additional request on it, and never auto-tag a title-only hit.
+            let core = ranking::base_title(hints.title);
+            let word = ranking::normalize(core);
+            let mut query = quoted("recording", core);
+            let repeats = !word.contains(' ')
+                && word.len() <= 100
+                && seen.iter().any(|r| {
+                    let title = ranking::normalize(&r.title);
+                    let mut words = title.split_whitespace();
+                    words.next() == Some(&word) && words.next() == Some(&word)
+                });
+            let offset = if repeats {
+                let phrase = quoted("recording", &format!("{word} {word}"));
+                query = format!("{query} AND NOT {phrase}");
+                0
+            } else {
+                offset
+            };
+            if repeats || offset > 0 {
+                let page = search_from(client, base_url, &query, offset).await?;
+                merge_recordings(page, &mut seen, &mut complete_ids)?;
+            }
+            return Ok(match ranking::choose(&hints, &seen) {
+                RecordingMatch::Ambiguous(rows) => RecordingMatch::Ambiguous(rows),
+                _ => RecordingMatch::Ambiguous(Vec::new()),
+            });
+        }
+    }
     Ok(decision)
+}
+
+fn merge_recordings(
+    page: Page,
+    seen: &mut Vec<Recording>,
+    complete_ids: &mut std::collections::HashSet<String>,
+) -> Result<()> {
+    let truncated = page.truncated();
+    for recording in page.recordings.into_iter().take(PAGE_SIZE) {
+        ensure!(
+            Uuid::parse_str(&recording.id).is_ok(),
+            "Invalid recording MBID in search response"
+        );
+        if !truncated {
+            complete_ids.insert(recording.id.clone());
+        }
+        if let Some(previous) = seen.iter_mut().find(|r| r.id == recording.id) {
+            previous.score = previous.score.max(recording.score);
+        } else {
+            seen.push(recording);
+        }
+    }
+    Ok(())
 }
 
 // Preserve the existing compact return type for P2P callers.

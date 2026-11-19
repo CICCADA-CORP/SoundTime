@@ -377,3 +377,91 @@ async fn concurrent_artist_and_recording_helpers_share_the_provider_request_rate
     assert_eq!(starts.len(), 2);
     assert!(starts[1].duration_since(starts[0]) >= Duration::from_millis(950));
 }
+
+#[tokio::test]
+async fn title_only_truncated_repetitions_prompt_once_and_never_select() {
+    let server = MockServer::start().await;
+    let repeated = candidate(FIRST, "Hello! Hello! Hello!", "One", "A", 200_000);
+    let exact = candidate(SECOND, "Hello", "Two", "B", 210_000);
+    for (q, rows) in [
+        (r#"recording:"Hello""#, vec![repeated.clone()]),
+        (
+            r#"recording:"Hello" AND NOT recording:"hello hello""#,
+            vec![repeated, exact],
+        ),
+    ] {
+        Mock::given(path("/recording"))
+            .and(query_param("query", q))
+            .and(query_param("limit", "25"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"count":10000,"recordings":rows})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let answer = resolve_recording(&Client::new(), &server.uri(), "Hello", None, None, None)
+        .await
+        .unwrap();
+    assert!(
+        matches!(answer,RecordingMatch::Ambiguous(rows) if rows.len()==1 && rows[0].id==SECOND)
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn incomplete_title_only_search_without_plausible_hits_needs_more_information() {
+    let server = MockServer::start().await;
+    let row = candidate(FIRST, "Night Waves at Dawn", "One", "A", 200_000);
+    let rows = vec![row; PAGE_SIZE];
+    Mock::given(path("/recording"))
+        .and(query_param("query", r#"recording:"Night Wave""#))
+        .and(query_param("offset", "25"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"count":500,"recordings":[]})),
+        )
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(path("/recording"))
+        .and(query_param("query", r#"recording:"Night Wave""#))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"count":500,"recordings":rows})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let answer = resolve_recording(
+        &Client::new(),
+        &server.uri(),
+        "Night Wave",
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(answer,RecordingMatch::Ambiguous(rows) if rows.is_empty()));
+
+    Mock::given(path("/recording"))
+        .and(query_param("query", r#"recording:"No such title""#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"count":0,"recordings":[]})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        resolve_recording(
+            &Client::new(),
+            &server.uri(),
+            "No such title",
+            None,
+            None,
+            None
+        )
+        .await
+        .unwrap(),
+        RecordingMatch::Absent
+    ));
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+}
