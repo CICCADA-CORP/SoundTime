@@ -89,30 +89,9 @@ async fn exchange(conn: &Connection, probe: &P2pMessage) -> Result<P2pMessage, P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection_pool::isolated_pair;
     use crate::node::{EXPLICIT_CATALOG_ALPN, SOUNDTIME_ALPN};
-    use iroh::{
-        address_lookup::memory::MemoryLookup,
-        endpoint::{presets::Minimal, PortmapperConfig},
-        Endpoint, EndpointAddr,
-    };
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    async fn isolated_pair(alpn: &'static [u8]) -> anyhow::Result<(Endpoint, ConnectionPool)> {
-        let base = || {
-            Endpoint::builder(Minimal)
-                .clear_ip_transports()
-                .clear_relay_transports()
-                .portmapper_config(PortmapperConfig::Disabled)
-                .bind_addr("127.0.0.1:0")
-        };
-        let server = base()?.alpns(vec![alpn.to_vec()]).bind().await?;
-        let addr = EndpointAddr::new(server.id()).with_ip_addr(server.bound_sockets()[0]);
-        let client = base()?
-            .address_lookup(MemoryLookup::from_endpoint_info([addr]))
-            .bind()
-            .await?;
-        Ok((server, ConnectionPool::new(client, alpn)))
-    }
 
     #[tokio::test]
     async fn silent_session_is_replaced_once_with_current_subscription() -> anyhow::Result<()> {
