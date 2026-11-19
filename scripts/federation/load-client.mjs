@@ -72,7 +72,8 @@ const dispatchLag = [], samples = [], errors = {};
 const pending = new Set();
 const mediaBytesByOrigin = {};
 let sessions = 0, openResponses = 0, peakOpen = 0, issued = 0, queries = 0, bytes = 0;
-let due = 0, searchStarts = 0, omitted = 0, searchErrors = 0;
+const omissions = { inflight_limit: 0, dispatch_late: 0, inflight_limit_and_dispatch_late: 0, window_ended: 0 };
+let due = 0, searchStarts = 0, searchErrors = 0;
 let mediaAttempts = 0, mediaStarts = 0, failedStarts = 0, interruptions = 0;
 
 function countError(kind, error) {
@@ -198,8 +199,15 @@ const dispatch = setInterval(() => {
       due++;
       dispatchLag.push(now - scheduled);
     }
-    if (queries >= pendingLimit || now >= end || now - scheduled > 1000) {
-      if (scheduled >= steady) omitted++;
+    const fullQueue = queries >= pendingLimit;
+    const late = now - scheduled > 1000;
+    if (fullQueue || now >= end || late) {
+      if (scheduled >= steady) {
+        if (now >= end) omissions.window_ended++;
+        else if (fullQueue && late) omissions.inflight_limit_and_dispatch_late++;
+        else if (late) omissions.dispatch_late++;
+        else omissions.inflight_limit++;
+      }
       continue;
     }
     if (scheduled >= steady) searchStarts++;
@@ -208,19 +216,44 @@ const dispatch = setInterval(() => {
     query.finally(() => pending.delete(query));
   }
 }, 5);
+const plateauLoop = monitorEventLoopDelay({ resolution: 10 });
+let plateauStart, plateauCpu, plateauElu;
+
+function plateauSnapshot(now) {
+  if (plateauStart === undefined || now <= plateauStart) return null;
+  const elapsed = now - plateauStart;
+  const cpu = process.cpuUsage(plateauCpu);
+  return {
+    observed_ms: elapsed, start_lag_ms: Math.max(0, plateauStart - steady),
+    process_cpu_cores: (cpu.user + cpu.system) / (elapsed * 1000),
+    event_loop_utilization: performance.eventLoopUtilization(plateauElu).utilization,
+    event_loop_delay_samples: plateauLoop.count,
+    event_loop_delay_p99_ms: plateauLoop.count ? plateauLoop.percentile(99) / 1e6 : null,
+  };
+}
+
 const sampling = setInterval(() => {
   samples.push({ ms: Math.round(performance.now() - start), media_sessions: sessions,
     open_media_responses: openResponses, search_inflight: queries, interruptions, errors: { ...errors },
     rss_bytes: process.memoryUsage().rss, useful_media_bytes: bytes });
   if (samples.length % 5 === 0)
     console.log(JSON.stringify({ phase: "sample", ...samples.at(-1), search_started: searchStarts,
+      omissions_by_reason: { ...omissions }, generator_steady: plateauSnapshot(performance.now()),
       search_completed: searchTimes.length, search_failed: searchErrors, media_failed_starts: failedStarts }));
 }, 1000);
 
 await delay(ramp);
+plateauStart = performance.now();
+plateauCpu = process.cpuUsage();
+plateauElu = performance.eventLoopUtilization();
+plateauLoop.enable();
 console.log(JSON.stringify({ phase: "steady", clients, search_per_second: rate, duration_s: duration / 1000,
   remaining_ms: Math.max(0, end - performance.now()), end_unix_ms: performance.timeOrigin + end }));
 await delay(Math.max(1, end - performance.now()));
+const plateauEnd = performance.now();
+const plateau = plateauSnapshot(plateauEnd);
+if (plateau) plateau.end_lag_ms = Math.max(0, plateauEnd - end);
+plateauLoop.disable();
 clearInterval(dispatch);
 clearInterval(sampling);
 controller.abort();
@@ -244,12 +277,16 @@ const generator = {
   runtime: environment, rss_peak_bytes: Math.max(0, ...samples.map(s => s.rss_bytes)), cpu: process.cpuUsage(startedCpu),
   event_loop_utilization: performance.eventLoopUtilization(startedLoop).utilization,
   event_loop_delay_p99_ms: loop.percentile(99) / 1e6, search_dispatch_lag_ms: quantiles(dispatchLag),
+  steady_window: plateau, pending_search_limit: pendingLimit,
 };
 const expectedSearches = rate * duration / 1000;
+// Slots the dispatcher never visited before shutdown also belong to the deadline.
+omissions.window_ended += Math.max(0, expectedSearches - due);
 console.log(JSON.stringify({
   phase: "complete", profile: cfg.profile, load, generator, search_http_ms: quantiles(searchTimes),
   search_scheduled_to_response_ms: quantiles(scheduledTimes), first_audio_byte_ms: quantiles(firstBytes),
-  steady_first_audio_byte_ms: quantiles(steadyFirstBytes), omissions: omitted + Math.max(0, expectedSearches - due),
+  steady_first_audio_byte_ms: quantiles(steadyFirstBytes), omissions_by_reason: omissions,
+  omissions: Object.values(omissions).reduce((total, count) => total + count, 0),
   search_due: expectedSearches, search_started: searchStarts, search_completed: searchTimes.length,
   search_failed: searchErrors, search_open_at_deadline: Math.max(0, searchStarts - searchErrors - searchTimes.length),
   media_attempts: mediaAttempts, media_starts: mediaStarts, media_failed_starts: failedStarts, interruptions,

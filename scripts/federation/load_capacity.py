@@ -2,6 +2,33 @@
 import math
 
 
+def describe_generator(result, rate, seconds, steady_observed):
+    """Describe what the client measured independently of the capacity verdict."""
+    generator = result.get("generator", {})
+    window = generator.get("steady_window") or {}
+    reasons = result.get("omissions_by_reason")
+    dispatch = generator.get("search_dispatch_lag_ms", {})
+    interval = 1000 / rate
+    p95 = dispatch.get("p95")
+    # Use the same coverage and maximum observation gap as the plateau assessment.
+    coverage = (steady_observed and window.get("observed_ms", 0) >= .90 * seconds * 1000
+                and window.get("start_lag_ms", math.inf) <= 2500
+                and window.get("end_lag_ms", math.inf) <= 2500
+                and window.get("event_loop_delay_samples", 0) > 0)
+    return {
+        "steady_timing": "observed" if coverage else ("partial" if window else "unavailable"),
+        "steady_process_cpu_cores": window.get("process_cpu_cores") if coverage else None,
+        "steady_event_loop_utilization": window.get("event_loop_utilization") if coverage else None,
+        "steady_event_loop_delay_p99_ms": window.get("event_loop_delay_p99_ms") if coverage else None,
+        "scheduled_interval_ms": interval, "dispatch_lag_samples": dispatch.get("samples", 0),
+        "dispatch_lag_p95_ms": p95,
+        "dispatch_p95_exceeded_scheduled_interval": p95 > interval if p95 is not None else None,
+        "pending_search_limit": generator.get("pending_search_limit"),
+        "omissions_by_reason": reasons,
+        "omissions_reconcile": sum(reasons.values()) == result["omissions"] if reasons else None,
+    }
+
+
 def assess(report):
     full = report["mode"] == "load-full"
     profile = report["profile"]
@@ -84,6 +111,8 @@ def assess(report):
                     "maximum_unbuffered_ms": 2000, "screen_p95_target_ms": 300},
         "offered": offered, "achieved": achieved, "evidence": evidence, "service": service,
         "workload_reached": reached, "verdict": verdict,
+        "generator_observation": describe_generator(result, profile["target_search_per_second"], seconds,
+                                                   evidence["steady_observation"]),
         "delivered_searches_per_second": result["search_completed"] / seconds,
         "search_failure_fraction": result["search_failed"] / max(1, result["search_started"]),
         "open_at_deadline": result["search_open_at_deadline"],

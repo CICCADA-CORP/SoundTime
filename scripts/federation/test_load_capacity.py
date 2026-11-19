@@ -37,6 +37,39 @@ class Capacity(unittest.TestCase):
         result.update(search_completed=8910, search_failed=1, search_open_at_deadline=89)
         self.assertEqual(assess(report)["verdict"], "not_met")
 
+    def test_generator_diagnostics_are_descriptive_and_support_older_reports(self):
+        report = observation()
+        original = assess(report)
+        self.assertEqual(original["generator_observation"]["steady_timing"], "unavailable")
+        self.assertIsNone(original["generator_observation"]["omissions_reconcile"])
+        result = report["generator_result"]
+        result["generator"] = {
+            "pending_search_limit": 300, "search_dispatch_lag_ms": {"p95": 18, "samples": 9000},
+            "steady_window": {"observed_ms": 89996, "start_lag_ms": 5, "end_lag_ms": 1,
+                              "event_loop_delay_samples": 5800, "process_cpu_cores": 1.12,
+                              "event_loop_utilization": .98, "event_loop_delay_p99_ms": 29},
+        }
+        reasons = dict(inflight_limit=0, dispatch_late=0, inflight_limit_and_dispatch_late=0, window_ended=0)
+        result["omissions_by_reason"] = reasons
+        observed = assess(report)
+        witness = observed["generator_observation"]
+        self.assertEqual(observed["verdict"], original["verdict"])
+        self.assertEqual(witness["steady_timing"], "observed")
+        self.assertEqual(witness["steady_process_cpu_cores"], 1.12)
+        self.assertTrue(witness["dispatch_p95_exceeded_scheduled_interval"])
+        self.assertTrue(witness["omissions_reconcile"])
+        reasons.update(inflight_limit=1, dispatch_late=2, inflight_limit_and_dispatch_late=3, window_ended=4)
+        result.update(omissions=10, search_started=8990, search_open_at_deadline=0)
+        reduced = assess(report)
+        self.assertEqual(reduced["verdict"], "offered_load_incomplete")
+        self.assertEqual(reduced["generator_observation"]["omissions_by_reason"], reasons)
+        self.assertTrue(reduced["generator_observation"]["omissions_reconcile"])
+        result["generator"]["steady_window"]["start_lag_ms"] = 4000
+        partial = assess(report)["generator_observation"]
+        self.assertEqual(partial["steady_timing"], "partial")
+        self.assertIsNone(partial["steady_event_loop_delay_p99_ms"])
+        self.assertIsNone(partial["steady_process_cpu_cores"])
+
     def test_missing_proposed_load(self):
         report = observation()
         report["generator_result"].update(search_started=8999, omissions=1, search_open_at_deadline=9)
