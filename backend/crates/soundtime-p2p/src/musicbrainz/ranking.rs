@@ -1,5 +1,5 @@
 //! Entity matching uses local evidence. Lucene relevance alone cannot establish identity.
-use super::{Hints, Recording, RecordingMatch};
+use super::{isrc_code, Hints, Recording, RecordingMatch};
 use std::collections::BTreeSet;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
@@ -23,6 +23,23 @@ pub(super) fn normalize(raw: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+// Some(true) means only diacritics differ. Preserve punctuation and word
+// boundaries when deciding whether local evidence can outweigh a low search score.
+fn accent_match(a: &str, b: &str) -> Option<bool> {
+    let a = a.trim().to_lowercase();
+    let b = b.trim().to_lowercase();
+    if a == b {
+        return Some(false);
+    }
+    if a.is_ascii() && b.is_ascii() {
+        return None;
+    }
+    a.nfd()
+        .filter(|c| !is_combining_mark(*c))
+        .eq(b.nfd().filter(|c| !is_combining_mark(*c)))
+        .then_some(true)
+}
+
 fn credit_key(raw: &str) -> String {
     let folded = normalize(raw);
     if !folded.contains(' ') {
@@ -42,6 +59,7 @@ fn version(word: &str) -> Option<&'static str> {
         "edit" | "edited" => Some("edit"),
         "acoustic" | "acoustique" | "unplugged" => Some("acoustic"),
         "demo" => Some("demo"),
+        "rehearsal" => Some("rehearsal"),
         "instrumental" | "instrumentale" => Some("instrumental"),
         "karaoke" => Some("karaoke"),
         "extended" => Some("extended"),
@@ -115,7 +133,21 @@ impl<'a> Title<'a> {
             descriptor.push(' ');
             descriptor.push_str(&comment);
         }
-        let kinds = descriptor.split_whitespace().filter_map(version).collect();
+        // "MTV Unplugged" identifies a live programme. A venue in the
+        // recording comment must not disqualify a request for the live performance.
+        let mut previous = "";
+        let kinds = descriptor
+            .split_whitespace()
+            .filter_map(|word| {
+                let kind = if previous == "mtv" && word == "unplugged" {
+                    Some("live")
+                } else {
+                    version(word)
+                };
+                previous = word;
+                kind
+            })
+            .collect();
         let details = descriptor
             .split_whitespace()
             .filter(|s| {
@@ -249,9 +281,38 @@ fn evidence(input: &Hints<'_>, title: &Title<'_>, r: &Recording) -> Option<(i32,
         + (if album { 18 } else { 0 })
         + duration_score
         + i32::from(r.score >= 95);
+    let matching_isrc = input.isrc.is_none_or(|wanted| {
+        r.isrcs
+            .iter()
+            .any(|s| isrc_code(s).as_deref() == Some(wanted))
+    });
+    let corroborated_accent = r.score < 70
+        && exact
+        && artist == 32
+        && album
+        && difference.is_some_and(|ms| ms <= 1000)
+        && matching_isrc
+        && input.album.is_some_and(|a| {
+            r.releases
+                .iter()
+                .any(|rel| accent_match(a, &rel.title).is_some())
+        })
+        && matches!(
+            (
+                accent_match(title.base, candidate.base),
+                input
+                    .artist
+                    .and_then(|a| accent_match(a, &r.credited_artist()))
+            ),
+            (Some(true), Some(_)) | (Some(_), Some(true))
+        );
     Some((
         points,
-        supported && full_version && duration_score >= 0 && r.score >= 70,
+        supported
+            && full_version
+            && duration_score >= 0
+            && (r.score >= 70 || corroborated_accent)
+            && (r.isrcs.is_empty() || matching_isrc),
     ))
 }
 

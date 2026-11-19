@@ -26,6 +26,7 @@ fn hints<'a>(
     duration_ms: Option<u64>,
 ) -> Hints<'a> {
     Hints {
+        isrc: None,
         title,
         artist,
         album,
@@ -464,4 +465,163 @@ async fn incomplete_title_only_search_without_plausible_hits_needs_more_informat
         RecordingMatch::Absent
     ));
     assert_eq!(server.received_requests().await.unwrap().len(), 3);
+}
+
+const JOGA: &str = "83534ada-9f60-4093-bbf3-ca182a03cf8b";
+
+fn joga() -> Recording {
+    let mut studio = candidate(JOGA, "Jóga", "Björk", "Homogenic", 305_360);
+    studio.score = 64;
+    studio.isrcs = vec!["GBALW9700072".into()];
+    studio
+}
+
+#[test]
+fn a_low_scoring_accent_match_needs_the_full_credit_album_duration_and_margin() {
+    let studio = joga();
+    let input = hints("Joga", Some("Bjork"), Some("Homogenic"), Some(305_000));
+    assert_eq!(winner(&input, std::slice::from_ref(&studio)), JOGA);
+    for partial in [
+        Hints {
+            album: None,
+            ..input
+        },
+        Hints {
+            duration_ms: None,
+            ..input
+        },
+        Hints {
+            duration_ms: Some(309_000),
+            ..input
+        },
+        Hints {
+            isrc: Some("GBBTF9700089"),
+            ..input
+        },
+        Hints {
+            title: "Jo-ga",
+            ..input
+        },
+        Hints {
+            artist: Some("Bj-ork"),
+            ..input
+        },
+    ] {
+        assert!(!matches!(
+            ranking::choose(&partial, std::slice::from_ref(&studio)),
+            RecordingMatch::Reliable(_)
+        ));
+    }
+    let mut alternate = studio.clone();
+    alternate.id = SECOND.into();
+    alternate.score = 100;
+    assert!(
+        matches!(ranking::choose(&input, &[studio, alternate]), RecordingMatch::Ambiguous(rows) if rows.len() == 2)
+    );
+}
+
+#[tokio::test]
+async fn complete_album_query_and_canonical_detail_identify_the_ascii_joga() {
+    let server = MockServer::start().await;
+    let studio = joga();
+    let mut live = candidate(
+        "735b3549-eb6d-495b-8ce2-ef0e6ed22071",
+        "Jóga",
+        "Björk",
+        "Homogenic",
+        265_120,
+    );
+    live.score = 96;
+    live.disambiguation = Some("live, 1997‐11‐29: Later… With Jools Holland".into());
+    let mut mix = candidate(
+        "2c0c5a94-96f9-479f-8483-698a6265a746",
+        "Jóga (5.1 mix)",
+        "Björk",
+        "Homogenic",
+        305_000,
+    );
+    mix.score = 100;
+    for (query, count, rows) in [
+        (
+            r#"recording:"Joga" AND artist:"Bjork""#,
+            101,
+            vec![studio.clone(), live.clone()],
+        ),
+        (
+            r#"recording:"Joga" AND release:"Homogenic""#,
+            3,
+            vec![mix, live, studio.clone()],
+        ),
+    ] {
+        Mock::given(path("/recording"))
+            .and(query_param("query", query))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"count":count,"recordings":rows})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(path(format!("/recording/{JOGA}")))
+        .and(query_param("inc", "artist-credits+releases+tags+isrcs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&studio))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let answer = resolve_recording(
+        &Client::new(),
+        &server.uri(),
+        "Joga",
+        Some("Bjork"),
+        Some("Homogenic"),
+        Some(305_360),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(answer, RecordingMatch::Reliable(row) if row.id == JOGA));
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+}
+
+#[test]
+fn live_show_name_does_not_hide_an_album_take_or_automatically_decide_a_tie() {
+    let title = "The Man Who Sold the World";
+    let album = "MTV Unplugged in New York";
+    let input = hints(
+        "The Man Who Sold the World (live)",
+        Some("Nirvana"),
+        Some(album),
+        Some(261_000),
+    );
+    let id = "0bc124d9-675d-4db3-81bc-dbdbab2c804d";
+    let mut release = candidate(id, title, "Nirvana", album, 261_093);
+    release.disambiguation =
+        Some("live, 1993‐11‐18: MTV Unplugged, Sony Studios, New York, NY, USA".into());
+    release.score = 75;
+    let mut unedited = candidate(
+        "e51bfa68-f88b-44ee-8ba1-01774c00d87b",
+        title,
+        "Nirvana",
+        album,
+        257_000,
+    );
+    unedited.disambiguation =
+        Some("live, 1993‐11‐18: Sony Studios, New York, NY, USA, unedited".into());
+    unedited.score = 99;
+    let mut rehearsal = candidate(FIRST, title, "Nirvana", album, 261_000);
+    rehearsal.disambiguation = Some("MTV Unplugged in New York, rehearsal".into());
+    assert_eq!(
+        winner(&input, &[release.clone(), unedited.clone(), rehearsal]),
+        id
+    );
+    unedited.length = Some(261_500);
+    assert!(
+        matches!(ranking::choose(&input,&[release.clone(),unedited]),RecordingMatch::Ambiguous(rows) if rows.len()==2)
+    );
+    assert!(matches!(
+        ranking::choose(
+            &hints(title, Some("Nirvana"), Some(album), Some(261_000)),
+            &[release]
+        ),
+        RecordingMatch::Absent
+    ));
 }

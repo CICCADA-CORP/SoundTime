@@ -137,6 +137,7 @@ impl Page {
 }
 
 struct Hints<'a> {
+    isrc: Option<&'a str>,
     title: &'a str,
     artist: Option<&'a str>,
     album: Option<&'a str>,
@@ -396,7 +397,9 @@ pub async fn resolve_tagged_recording(
     album: Option<&str>,
     duration_ms: Option<u64>,
 ) -> Result<RecordingMatch> {
+    let code = isrc.and_then(isrc_code);
     let hints = Hints {
+        isrc: code.as_deref(),
         title,
         artist: artist.filter(|s| !s.trim().is_empty()),
         album: album.filter(|s| !s.trim().is_empty()),
@@ -408,13 +411,12 @@ pub async fn resolve_tagged_recording(
             return Ok(RecordingMatch::Reliable(recording));
         }
     }
-    if let Some(code) = isrc.and_then(isrc_code) {
-        let page = search(client, base_url, &quoted("isrc", &code)).await?;
+    if let Some(ref code) = code {
+        let page = search(client, base_url, &quoted("isrc", code)).await?;
         let truncated = page.truncated();
         let mut matches = Vec::new();
         for r in page.recordings {
-            if !r.isrcs.is_empty() && !r.isrcs.iter().any(|s| isrc_code(s).as_ref() == Some(&code))
-            {
+            if !r.isrcs.is_empty() && !r.isrcs.iter().any(|s| isrc_code(s).as_ref() == Some(code)) {
                 continue;
             }
             ensure!(
@@ -439,7 +441,7 @@ pub async fn resolve_tagged_recording(
                     }
                 }
             };
-            if let Some(full) = details(client, base_url, found, hints.album, Some(&code)).await? {
+            if let Some(full) = details(client, base_url, found, hints.album, Some(code)).await? {
                 return Ok(if unique {
                     RecordingMatch::Reliable(full)
                 } else {
