@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 usage() {
     echo "Usage: scripts/test-p2p-federation.sh baseline|compatibility|historical|acceptance|shaped|relay|retention|cluster|load-smoke|load-full|rust-tests"
@@ -17,6 +18,11 @@ if [[ $# != 1 ]] || [[ $1 != baseline && $1 != compatibility && $1 != historical
 fi
 
 mode=$1
+case "$mode" in
+    acceptance|retention|relay)
+        export FEDERATION_RUST_LOG=${FEDERATION_RUST_LOG:-info,soundtime_server::api::audio=debug,soundtime_p2p::node::ranges=debug,soundtime_p2p::node::presence=debug}
+        ;;
+esac
 export FEDERATION_BROWSER=${FEDERATION_BROWSER:-native}
 case "$FEDERATION_BROWSER" in
     native|container) ;;

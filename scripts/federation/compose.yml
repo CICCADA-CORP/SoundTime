@@ -30,7 +30,7 @@ x-env: &env
   SOUNDTIME_SCHEME: http
   P2P_CACHE_MAX_SIZE: ${FEDERATION_CACHE_SIZE:-1GB}
   P2P_RANGE_STREAMING: ${FEDERATION_RANGES:-false}
-  RUST_LOG: info
+  RUST_LOG: ${FEDERATION_RUST_LOG:-info}
 
 x-frontend: &frontend
   image: soundtime-federation-frontend:${COMPOSE_PROJECT_NAME}

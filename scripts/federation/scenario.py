@@ -483,10 +483,17 @@ def origin_failure_cycle(nodes, tracks, audio, playlists, measurements):
     wait_for("restored original after peer restart",
              lambda: b.search("Fedaudio") == remote_id and saved("playable"))
     before = counters(nodes)
+    handshakes = b.telemetry()["range_connections_established"]
     fetch_range(b, remote_id, audio, 3 * 1024 * 1024 + 65536, 65536)
     resumed = difference(before, counters(nodes))
     require(resumed["A"]["sent"] >= 65536 and resumed["C"]["sent"] == 0, "Restarted A did not serve its publication")
-    measurements["origin_reconnected"] = {"identity": a.node_id, "saved_track": remote_id, "p2p": resumed}
+    reconnected = b.telemetry()["range_connections_established"]
+    require(reconnected > handshakes, "No fresh authenticated media session after A restarted")
+    # The next distinct window must use the recovered session of the same supplier.
+    fetch_range(b, remote_id, audio, 3 * 1024 * 1024 + 131072, 65536)
+    require(b.telemetry()["range_connections_established"] == reconnected, "Recovered session was not reused")
+    measurements["origin_reconnected"] = {"identity": a.node_id, "saved_track": remote_id, "p2p": resumed,
+                                          "media_handshakes": reconnected - handshakes, "warm_session_reused": True}
 
 
 def check(report, name, passed, milestone=1):
