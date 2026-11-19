@@ -33,3 +33,25 @@ test("retry delays grow, stay bounded and stagger peers after a shared failure",
   }
   assert.notEqual(audioRetryDelayMs(0, 6), audioRetryDelayMs(1, 6));
 });
+
+test("a reset resumes at the next verified byte, including a failed retry at a nonzero offset", async () => {
+  const { AudioCursor } = await import("./load-audio.mjs");
+  const seed = 3, start = 70, size = 10000;
+  const audio = Buffer.from(Array.from({length: size}, (_, i) => ((i - 44) % 256) * seed % 127 + 64));
+  const cursor = new AudioCursor(size, seed, start);
+  assert.equal(cursor.beginRequest(), start);
+  const interruptedBody = async function* () {
+    yield audio.subarray(start, 4321);
+    throw Object.assign(new Error("reset"), {code: "ECONNRESET"});
+  };
+  await assert.rejects(async () => {
+    for await (const chunk of interruptedBody()) cursor.accept(chunk);
+  }, {code: "ECONNRESET"});
+  assert.equal(cursor.beginRequest(), 4321);
+  // No bytes from a failed start; a damaged chunk also cannot advance the cursor.
+  assert.throws(() => cursor.accept(Buffer.from([0])), /incorrect_audio/);
+  assert.equal(cursor.beginRequest(), 4321);
+  cursor.accept(audio.subarray(4321));
+  assert.equal(cursor.offset, size);
+  assert.equal(cursor.beginRequest(), 0);
+});

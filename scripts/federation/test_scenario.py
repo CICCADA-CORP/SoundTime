@@ -149,11 +149,16 @@ class FederationScenarioTests(unittest.TestCase):
         pause.assert_called_once()
 
     def test_public_limits_count_each_pool_and_the_effective_shm_mount(self):
+        worker_limit = 8192
+
         def compose(_project, *args):
             if "nginx" in args:
                 return b"worker_connections 4096;\nworker_rlimit_nofile 8192;"
             if "ps" in args:
                 return b"17 nginx: worker process\n18 nginx: worker process"
+            if "/proc/1/comm" in args:
+                soft = worker_limit if "backend-b" in args else 8192 + int(args[args.index("--index")+1])
+                return f"soundtime-server\n{soft} 16384".encode()
             if "awk" in args:
                 return b"8192 8192\n8192 8192"
             if "printenv" in args:
@@ -163,12 +168,20 @@ class FederationScenarioTests(unittest.TestCase):
 
         pg = json.dumps({"reserved_slots": 3, "parallel_workers_per_gather": 1, "lease_sessions": 1})
         with patch.dict(scenario.os.environ, {"SOUNDTIME_TEST_PUBLIC_LOAD": "1"}), \
-             patch.object(load_public, "sql", side_effect=["64", pg, "44", pg]):
-            observed = load_public.nginx_settings(compose, "project")["database_budget"]
+             patch.object(load_public, "sql", side_effect=["64", pg, "44", pg, "64"]):
+            diagnostics = load_public.nginx_settings(compose, "project")
+            limits = diagnostics["rust_process_nofile"]
+            self.assertEqual(limits, {"backend-b":{"soft":"8192","hard":"16384"},
+                                      "catalog-http-1":{"soft":"8193","hard":"16384"},
+                                      "catalog-http-2":{"soft":"8194","hard":"16384"}})
+            observed = diagnostics["database_budget"]
             self.assertEqual(observed["application_pool_ceiling"], 41)
             self.assertEqual(observed["remaining_unreserved_slots"], 20)
             self.assertEqual(observed["shared_memory_mount_bytes"], 256*1024*1024)
             with self.assertRaisesRegex(scenario.ScenarioError, "exhaust PostgreSQL"):
+                load_public.nginx_settings(compose, "project")
+            worker_limit = 1024
+            with self.assertRaisesRegex(scenario.ScenarioError, "descriptor limit on backend-b"):
                 load_public.nginx_settings(compose, "project")
 
     def test_saturated_postgres_preserves_the_proxy_socket_measurement(self):

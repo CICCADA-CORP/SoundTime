@@ -4,7 +4,7 @@ import { setMaxListeners } from "node:events";
 import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import http from "node:http";
-import { AudioDelivery, audioRetryDelayMs } from "./load-audio.mjs";
+import { AudioCursor, AudioDelivery, audioRetryDelayMs } from "./load-audio.mjs";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
@@ -127,7 +127,8 @@ async function session(index) {
   const group = index % 4;
   // Half request one popular publication. Others round-robin across all test originals on A and C.
   const track = cfg.media[group < 2 ? 0 : (Math.floor(index / 4) * 2 + group - 1) % cfg.media.length];
-  let offset = group === 0 ? 0 : 65536 * ((index * 37) % Math.floor(track.size / (2 * 65536)));
+  const start = group === 0 ? 0 : 65536 * ((index * 37) % Math.floor(track.size / (2 * 65536)));
+  const cursor = new AudioCursor(track.size, track.seed, start);
   let failures = 0;
   sessions++;
   try {
@@ -135,6 +136,7 @@ async function session(index) {
       const began = performance.now();
       let counted = false, delivered = 0, retryMs = 0, res;
       try {
+        const offset = cursor.beginRequest();
         mediaAttempts++;
         res = await get("/api/tracks/" + track.id + "/stream", index, { Range: "bytes=" + offset + "-" });
         if (res.statusCode !== 206 || res.headers["content-range"] !== "bytes " + offset + "-" + (track.size - 1) + "/" + track.size)
@@ -149,11 +151,7 @@ async function session(index) {
             firstBytes.push(now - began);
             if (began >= steady) steadyFirstBytes.push(now - began);
           }
-          for (let j = 0; j < chunk.length; j += 4096) {
-            const position = offset + delivered + j;
-            if (position >= 44 && chunk[j] !== ((position - 44) % 256) * track.seed % 127 + 64)
-              throw Error("incorrect_audio");
-          }
+          cursor.accept(chunk);
           if (chunk.length > 0) failures = 0;
           delivered += chunk.length;
           audioDelivery.record(index, now, chunk.length);
@@ -164,8 +162,7 @@ async function session(index) {
           const remaining = began + delivered / readRate * 1000 - performance.now();
           if (remaining > 0) await delay(remaining, undefined, { signal: controller.signal });
         }
-        if (offset + delivered !== track.size) throw Error("short_audio");
-        offset = 0;
+        if (cursor.offset !== track.size) throw Error("short_audio");
       } catch (error) {
         if (!controller.signal.aborted) {
           if (delivered) interruptions++; else failedStarts++;

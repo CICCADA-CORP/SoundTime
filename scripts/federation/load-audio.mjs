@@ -41,3 +41,27 @@ export function audioRetryDelayMs(listener, failures) {
   const jitter = (37 * listener + 71 * failures) % 101;
   return Math.round(base * (0.80 + jitter / 500));
 }
+
+
+// Only verified body bytes advance playback. A failed response leaves the
+// cursor at the next byte, including when several consecutive starts fail.
+export class AudioCursor {
+  constructor(size, seed, start) {
+    this.size = size;
+    this.seed = seed;
+    this.offset = start;
+  }
+  beginRequest() {
+    if (this.offset === this.size) this.offset = 0;
+    return this.offset;
+  }
+  accept(chunk) {
+    if (this.offset + chunk.length > this.size) throw Error("incorrect_audio");
+    for (let j = 0; j < chunk.length; j += 4096) {
+      const position = this.offset + j;
+      if (position >= 44 && chunk[j] !== ((position - 44) % 256) * this.seed % 127 + 64)
+        throw Error("incorrect_audio");
+    }
+    this.offset += chunk.length;
+  }
+}

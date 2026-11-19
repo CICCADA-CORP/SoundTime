@@ -129,6 +129,23 @@ def nginx_settings(compose, project):
             minimum, maximum = map(int, values)
             return {"minimum": minimum, "maximum": maximum}
 
+        # The Rust binary is PID 1 in the public worker and reader images.
+        # Inspect the live process in each replica; docker inspect only gives
+        # the requested configuration and Nginx has a separate descriptor limit.
+        rust_limits = {}
+        for service, replica in [("backend-b", None), ("catalog-http", 1), ("catalog-http", 2)]:
+            selected = ["--index", str(replica)] if replica else []
+            fields = compose(project, "exec", "-T", *selected, service, "awk",
+                             'FILENAME=="/proc/1/comm" {print $1} /^Max open files/ {print $4,$5}',
+                             "/proc/1/comm", "/proc/1/limits").decode().split()
+            role = service if replica is None else f"{service}-{replica}"
+            require(len(fields)==3 and fields[0]=="soundtime-server",
+                    f"Unexpected process when reading descriptor budget for {role}: {fields}")
+            soft, hard = fields[1:]
+            require(all(n == "unlimited" or n.isdigit() and int(n) >= 8192 for n in (soft, hard)),
+                    f"Insufficient public Rust descriptor limit on {role}: soft={soft} hard={hard}")
+            rust_limits[role] = {"soft": soft, "hard": hard}
+        result["rust_process_nofile"] = rust_limits
         worker = pool("backend-b")
         readers = [pool("catalog-http", replica) for replica in (1, 2)]
         limits = json.loads(sql(compose, project, """SELECT json_build_object(
