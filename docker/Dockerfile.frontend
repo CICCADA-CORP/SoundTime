@@ -9,6 +9,7 @@ RUN CYPRESS_INSTALL_BINARY=0 npm ci
 COPY . ./
 
 RUN npm run build
+RUN npm prune --offline --omit=dev --ignore-scripts --no-audit --no-fund
 
 FROM node:24-alpine
 
@@ -17,8 +18,6 @@ WORKDIR /app
 COPY --from=builder /app/build ./build
 COPY --from=builder /app/package.json /app/package-lock.json ./
 COPY --from=builder /app/node_modules ./node_modules
-
-RUN npm prune --omit=dev --ignore-scripts
 
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 sveltekit

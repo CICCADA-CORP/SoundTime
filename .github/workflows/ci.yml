@@ -10,18 +10,58 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-Dwarnings"
-  CARGO_INCREMENTAL: 0
+  group: ci-${{ github.ref }}
+  # Finish the current main release before another one can move the latest tags.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: Select checks and images
+    runs-on: ubuntu-24.04
+    outputs:
+      backend: ${{ steps.paths.outputs.backend }}
+      frontend: ${{ steps.paths.outputs.frontend }}
+      images: ${{ steps.paths.outputs.images }}
+      matrix: ${{ steps.paths.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: paths
+        run: python3 .github/scripts/ci-changes.py
+      - name: Validate installer and Compose configurations
+        if: steps.paths.outputs.config == 'true'
+        env:
+          JWT_SECRET: local-ci-validation-only
+          NFS_SERVER: 192.0.2.10
+          NFS_EXPORT: /music
+          SMB_SERVER: 192.0.2.11
+          SMB_SHARE: music
+          SMB_USERNAME: example
+          SMB_PASSWORD: example
+        run: |
+          bash -n install.sh
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker/compose.nfs.yml config --quiet
+          docker compose -f docker-compose.yml -f docker/compose.smb.yml config --quiet
+          docker compose -f docker-compose.yml -f docker/compose.nfs.yml -f docker/compose.smb.yml config --quiet
+
   backend-check:
     name: Backend (fmt, clippy, test)
-    runs-on: depot-ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTFLAGS: -Dwarnings
     services:
       postgres:
         image: postgres:16
@@ -35,175 +75,128 @@ jobs:
           --health-cmd "pg_isready -U soundtime"
           --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.97.0
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy, rustfmt
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.7
-        continue-on-error: true
-
-      - name: Configure sccache
-        run: |
-          if command -v sccache &>/dev/null && sccache --start-server 2>/dev/null; then
-            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-            echo "sccache enabled"
-          else
-            echo "sccache unavailable, building without cache"
-          fi
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - run: cargo fmt --all -- --check
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('backend/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-registry-
-
-      - name: Check formatting
-        working-directory: backend
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        working-directory: backend
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
-
-      - name: Run tests
-        working-directory: backend
-        run: cargo test --locked --workspace --all-features
-
-      - name: Check storage reconciliation on PostgreSQL
-        working-directory: backend
+          workspaces: backend
+      - name: Lint all targets and features
+        run: cargo --config 'profile.dev.package."*".opt-level=0' clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Test the workspace including PostgreSQL reconciliation
         env:
-          TEST_DATABASE_URL: postgres://soundtime:ci@localhost:${{ job.services.postgres.ports[5432] }}/soundtime
-        run: cargo test --locked -p soundtime-server --features redis reconcile_storage_with_postgres -- --ignored
+          TEST_DATABASE_URL: postgres://soundtime:ci@localhost:${{ job.services.postgres.ports['5432'] }}/soundtime
+        run: cargo --config 'profile.dev.package."*".opt-level=0' test --locked --workspace --all-features -- --include-ignored
 
   frontend-check:
-    name: Frontend (lint, check, build)
-    runs-on: depot-ubuntu-latest
+    name: Frontend (types and coverage)
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        env:
+          CYPRESS_INSTALL_BINARY: '0'
+        run: npm ci --no-audit --no-fund
+      - run: npm run check
+      - run: npm run test:coverage
+      # The native container builds compile the production frontend on both platforms.
 
-      - name: Install dependencies
-        working-directory: frontend
-        run: npm ci
+  docker-build:
+    name: Check native Docker builds
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/container-build.yml
+    with:
+      matrix: ${{ needs.changes.outputs.matrix }}
 
-      - name: Svelte check
-        working-directory: frontend
-        run: npx svelte-check --tsconfig ./tsconfig.json
-
-      - name: Run unit tests with coverage
-        working-directory: frontend
-        run: npm run test:coverage
-
-      - name: Build
-        working-directory: frontend
-        run: npm run build
-
-  docker-publish:
-    name: Build & publish Docker images
-    runs-on: depot-ubuntu-latest
-    needs: [backend-check, frontend-check]
+  docker-release-build:
+    name: Build native release images
+    needs: changes
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
-    env:
-      DEPOT_TOKEN: ${{ secrets.DEPOT_TOKEN }}
+    uses: ./.github/workflows/container-build.yml
+    with:
+      matrix: ${{ needs.changes.outputs.matrix }}
+
+  docker-publish:
+    name: Publish multi-platform images
+    runs-on: ubuntu-24.04
+    needs: [changes, backend-check, frontend-check, docker-release-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      packages: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Download release digests
+        uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: image-digest-*
+          path: ${{ runner.temp }}/release-digests
 
-      - name: Set up Depot CLI
-        uses: depot/setup-action@v1
+      - name: Validate all four release digests
+        run: |
+          root="$RUNNER_TEMP/release-digests"
+          for component in backend frontend; do
+            for arch in amd64 arm64; do
+              digest=$(cat "$root/image-digest-$component-$arch/digest")
+              [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            done
+          done
+          [[ $(cat "$root"/image-digest-*/digest | sort -u | wc -l) -eq 4 ]]
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata (backend)
-        id: meta-backend
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/soundtime-backend
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest
+      - uses: docker/setup-buildx-action@v4.4.1
 
-      - name: Build & push backend image
-        uses: depot/build-push-action@v1
-        with:
-          project: 1rbn79n99c
-          context: ./backend
-          file: docker/Dockerfile.backend
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta-backend.outputs.tags }}
-          labels: ${{ steps.meta-backend.outputs.labels }}
-          build-args: |
-            SOUNDTIME_BUILD_NUMBER=${{ github.run_number }}
+      - name: Assemble and verify both release indexes
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/release-digests"
+          for component in backend frontend; do
+            image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/soundtime-$component"
+            sources=()
+            for arch in amd64 arm64; do
+              digest=$(cat "$root/image-digest-$component-$arch/digest")
+              sources+=("$image@$digest")
+            done
+            docker buildx imagetools create \
+              --annotation "index:org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --annotation "index:org.opencontainers.image.revision=$GITHUB_SHA" \
+              --metadata-file "$root/$component.json" \
+              --tag "$image:${GITHUB_SHA:0:7}" "${sources[@]}"
+            index=$(jq -er '."containerimage.descriptor".digest | select(test("^sha256:[a-f0-9]{64}$"))' "$root/$component.json")
+            docker buildx imagetools inspect --raw "$image@$index" | jq -e '
+              [.manifests[] | select(.annotations["vnd.docker.reference.type"] != "attestation-manifest")
+               | .platform | [.os, .architecture]] | sort == [["linux","amd64"],["linux","arm64"]]'
+          done
 
-      - name: Docker metadata (frontend)
-        id: meta-frontend
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/soundtime-frontend
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest
-
-      - name: Build & push frontend image
-        uses: depot/build-push-action@v1
-        with:
-          project: 1rbn79n99c
-          context: ./frontend
-          file: docker/Dockerfile.frontend
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta-frontend.outputs.tags }}
-          labels: ${{ steps.meta-frontend.outputs.labels }}
-
-  docker-build:
-    name: Docker build test (PR)
-    runs-on: depot-ubuntu-latest
-    needs: [backend-check, frontend-check]
-    if: github.event_name == 'pull_request'
-    env:
-      DEPOT_TOKEN: ${{ secrets.DEPOT_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Depot CLI
-        uses: depot/setup-action@v1
-
-      - name: Build backend image
-        uses: depot/build-push-action@v1
-        with:
-          project: 1rbn79n99c
-          context: ./backend
-          file: docker/Dockerfile.backend
-          push: false
-          platforms: linux/amd64,linux/arm64
-
-      - name: Build frontend image
-        uses: depot/build-push-action@v1
-        with:
-          project: 1rbn79n99c
-          context: ./frontend
-          file: docker/Dockerfile.frontend
-          push: false
-          platforms: linux/amd64,linux/arm64
+      - name: Promote the verified indexes to latest
+        run: |
+          for component in backend frontend; do
+            image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/soundtime-$component"
+            index=$(jq -er '."containerimage.descriptor".digest' "$RUNNER_TEMP/release-digests/$component.json")
+            docker buildx imagetools create --tag "$image:latest" "$image@$index"
+          done

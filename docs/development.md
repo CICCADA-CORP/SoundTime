@@ -210,6 +210,12 @@ npm run preview  # Preview the production build locally
 
 SoundTime uses [shadcn-svelte](https://www.shadcn-svelte.com/) with Tailwind CSS. Components live in `src/lib/components/`.
 
+## Continuous integration and releases
+
+Pull requests run checks for the affected service. Source changes also build its production image on native AMD64 and ARM64 GitHub runners. A Dockerfile-only change builds that image on both architectures. Changes to the CI definitions exercise both services. The selection job validates the installer and Compose configurations when those files change.
+
+On `main`, each release builds both services so their short commit tags can be deployed together. The registry receives the `latest` and commit tags after the tests and all four image builds succeed. Each image tag resolves to native AMD64 and ARM64 variants. Pull requests use read-only repository access and build without pushing images.
+
 ## Docker Development
 
 ### Full stack with Docker Compose
