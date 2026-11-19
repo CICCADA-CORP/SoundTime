@@ -3055,7 +3055,6 @@ impl P2pNode {
             title: Set(ann.title.clone()),
             artist_id: Set(artist_id),
             album_id: Set(album_id),
-            cover_url: Set(None),
             track_number: Set(ann.track_number),
             disc_number: Set(ann.disc_number),
             duration_secs: Set(ann.duration_secs),
