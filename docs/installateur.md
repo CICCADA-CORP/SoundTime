@@ -6,7 +6,7 @@ Ouvrez l’assistant sur votre ordinateur. Vous pouvez y héberger SoundTime, pi
 
 ## Ouvrir l’assistant
 
-Dans les fichiers joints à une version de SoundTime, choisissez le paquet de votre machine. Les paquets autonomes contiennent déjà Python. [Versions de SoundTime](https://github.com/CICCADA-CORP/SoundTime/releases)
+Dans les fichiers joints à une version de SoundTime, choisissez le paquet de votre machine. Les paquets autonomes contiennent déjà Python. [Téléchargements par système dans le README](../README.md#guided-installation)
 
 | Votre machine | Fichier | Comment l’ouvrir |
 | --- | --- | --- |
@@ -126,7 +126,7 @@ La vérification de l’assistant contrôle les champs S3. Après l’installati
 | Dossier occupé ou accès refusé | Choisissez un nouveau dossier dans votre espace personnel. Pour reprendre une installation guidée, sélectionnez son dossier d’origine. |
 | Téléchargement interrompu | Vérifiez la connexion Internet et l’espace disque disponible pour Docker. Reprenez la vérification puis relancez l’installation avec le même dossier. |
 | Aucune page ne s’ouvre | Avec le lanceur du projet ou le binaire Linux en terminal, ouvrez l’adresse personnelle affichée par le lanceur. Gardez ce lien de session pour vous. |
-| Avertissement de l’éditeur sur Mac ou Windows | Les paquets du workflow standard sont distribués sans certificat d’éditeur ni notarisation Apple. Si votre machine exige une signature, utilisez le lanceur depuis les sources ou demandez le paquet approuvé par votre organisation. |
+| Avertissement de l’éditeur sur Mac ou Windows | Les paquets du workflow standard sont distribués sans certificat d’éditeur ni notarisation Apple. Sur Mac, si vous avez téléchargé cette version officielle, Apple décrit la procédure d’ouverture dans **Réglages Système → Confidentialité et sécurité**. Si votre organisation exige un certificat d’éditeur, demandez-lui un paquet approuvé. [Assistance Apple](https://support.apple.com/fr-fr/102445) |
 
 Le dossier d’installation contient la configuration et le fichier confidentiel `.env`. Les comptes et le catalogue se trouvent dans les volumes Docker du projet. Pour sauvegarder le serveur, conservez la configuration, les volumes et, suivant le stockage choisi, le bucket S3 et les originaux de la collection externe. [Sauvegardes](deployment.md#backups)
 
@@ -148,7 +148,7 @@ Avec les sources, la commande équivalente est `python3 installer/launcher.py --
 
 ## Produire les paquets du projet
 
-Le workflow **SoundTime installer** construit les paquets sur chaque plateforme et ouvre l’interface de chaque exécutable pour la tester. Une exécution manuelle les rend téléchargeables parmi ses artefacts. À la publication d’une release, les six paquets natifs, le lanceur Python portable et leurs empreintes SHA-256 y sont joints après validation. Une ancienne release peut donc contenir uniquement les sources. [Workflow de distribution](../.github/workflows/installer.yml)
+Le workflow **SoundTime installer** construit les paquets sur chaque plateforme et ouvre l’interface de chaque exécutable pour la tester. Une exécution manuelle les rend téléchargeables parmi ses artefacts. Lancée depuis `main` avec un tag tel que `installer-v1.0.0`, elle publie une nouvelle release après les tests Docker, NAS et S3 et la vérification des empreintes. À la publication d’une release, les six paquets natifs, le lanceur Python portable et leurs empreintes SHA-256 y sont joints après validation. Une ancienne release peut donc contenir uniquement les sources. [Workflow de distribution](../.github/workflows/installer.yml)
 
 Pour construire le paquet de la machine courante, utilisez Python 3.12 dans un environnement virtuel, puis lancez ces commandes depuis le dossier du projet.
 

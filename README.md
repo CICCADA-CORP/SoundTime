@@ -22,16 +22,33 @@
 
 SoundTime is a self-hosted music server for your own audio collection. Browse by artist or album, build a queue, and listen from a desktop or mobile browser. You decide who can access the web catalog and whether your server shares music with other SoundTime instances.
 
-[Quick start](#quick-start) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md)
-[Quick start](#quick-start) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md) · [Community](#community) · [Disclaimer](#disclaimer)
+[Download the installer](#guided-installation) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md) · [Community](#community) · [Disclaimer](#disclaimer)
 
 ![SoundTime playing Last Light from the demo library, with cover art on the left and the next three tracks queued on the right](docs/assets/soundtime-player.webp)
 
 ## Quick start
 
+### Guided installation
+
+Choose your computer below, even if you plan to host SoundTime on a NAS or server. Each installer includes its own copy of Python.
+
+| Your computer | Intel or AMD (64-bit) | ARM (64-bit) |
+| --- | --- | --- |
+| Windows | [Download for Windows x64](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-Windows-x64.zip) | [Download for Windows on Arm](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-Windows-arm64.zip) |
+| Mac | [Download for Mac with Intel](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-macOS-x64.zip) | [Download for Mac with Apple Silicon](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-macOS-arm64.zip) |
+| Linux | [Download for Linux x64](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-Linux-x64.tar.gz) | [Download for Linux ARM64](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-Linux-arm64.tar.gz) |
+
+1. Extract the archive. On Windows, open **SoundTime-Installer.exe**. On Mac, open **SoundTime Installer**. On Linux, run `./SoundTime-Installer` from the extracted folder.
+2. In the French-language wizard, choose **Sur cette machine** for this computer or **Sur une autre machine** for another host. SoundTime uses Docker on the machine that will host your music.
+3. Choose **Installation rapide** to use the defaults or **Installation personnalisée** to select a music folder, S3 bucket and prefix, or network settings.
+
+For a Synology or QNAP NAS, export the Docker Compose project and import it into your NAS container manager. The export also works on a dedicated server, VPS, VM or cloud instance with Docker Compose alone. For a guided installation over SSH, the remote Linux host needs Python 3.9 or later. [Step-by-step guide in French](docs/installateur.md)
+
+### Manual installation
+
 This setup uses Git, OpenSSL and Docker with Compose v2. Compose pulls the published AMD64 or ARM64 images from GitHub Container Registry. To run changes from your checkout, follow the [development setup](#development).
 
-### 1. Configure a new instance
+#### 1. Configure a new instance
 
 ```sh
 git clone https://github.com/CICCADA-CORP/SoundTime.git
@@ -49,7 +66,7 @@ Open `.env` and set the following values before starting the containers. Run `op
 
 For an automated installation with the default peer networking settings, the project also ships a Bash installer. It generates credentials on a fresh installation and uses `~/soundtime` by default. [Installer and usage](install.sh)
 
-### 2. Start the services
+#### 2. Start the services
 
 ```sh
 docker compose config --quiet
@@ -60,7 +77,7 @@ docker compose ps
 
 Open the setup wizard through Nginx and create the administrator account. Choose **Private Instance** to require sign-in for the catalog and audio streams and to close public registration. For a standalone server, also turn off **P2P Network (iroh)** in the wizard. Complete setup before giving other people access. [Open setup](http://localhost:8880/setup)
 
-### 3. Play your first track
+#### 3. Play your first track
 
 Sign in, open **Upload**, and add an audio file. Open **Tracks** and press **Play**. SoundTime reads artist, album and cover tags during import. A track without an album stays in **Tracks** and on its artist’s page. An explicitly named album appears in **Albums**, even when you own only one of its tracks.
 
