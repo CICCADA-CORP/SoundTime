@@ -1,6 +1,6 @@
 import {
   Compass, Disc3, Heart, History, House, LibraryBig, ListMusic,
-  MicVocal, Music2, Radio, Settings2, Shield, Upload,
+  Antenna, MicVocal, Music2, Radio, Settings2, Shield, Upload,
 } from "lucide-svelte";
 import type { TranslationKey } from "$lib/i18n/index.svelte";
 
@@ -14,6 +14,7 @@ export const home: NavItem = { href: "/", label: "nav.home", icon: House };
 export const listening: NavItem[] = [
   { href: "/explore", label: "nav.explore", icon: Compass },
   { href: "/radio", label: "nav.radio", icon: Radio },
+  { href: "/webradios", label: "nav.webradios", icon: Antenna },
 ];
 export const discover: NavItem[] = [home, ...listening];
 

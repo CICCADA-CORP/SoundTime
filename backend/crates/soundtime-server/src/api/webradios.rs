@@ -130,18 +130,13 @@ async fn stations(
     Query(query): Query<Search>,
 ) -> Result<Json<directory::Page>, StatusCode> {
     require_enabled(&state.db, user).await?;
-    let name = query.name.trim();
-    let tag = query.tag.trim();
-    let limit = query.limit.unwrap_or(30);
-    if name.chars().count() > 160
-        || tag.chars().count() > 120
-        || !(1..=60).contains(&limit)
-        || query.offset.checked_add(limit).is_none()
-    {
-        return Err(StatusCode::BAD_REQUEST);
-    }
     directory
-        .stations(name, tag, query.offset, limit)
+        .stations(
+            query.name.trim(),
+            query.tag.trim(),
+            query.offset,
+            query.limit.unwrap_or(30),
+        )
         .await
         .map(Json)
 }

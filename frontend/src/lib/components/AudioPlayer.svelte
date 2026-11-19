@@ -13,6 +13,8 @@
   import { formatDuration } from "$lib/utils";
   import { t } from "$lib/i18n/index.svelte";
   import FavoriteButton from "./FavoriteButton.svelte";
+  import LivePlayer from "$lib/webradios/LivePlayer.svelte";
+  import { live } from "$lib/webradios/live.svelte";
   import ExpandedPlayer from "./ExpandedPlayer.svelte";
 
   const player = getPlayerStore();
@@ -51,7 +53,9 @@
   }
 </script>
 
-{#if track}
+{#if live.station}
+  <LivePlayer />
+{:else if track}
   <section class="player" aria-label={t("player.nowPlaying")} data-testid="audio-player" style:--progress={progress + "%"}>
     <div class="player-body">
       <div class="identity">

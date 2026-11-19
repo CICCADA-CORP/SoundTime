@@ -23,7 +23,9 @@ it("shows direct links to listening and library destinations", () => {
   render(SideNavigation);
   expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute("aria-current", "page");
   expect(screen.getByRole("link", { name: "Explore" })).toHaveAttribute("href", "/explore");
-  expect(screen.getByRole("link", { name: "Radio" })).toHaveAttribute("href", "/radio");
+  const radio = screen.getByRole("link", { name: "Radio" });
+  expect(radio).toHaveAttribute("href", "/radio");
+  expect(radio.nextElementSibling).toBe(screen.getByRole("link", { name: "Webradios" }));
   expect(screen.getByRole("link", { name: "Library" })).toHaveAttribute("href", "/library");
   expect(screen.getByRole("link", { name: "Sign In" })).toHaveAttribute("href", "/login");
   expect(screen.queryByRole("button", { name: "Close" })).toBeNull();

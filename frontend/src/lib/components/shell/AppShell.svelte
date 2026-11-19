@@ -1,11 +1,13 @@
 <script lang="ts">
   import { afterNavigate } from "$app/navigation";
   import { page } from "$app/state";
-  import type { Snippet } from "svelte";
+  import { untrack, type Snippet } from "svelte";
   import { MediaQuery } from "svelte/reactivity";
   import { Dialog } from "bits-ui";
   import { LibraryBig } from "lucide-svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
+  import { live } from "$lib/webradios/live.svelte";
+  import { webPreferences } from "$lib/webradios/preferences.svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import AudioPlayer from "../AudioPlayer.svelte";
@@ -27,6 +29,20 @@
   const expanded = $derived(desktop.current ? !collapsed : mobileMenu);
   const path = $derived(page.url.pathname);
 
+  $effect(() => {
+    const id = auth.user?.id ?? null;
+    untrack(() => { void webPreferences.refresh(id); });
+  });
+
+  $effect(() => {
+    if (!live.station) return;
+    const id = auth.user?.id ?? null;
+    const refresh = () => { void webPreferences.refresh(id); };
+    const interval = window.setInterval(refresh, 30_000);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(interval); window.removeEventListener("focus", refresh); };
+  });
+
   function toggleSidebar() {
     if (desktop.current) collapsed = !collapsed;
     else mobileMenu = !mobileMenu;
@@ -47,14 +63,14 @@
   <div class="frame">
     <WorkspaceHeader {expanded} {toggleSidebar} openSearch={() => searchOpen = true} />
     {#if auth.isAdmin}<TaskBanner />{/if}
-    <main id="main-content" tabindex="-1" bind:this={main} class={{ playing: !!player.currentTrack }}>
+    <main id="main-content" tabindex="-1" bind:this={main} class={{ playing: !!player.currentTrack || !!live.station }}>
       <div class="page-content">{@render children()}</div>
     </main>
   </div>
 
   {#if !desktop.current}
     <nav class="mobile-tabs" aria-label={t("shell.navigation")}>
-      {#each discover as item (item.href)}
+      {#each discover.filter(item => item.href !== "/webradios" || webPreferences.showInNavigation) as item (item.href)}
         <a href={item.href} aria-current={isActive(path, item.href) ? "page" : undefined}>
           <item.icon size={20} strokeWidth={1.65} /><span>{t(item.label)}</span>
         </a>
@@ -103,7 +119,8 @@
       display: flex; align-items: stretch; padding-bottom: env(safe-area-inset-bottom);
       border-top: 1px solid hsl(var(--border)); background: hsl(var(--background));
     }
-    .mobile-tabs a { display: flex; flex: 1; align-items: center; justify-content: center; flex-direction: column; gap: 3px; color: hsl(var(--muted-foreground)); font-size: 11px; }
+    .mobile-tabs a { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: center; flex-direction: column; gap: 3px; color: hsl(var(--muted-foreground)); font-size: 11px; }
+    .mobile-tabs a span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .mobile-tabs a[aria-current] { color: hsl(var(--foreground)); font-weight: 650; }
     .mobile-tabs a[aria-current] :global(svg) { stroke-width: 2.15; }
     .mobile-tabs :focus-visible { outline-offset: -3px; }

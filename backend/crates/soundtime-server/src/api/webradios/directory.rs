@@ -1,11 +1,10 @@
 //! Radio Browser catalogue metadata. Media URLs are returned to the player and
-//! are never fetched by this server.
+//! the directory client never fetches media from the broadcaster.
 use axum::http::StatusCode;
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::{HashSet, VecDeque},
-    net::Ipv4Addr,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -80,16 +79,6 @@ fn clean(value: &str, limit: usize) -> String {
         .collect()
 }
 
-fn public_v4(ip: Ipv4Addr) -> bool {
-    !ip.is_private()
-        && !ip.is_loopback()
-        && !ip.is_link_local()
-        && !ip.is_multicast()
-        && ip.octets()[0] != 0
-        && ip.octets()[0] < 240
-        && !(ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]))
-}
-
 fn web_url(value: &str) -> Option<String> {
     let value = value.trim();
     if value.len() > 2048 || value.chars().any(char::is_control) {
@@ -111,11 +100,8 @@ fn web_url(value: &str) -> Option<String> {
                     .iter()
                     .any(|suffix| host.ends_with(suffix))
         }
-        Host::Ipv4(ip) => public_v4(ip),
-        Host::Ipv6(ip) => ip.to_ipv4_mapped().map(public_v4).unwrap_or_else(|| {
-            // Global unicast rather than link-local, unique-local, multicast or loopback.
-            ip.segments()[0] & 0xe000 == 0x2000
-        }),
+        Host::Ipv4(ip) => super::relay::public_address(ip.into()),
+        Host::Ipv6(ip) => super::relay::public_address(ip.into()),
     };
     public.then(|| url.to_string())
 }

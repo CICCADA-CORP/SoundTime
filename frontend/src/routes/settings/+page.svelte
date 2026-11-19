@@ -5,6 +5,7 @@
   import { getAuthStore } from "$lib/stores/auth.svelte";
   import { t, getLocale, setLocale, supportedLocales, localeNames, type Locale } from "$lib/i18n/index.svelte";
   import { accountLink } from "$lib/access/navigation";
+  import Preference from "$lib/webradios/Preference.svelte";
   import AccountSettings from "./AccountSettings.svelte";
   import AccountSession from "./AccountSession.svelte";
   import PlaybackSettings from "./PlaybackSettings.svelte";
@@ -20,10 +21,18 @@
   <CatalogState message={t("settings.loginRequired")}>
     <Button href={accountLink("/login", "/settings")}>{t("auth.signIn")}</Button>
   </CatalogState>
+  <section id="webradios" class="max-w-2xl space-y-4 py-6">
+    <h2 class="text-lg font-semibold">{t("nav.webradios")}</h2>
+    <Preference />
+  </section>
 {:else}
   <div class="max-w-2xl">
     <AccountSettings />
     <PlaybackSettings />
+    <section id="webradios" class="space-y-4 border-b border-border py-6">
+      <h2 class="text-lg font-semibold">{t("nav.webradios")}</h2>
+      <Preference />
+    </section>
     <section class="space-y-4 border-b border-border py-6">
       <h2 class="text-lg font-semibold">{t("settings.language")}</h2>
       <label class="flex flex-wrap items-center justify-between gap-3 text-sm">

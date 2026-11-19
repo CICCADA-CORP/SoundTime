@@ -206,7 +206,8 @@ export interface UploadResponse {
 }
 
 export interface ApiError {
-  error: string;
+  error?: string;
+  message?: string;
 }
 
 // ─── Admin / P2P Types ──────────────────────────────────────────────
@@ -240,6 +241,7 @@ export interface KnownInstance {
 
 export interface P2pStatus {
   enabled: boolean;
+  explicit_catalog?: boolean;
   node_id: string | null;
   relay_url: string | null;
   relay_connected: boolean;
@@ -252,6 +254,7 @@ export interface P2pStatus {
 
 export interface P2pPeer {
   node_id: string;
+  catalog_followed?: boolean | null;
   name: string | null;
   version: string | null;
   track_count: number;
@@ -305,7 +308,17 @@ export interface MetadataStatus {
   available_remote_tracks: number;
 }
 
+export interface MetadataRecordingCandidate {
+  recording_mbid: string;
+  title: string;
+  artist_name?: string | null;
+  album_title?: string | null;
+  duration_ms?: number | null;
+  disambiguation?: string | null;
+}
+
 export interface MetadataResult {
+  candidates?: MetadataRecordingCandidate[];
   track_id: string;
   status: string;
   recording_mbid: string | null;
@@ -527,6 +540,7 @@ export type StorageTaskStatus =
 // ─── Metadata Task Types ────────────────────────────────────────────
 
 export interface MetadataTaskProgress {
+  ambiguous?: number;
   processed: number;
   total: number;
   enriched: number;
@@ -536,6 +550,7 @@ export interface MetadataTaskProgress {
 }
 
 export interface MetadataTaskResult {
+  ambiguous?: number;
   total_processed: number;
   enriched: number;
   not_found: number;

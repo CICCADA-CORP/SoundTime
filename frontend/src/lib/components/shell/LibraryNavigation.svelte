@@ -1,11 +1,12 @@
 <script lang="ts">
+  import { webPreferences } from "$lib/webradios/preferences.svelte";
   import { recentPlaylists } from "$lib/catalog/playlists.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
   import type { Playlist } from "$lib/types";
   import { page } from "$app/state";
   import CatalogArtwork from "../catalog/CatalogArtwork.svelte";
-  import { admin, catalog, followSidebarLink, home, isActive, libraryHome, listening, personal, upload, type NavItem } from "./navigation";
+  import { admin, catalog, followSidebarLink, home, isActive, libraryHome, listening, personal, settings, upload, type NavItem } from "./navigation";
 
   let { close }: { close?: () => void } = $props();
   const auth = getAuthStore();
@@ -48,7 +49,10 @@
 
   <div class="group">
     <h2>{t("workspaceNav.listen")}</h2>
-    {#each listening as item (item.href)}{@render destination(item)}{/each}
+    {#each listening.filter(item => item.href !== "/webradios" || webPreferences.showInNavigation) as item (item.href)}{@render destination(item)}{/each}
+    {#if !auth.isAuthenticated && webPreferences.status?.instance_enabled !== false && !webPreferences.userEnabled}
+      {@render destination({ ...settings, href: "/settings#webradios", label: "webradios.preferenceLink" })}
+    {/if}
   </div>
 
   <div class="group">

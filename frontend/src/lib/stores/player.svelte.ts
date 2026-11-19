@@ -1,3 +1,6 @@
+import { webPreferences } from "$lib/webradios/preferences.svelte";
+import { live } from "$lib/webradios/live.svelte";
+import type { WebradioStation } from "$lib/webradios/types";
 import { canPlay } from "$lib/catalog/availability";
 import type { Track } from "$lib/types";
 import { streamUrl, api, API_BASE, lastfmApi, prepareMediaSession } from "$lib/api";
@@ -256,8 +259,40 @@ function logListen(track: Track, durationListened: number, completed: boolean) {
   api.post("/history", body).catch(() => {});
 }
 
+function playStation(station: WebradioStation) {
+  if (typeof window === "undefined" || (webPreferences.status && !webPreferences.enabled)) return;
+  live.stop();
+  pause();
+  loadedTrackId = null;
+  if (audio) {
+    audio.removeAttribute("src");
+    audio.load();
+  }
+  getRadioStore().stopRadio();
+  updateFavicon(null);
+  if ("mediaSession" in navigator) {
+    if (typeof MediaMetadata === "function") navigator.mediaSession.metadata = new MediaMetadata({ title: station.name });
+    try { navigator.mediaSession.setPositionState?.(); } catch { /* live streams have no seekable length */ }
+    for (const action of ["play", "previoustrack", "nexttrack", "seekto", "seekbackward", "seekforward"] as const) {
+      try { navigator.mediaSession.setActionHandler(action, null); } catch { /* unsupported action */ }
+    }
+    navigator.mediaSession.setActionHandler("pause", live.stop);
+    try { navigator.mediaSession.setActionHandler("stop", live.stop); } catch { /* optional system control */ }
+  }
+  void live.start(station, volume, () => {
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.playbackState = "paused";
+      try { navigator.mediaSession.setActionHandler("stop", null); } catch { /* optional system control */ }
+      registerMediaSessionHandlers();
+      if (currentTrack) updateMediaSession(currentTrack);
+      else navigator.mediaSession.metadata = null;
+    }
+  });
+}
+
 function play(track: Track, automatic = false) {
   if (!canPlay(track)) return;
+  live.stop();
   initAudio();
   if (!audio) return;
 
@@ -312,6 +347,7 @@ function pause() {
 }
 
 function resume() {
+  live.stop();
   if (!audio || !currentTrack) return;
   const track = currentTrack;
   if (!canPlay(track)) {
@@ -372,6 +408,7 @@ function seek(time: number) {
 }
 
 function stopOnLogout() {
+  live.stop();
   pause();
   currentTrack = null;
   loadedTrackId = null;
@@ -396,6 +433,7 @@ function setVolume(vol: number) {
   if (!Number.isFinite(vol)) return;
   volume = Math.max(0, Math.min(1, vol));
   if (audio) audio.volume = volume;
+  live.setVolume(volume);
   try { localStorage.setItem(volumeKey, String(volume)); }
   catch { /* The active player still applies the volume. */ }
 }
@@ -412,6 +450,7 @@ function cycleRepeat() {
 
 /** Reset all player state. Intended for test isolation. */
 function _resetForTests() {
+  live.stop();
   playbackRequest++;
   loadedTrackId = null;
   restorePosition = null;
@@ -430,7 +469,7 @@ function _resetForTests() {
 
 export function getPlayerStore() {
   return {
-    get currentTrack() { return currentTrack; },
+    get currentTrack() { return live.station ? null : currentTrack; },
     get isPlaying() { return isPlaying; },
     get failed() { return failed; },
     get volume() { return volume; },
@@ -439,6 +478,7 @@ export function getPlayerStore() {
     get shuffle() { return shuffle; },
     get repeat() { return repeat; },
     play,
+    playStation,
     pause,
     resume,
     togglePlay,

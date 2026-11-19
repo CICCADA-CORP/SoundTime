@@ -72,47 +72,29 @@ pub async fn update_setting(
             Json(serde_json::json!({"error":"Expected true or false"})),
         ));
     }
-    let existing = instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq(&key))
-        .one(&state.db)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "DB error" })),
-            )
-        })?;
-
-    match existing {
-        Some(s) => {
-            let mut update: instance_setting::ActiveModel = s.into();
-            update.value = Set(body.value.clone());
-            update.updated_at = Set(chrono::Utc::now().into());
-            update.update(&state.db).await.map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": "Update failed" })),
-                )
-            })?;
-        }
-        None => {
-            // Create new setting
-            instance_setting::ActiveModel {
-                id: Set(Uuid::new_v4()),
-                key: Set(key.clone()),
-                value: Set(body.value.clone()),
-                updated_at: Set(chrono::Utc::now().into()),
-            }
-            .insert(&state.db)
-            .await
-            .map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": "Insert failed" })),
-                )
-            })?;
-        }
-    }
+    // A simultaneous first write on another frontend follows the same update path.
+    instance_setting::Entity::insert(instance_setting::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        key: Set(key.clone()),
+        value: Set(body.value.clone()),
+        updated_at: Set(chrono::Utc::now().into()),
+    })
+    .on_conflict(
+        sea_orm::sea_query::OnConflict::column(instance_setting::Column::Key)
+            .update_columns([
+                instance_setting::Column::Value,
+                instance_setting::Column::UpdatedAt,
+            ])
+            .to_owned(),
+    )
+    .exec(&state.db)
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error":"Setting update failed"})),
+        )
+    })?;
 
     Ok(Json(SettingResponse {
         key,

@@ -1,7 +1,9 @@
 <script lang="ts">
   import CatalogHeader from "$lib/components/catalog/CatalogHeader.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
+  import { webPreferences } from "$lib/webradios/preferences.svelte";
+  import RecordingChoice from "$lib/components/admin/RecordingChoice.svelte";
   import StorageSection from "$lib/components/admin/StorageSection.svelte";
   import { createStorageSection } from "$lib/components/admin/storage.svelte";
   import { api, pluginApi, themeApi } from "$lib/api";
@@ -56,7 +58,11 @@
   let instances = $state<KnownInstance[]>([]);
   let users = $state<User[]>([]);
   let metadataStatus = $state<MetadataStatus | null>(null);
-  let metadataResults = $state<MetadataResult[]>([]);
+  let metadataResults = $state<(MetadataResult & { sourceTitle: string })[]>([]);
+  let metadataSearch = $state("");
+  let matchingTracks = $state<AdminTrack[] | null>(null);
+  let findingTracks = $state(false);
+  let reviewing = $state(false);
   let remoteTracks = $state<RemoteTrack[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -68,6 +74,9 @@
   let p2pPeers = $state<P2pPeer[]>([]);
   let networkGraphData = $state<NetworkGraphData>({ nodes: [], links: [] });
   let addPeerInput = $state("");
+  let followNewPeer = $state(true);
+  let changingPeer = $state(false);
+  let peerNotice = $state("");
   let p2pLogs = $state<P2pLogEntry[]>([]);
   let p2pLogsTotalInBuffer = $state(0);
   let p2pLogsAutoRefresh = $state(false);
@@ -159,7 +168,6 @@
         if (status.status === "completed") {
           metadataTaskProgress = null;
           if (status.result) {
-            metadataResults = []; // Clear individual results — show summary instead
             metadataTaskResult = status.result;
           }
           // Reload metadata status to reflect new enrichment counts
@@ -303,10 +311,10 @@
           break;
         case "p2p-status":
           p2pStatus = await api.get<P2pStatus>("/p2p/status");
-          p2pPeers = await api.get<P2pPeer[]>("/admin/p2p/peers").catch(() => []);
+          p2pPeers = await api.get<P2pPeer[]>("/admin/p2p/peers");
           break;
         case "network-graph":
-          networkGraphData = await api.get<NetworkGraphData>("/p2p/network-graph");
+          networkGraphData = await api.get<NetworkGraphData>("/admin/p2p/network-graph");
           break;
         case "p2p-logs": {
           const levelParam = p2pLogsLevelFilter ? `?level=${p2pLogsLevelFilter}` : "";
@@ -389,12 +397,14 @@
   }
 
   let savingRegistration = $state(false);
+  let savingWebradios = $state(false);
   const registrationEnabled = $derived((settings.find(setting => setting.key === "open_registrations")?.value ?? "true") === "true");
   const privateInstance = $derived(settings.find(setting => setting.key === "instance_private")?.value === "true");
 
   async function updateSetting(key: string, value: string) {
     try {
       await api.put(`/admin/settings/${key}`, { value });
+      if (key === "webradios_enabled") webPreferences.instanceChanged(value === "true");
       const exists = settings.some((s) => s.key === key);
       if (exists) {
         settings = settings.map((s) => (s.key === key ? { ...s, value } : s));
@@ -404,6 +414,38 @@
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
     }
+  }
+
+  async function changePeer(action: () => Promise<{ message?: string }>) {
+    if (changingPeer) return;
+    changingPeer = true;
+    error = null;
+    peerNotice = "";
+    try {
+      const reply = await action();
+      peerNotice = reply?.message || "";
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+    // Follow state is committed before a remote acknowledgement; even a failed
+    // notification may have changed the effective local subscription.
+    try {
+      p2pPeers = await api.get<P2pPeer[]>("/admin/p2p/peers");
+    } catch (cause) {
+      error ||= cause instanceof Error ? cause.message : String(cause);
+    } finally { changingPeer = false; }
+  }
+
+  function addPeer() {
+    const nodeId = addPeerInput.trim();
+    if (!nodeId) return;
+    void changePeer(async () => {
+      const payload = p2pStatus?.explicit_catalog ? { node_id: nodeId, follow_catalog: followNewPeer } : { node_id: nodeId };
+      const response = await api.post<{ message?: string }>("/admin/p2p/peers", payload);
+      addPeerInput = "";
+      followNewPeer = true;
+      return response;
+    });
   }
 
   async function blockDomain() {
@@ -525,13 +567,43 @@
     }
   }
 
-  async function enrichSingleTrack(trackId: string) {
+  async function findMetadataTracks(event: SubmitEvent) {
+    event.preventDefault();
+    const search = metadataSearch.trim();
+    if (!search || findingTracks) return;
+    findingTracks = true;
+    matchingTracks = null;
+    error = null;
     try {
-      const result = await api.post<MetadataResult>(`/admin/metadata/enrich/${trackId}`);
-      metadataResults = [result, ...metadataResults];
+      const params = new URLSearchParams({ search, per_page: "10" });
+      const result = await api.get<PaginatedResponse<AdminTrack>>(`/admin/tracks/browse?${params}`);
+      if (metadataSearch.trim() === search) matchingTracks = result.data;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      findingTracks = false;
+    }
+  }
+
+  async function enrichSingleTrack(trackId: string, sourceTitle: string, recordingId?: string) {
+    if (reviewing) return;
+    reviewing = true;
+    error = null;
+    try {
+      const selection = recordingId ? `?recording_id=${encodeURIComponent(recordingId)}` : "";
+      const result = await api.post<MetadataResult>(`/admin/metadata/enrich/${encodeURIComponent(trackId)}${selection}`);
+      if (recordingId && (result.status === "error" || result.status === "not_found")) {
+        error = t(result.status === "not_found" ? "admin.metadata.recordingMissing" : "admin.metadata.recordingRetry");
+        return;
+      }
+      metadataResults = [{ ...result, sourceTitle }, ...metadataResults.filter(row => row.track_id !== trackId)];
+      await tick();
+      if (activeTab === "metadata") document.getElementById(`metadata-result-${trackId}`)?.focus();
       metadataStatus = await api.get<MetadataStatus>("/admin/metadata/status");
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
+    } finally {
+      reviewing = false;
     }
   }
 
@@ -875,7 +947,7 @@
       <div class="flex-1 min-w-0 space-y-6">
         <!-- Error -->
         {#if error}
-          <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-4 text-destructive">
+          <div role="alert" class="bg-red-500/10 border border-red-500/30 rounded-lg p-4 text-destructive">
             {error}
             <button class="ml-2 underline" onclick={() => (error = null)}>{t('common.close')}</button>
           </div>
@@ -1051,8 +1123,9 @@
                   style="width: {metadataTaskProgress.total > 0 ? (metadataTaskProgress.processed / metadataTaskProgress.total * 100) : 0}%"
                 ></div>
               </div>
-              <div class="flex gap-4 text-xs text-[hsl(var(--muted-foreground))]">
+              <div class="flex flex-wrap gap-4 text-xs text-[hsl(var(--muted-foreground))]">
                 <span class="text-green-700">{t('admin.metadata.statusEnrichedMB')}: {metadataTaskProgress.enriched}</span>
+                <span>{t('admin.metadata.statusAmbiguous')}: {metadataTaskProgress.ambiguous ?? 0}</span>
                 <span class="text-amber-700">{t('admin.metadata.statusNotFound')}: {metadataTaskProgress.not_found}</span>
                 <span class="text-destructive">{t('admin.metadata.statusError')}: {metadataTaskProgress.errors}</span>
               </div>
@@ -1074,7 +1147,7 @@
                   {t('common.dismiss')}
                 </button>
               </div>
-              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <div class="bg-[hsl(var(--secondary))] rounded-lg p-3 text-center">
                   <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.metadata.totalTracks')}</p>
                   <p class="text-xl font-bold mt-1">{metadataTaskResult.total_processed}</p>
@@ -1087,6 +1160,10 @@
                   <p class="text-xs text-amber-700">{t('admin.metadata.statusNotFound')}</p>
                   <p class="text-xl font-bold mt-1 text-amber-700">{metadataTaskResult.not_found}</p>
                 </div>
+                <div class="bg-[hsl(var(--secondary))] rounded-lg p-3 text-center">
+                  <p class="text-xs">{t('admin.metadata.statusAmbiguous')}</p>
+                  <p class="text-xl font-bold mt-1">{metadataTaskResult.ambiguous ?? 0}</p>
+                </div>
                 <div class="rounded-lg p-3 text-center {metadataTaskResult.errors > 0 ? 'bg-red-500/10' : 'bg-[hsl(var(--secondary))]'}">
                   <p class="text-xs {metadataTaskResult.errors > 0 ? 'text-destructive' : 'text-[hsl(var(--muted-foreground))]'}">{t('admin.metadata.statusError')}</p>
                   <p class="text-xl font-bold mt-1 {metadataTaskResult.errors > 0 ? 'text-destructive' : ''}">{metadataTaskResult.errors}</p>
@@ -1094,6 +1171,35 @@
               </div>
             </div>
           {/if}
+
+          <div class="bg-[hsl(var(--card))] rounded-lg p-5">
+            <form onsubmit={findMetadataTracks}>
+              <label for="metadata-track-search" class="block font-medium mb-2">{t("admin.metadata.findTrack")}</label>
+              <div class="flex gap-2">
+                <input id="metadata-track-search" type="search" required bind:value={metadataSearch} oninput={() => matchingTracks = null}
+                  class="min-w-0 flex-1 rounded border border-[hsl(var(--border))] bg-[hsl(var(--secondary))] px-3 py-2 text-sm" />
+                <button type="submit" disabled={findingTracks || !metadataSearch.trim()}
+                  class="rounded bg-[hsl(var(--secondary))] px-3 py-2 text-sm font-medium disabled:opacity-50">
+                  {t("admin.reports.searchBtn")}
+                </button>
+              </div>
+            </form>
+            {#if matchingTracks}
+              {#if matchingTracks.length}
+                <ul class="mt-3 space-y-1">
+                  {#each matchingTracks as track (track.id)}
+                    <li><button type="button" disabled={reviewing}
+                      class="rounded px-2 py-1 text-left text-sm underline disabled:opacity-50"
+                      onclick={() => enrichSingleTrack(track.id, track.title)}>
+                      {t("admin.metadata.reviewTrack", { title: [track.title, track.artist_name].filter(Boolean).join(" · ") })}
+                    </button></li>
+                  {/each}
+                </ul>
+              {:else}
+                <p role="status" class="mt-3 text-sm">{t("explore.noTracks")}</p>
+              {/if}
+            {/if}
+          </div>
 
           <!-- Individual Enrichment Results (from single-track enrichments) -->
           {#if metadataResults.length > 0}
@@ -1113,23 +1219,26 @@
                   </tr>
                 </thead>
                 <tbody>
-                  {#each metadataResults as result}
+                  {#each metadataResults as result (result.track_id)}
                     <tr class="border-b border-[hsl(var(--border))] last:border-b-0">
                       <td class="p-3">
                         <span class="px-2 py-0.5 rounded text-xs font-medium
                           {result.status === 'enriched' ? 'bg-green-500/20 text-green-700' :
                            result.status === 'enriched_by_ai' ? 'bg-purple-500/20 text-purple-700' :
+                           result.status === 'ambiguous' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' :
                            result.status === 'not_found' ? 'bg-yellow-500/20 text-amber-700' :
                            result.status === 'already_enriched' ? 'bg-blue-500/20 text-blue-700' :
                            'bg-red-500/20 text-destructive'}">
                           {result.status === 'enriched' ? t('admin.metadata.statusEnrichedMB') :
                            result.status === 'enriched_by_ai' ? t('admin.metadata.statusEnrichedAI') :
+                           result.status === 'ambiguous' ? t('admin.metadata.statusAmbiguous') :
                            result.status === 'not_found' ? t('admin.metadata.statusNotFound') :
                            result.status === 'already_enriched' ? t('admin.metadata.statusAlreadyEnriched') :
                            t('admin.metadata.statusError')}
                         </span>
                       </td>
-                      <td class="p-3 max-w-[200px] truncate">{result.corrected_title ?? "—"}</td>
+                      <th scope="row" tabindex="-1" id={`metadata-result-${result.track_id}`}
+                        class="p-3 max-w-[200px] truncate text-left font-medium">{result.corrected_title ?? result.sourceTitle}</th>
                       <td class="p-3 max-w-[150px] truncate">{result.artist_name ?? "—"}</td>
                       <td class="p-3 max-w-[150px] truncate">{result.album_title ?? "—"}</td>
                       <td class="p-3">{result.genre ?? "—"}</td>
@@ -1141,6 +1250,12 @@
                         {/if}
                       </td>
                     </tr>
+                    {#if result.status === "ambiguous" && result.candidates?.length}
+                      <tr><td colspan="6" class="p-3">
+                        <RecordingChoice title={result.sourceTitle} candidates={result.candidates} busy={reviewing}
+                          choose={(id) => enrichSingleTrack(result.track_id, result.sourceTitle, id)} />
+                      </td></tr>
+                    {/if}
                   {/each}
                 </tbody>
               </table>
@@ -1448,6 +1563,20 @@
 
       <!-- Settings -->
       {#if activeTab === "settings"}
+        <div class="mb-4 rounded-lg border border-border bg-card p-5">
+          <label class="flex items-center justify-between gap-4">
+            <span class="text-sm font-semibold">{t("webradios.instanceSetting")}</span>
+            <input type="checkbox" role="switch" class="size-5 accent-primary" disabled={savingWebradios}
+              checked={settings.find(entry => entry.key === "webradios_enabled")?.value !== "false"}
+              onchange={async event => {
+                const enabled = event.currentTarget.checked;
+                event.currentTarget.checked = !enabled;
+                savingWebradios = true;
+                try { await updateSetting("webradios_enabled", String(enabled)); }
+                finally { savingWebradios = false; }
+              }} />
+          </label>
+        </div>
         <!-- Private Instance Toggle -->
         <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-5 mb-4">
           <div class="flex items-center justify-between">
@@ -1645,7 +1774,7 @@
         </div>
 
         <div class="bg-[hsl(var(--card))] rounded-lg divide-y divide-[hsl(var(--border))]">
-          {#each settings.filter(setting => setting.key !== "open_registrations") as setting}
+          {#each settings.filter(setting => setting.key !== "open_registrations" && setting.key !== "webradios_enabled") as setting}
             <div class="p-4 flex items-center justify-between gap-4">
               <div class="min-w-0">
                 <p class="font-mono text-sm">{setting.key}</p>
@@ -1865,20 +1994,18 @@
               />
               <button
                 class="bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] px-4 py-2 rounded text-sm font-medium hover:opacity-90 transition"
-                onclick={async () => {
-                  if (!addPeerInput.trim()) return;
-                  try {
-                    await api.post("/admin/p2p/peers", { node_id: addPeerInput.trim() });
-                    addPeerInput = "";
-                    await loadData();
-                  } catch (e: unknown) {
-                    error = e instanceof Error ? e.message : String(e);
-                  }
-                }}
+                disabled={changingPeer || !addPeerInput.trim()} onclick={addPeer}
               >
                 {t('admin.p2p.addPeer')}
               </button>
             </div>
+            {#if p2pStatus?.explicit_catalog}
+              <label class="mt-3 inline-flex items-center gap-2 text-sm">
+                <input type="checkbox" bind:checked={followNewPeer} disabled={changingPeer} class="size-4 accent-primary" />
+                {t("admin.p2p.followCatalog")}
+              </label>
+            {/if}
+            {#if peerNotice}<p role="status" class="mt-3 text-xs text-muted-foreground">{peerNotice}</p>{/if}
           </div>
 
           <!-- Peer List -->
@@ -1912,6 +2039,13 @@
                         {/if}
                       </td>
                       <td class="p-3 text-right space-x-2">
+                        {#if peer.catalog_followed != null}
+                          <button type="button" disabled={changingPeer} class="text-xs text-blue-700 hover:underline disabled:opacity-50"
+                            aria-label={t(peer.catalog_followed ? "admin.p2p.unfollowCatalog" : "admin.p2p.followCatalog") + " · " + (peer.name || peer.node_id)}
+                            onclick={() => changePeer(() => api.put(`/admin/p2p/peers/${encodeURIComponent(peer.node_id)}/subscription`, { followed: !peer.catalog_followed }))}>
+                            {t(peer.catalog_followed ? "admin.p2p.unfollowCatalog" : "admin.p2p.followCatalog")}
+                          </button>
+                        {/if}
                         <button
                           class="text-xs text-blue-700 hover:underline"
                           onclick={async () => {

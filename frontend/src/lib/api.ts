@@ -142,7 +142,7 @@ export async function apiFetch<T = unknown>(
     const err: ApiError = await res.json().catch(() => ({
       error: `HTTP ${res.status}`,
     }));
-    throw Object.assign(new Error(err.error), { status: res.status });
+    throw Object.assign(new Error(err?.error || err?.message || `HTTP ${res.status}`), { status: res.status });
   }
 
   // Refresh artwork access before an idle tab renders a new catalog response.
