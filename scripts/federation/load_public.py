@@ -135,16 +135,19 @@ def nginx_settings(compose, project):
         rust_limits = {}
         for service, replica in [("backend-b", None), ("catalog-http", 1), ("catalog-http", 2)]:
             selected = ["--index", str(replica)] if replica else []
-            fields = compose(project, "exec", "-T", *selected, service, "awk",
-                             'FILENAME=="/proc/1/comm" {print $1} /^Max open files/ {print $4,$5}',
-                             "/proc/1/comm", "/proc/1/limits").decode().split()
             role = service if replica is None else f"{service}-{replica}"
-            require(len(fields)==3 and fields[0]=="soundtime-server",
-                    f"Unexpected process when reading descriptor budget for {role}: {fields}")
-            soft, hard = fields[1:]
+            command = (project, "exec", "-T", *selected, service)
+            # Linux truncates /proc/1/comm to 15 bytes ("soundtime-serve").
+            executable = compose(*command, "readlink", "/proc/1/exe").decode().strip()
+            require(executable == "/app/soundtime-server",
+                    f"Unexpected executable when reading descriptor budget for {role}: {executable}")
+            fields = compose(*command, "awk", '/^Max open files/ {print $4,$5}',
+                             "/proc/1/limits").decode().split()
+            require(len(fields) == 2, f"Missing descriptor limits on {role}: {fields}")
+            soft, hard = fields
             require(all(n == "unlimited" or n.isdigit() and int(n) >= 8192 for n in (soft, hard)),
                     f"Insufficient public Rust descriptor limit on {role}: soft={soft} hard={hard}")
-            rust_limits[role] = {"soft": soft, "hard": hard}
+            rust_limits[role] = {"executable": executable, "soft": soft, "hard": hard}
         result["rust_process_nofile"] = rust_limits
         worker = pool("backend-b")
         readers = [pool("catalog-http", replica) for replica in (1, 2)]
