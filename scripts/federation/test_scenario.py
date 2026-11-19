@@ -69,6 +69,21 @@ class FederationScenarioTests(unittest.TestCase):
             local.add_peer(peer, follow=False)
             self.assertIs(call.call_args.kwargs["body"]["follow_catalog"], False)
 
+    def test_container_browser_uses_only_the_disposable_ingress_proxy(self):
+        node = scenario.Instance("B", "http://127.0.0.1:32049")
+        with patch.dict(scenario.os.environ, {"FEDERATION_BROWSER": "container",
+                       "SOUNDTIME_TEST_COMPOSE_PROJECT": "st-fed-0123456789abcdef"}):
+            command = scenario.browser_command(node, "playlist", "track", "title")
+            self.assertIn("http://proxy-b", command)
+            self.assertNotIn(node.url, command)
+            self.assertIn("--no-deps", command)
+            self.assertIn("-T", command)
+        with patch.dict(scenario.os.environ, {"FEDERATION_BROWSER": "container",
+                       "SOUNDTIME_TEST_COMPOSE_PROJECT": "production"}), self.assertRaises(scenario.ScenarioError):
+            scenario.browser_command(node, "playlist", "track", "title")
+        with patch.dict(scenario.os.environ, {"FEDERATION_BROWSER": "native"}):
+            self.assertIn(node.url, scenario.browser_command(node, "playlist", "track", "title"))
+
     def test_distinct_instances_are_required_in_both_modes(self):
         with tempfile.TemporaryDirectory() as directory:
             for mode in ("acceptance", "baseline"):

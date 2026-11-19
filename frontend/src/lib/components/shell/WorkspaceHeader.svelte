@@ -26,7 +26,7 @@
   const mac = typeof navigator !== "undefined" && /Mac|iPad|iPhone/i.test(navigator.platform);
 </script>
 
-<header class="workspace-header">
+<header class="workspace-header" class:local-search={path === "/explore"}>
   <div class="location">
     <button id="sidebar-toggle" class="icon-button" type="button" aria-label={t(expanded ? "workspace.hideMenu" : "workspace.showMenu")}
       aria-expanded={expanded} aria-controls={expanded ? "workspace-sidebar" : undefined} onclick={toggleSidebar}
@@ -42,12 +42,14 @@
       <Plus size={15} /><span class="upload-label">{t("nav.upload")}</span>
     </Button>
     {/if}
+    {#if path !== "/explore"}
     <button class="search-trigger" type="button" aria-label={t("common.search")} aria-haspopup="dialog"
       aria-keyshortcuts="Meta+K Control+K" onclick={(event) => { event.currentTarget.focus(); openSearch(); }}>
       <Search size={17} strokeWidth={1.65} />
       <span>{t("search.placeholder")}</span>
       <kbd>{mac ? "⌘K" : "Ctrl K"}</kbd>
     </button>
+    {/if}
   </div>
 
   <div class="preferences">
@@ -65,6 +67,7 @@
     align-items: center; flex: none; gap: 12px; min-height: 48px; padding: 6px 16px;
     background: hsl(var(--background));
   }
+  .workspace-header.local-search { grid-template-columns: minmax(0, 1fr) auto auto; }
   .location, .actions, .preferences { display: flex; align-items: center; min-width: 0; }
   .location { gap: 10px; }
   .section-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 14px; font-weight: 520; }

@@ -2,6 +2,7 @@ services:
   link-tools:
     profiles: [measurement]
     image: soundtime-federation-link-tools:${COMPOSE_PROJECT_NAME}
+    pull_policy: never
     build:
       context: .
       dockerfile: Dockerfile.link-tools

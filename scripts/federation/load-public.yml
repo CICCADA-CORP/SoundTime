@@ -1,0 +1,31 @@
+# The same roles and Nginx routes as docker/compose.public.yml, on disposable site B.
+services:
+  backend-b:
+    environment:
+      SOUNDTIME_ROLE: worker
+  catalog-http:
+    image: soundtime-federation-backend:${COMPOSE_PROJECT_NAME}
+    pull_policy: never
+    environment:
+      SOUNDTIME_ROLE: catalog-http
+      DATABASE_URL: postgres://soundtime:federation-test@db-b/soundtime
+      JWT_SECRET: ${FEDERATION_SECRET}-b
+      SOUNDTIME_DOMAIN: b.federation.test
+      P2P_ENABLED: "true"
+      P2P_EXPLICIT_CATALOG: "true"
+      DB_MIN_CONNECTIONS: "1"
+      DB_MAX_CONNECTIONS: ${CATALOG_DB_MAX_CONNECTIONS:-8}
+    networks: [site-b]
+    depends_on:
+      db-b: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && read -r version code rest <&3 && [[ $$code == 200 ]]"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+  proxy-b:
+    depends_on: [backend-b, frontend-b, catalog-http]
+    volumes:
+      - ../../docker/catalog-upstreams.conf:/etc/nginx/conf.d/catalog-upstreams.conf:ro
+      - ../../docker/catalog-read.conf:/etc/nginx/soundtime-catalog.d/read.conf:ro
+      - ./load-upstreams-log.conf:/etc/nginx/conf.d/load-upstreams-log.conf:ro

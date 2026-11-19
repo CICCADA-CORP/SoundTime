@@ -15,11 +15,18 @@ const streamPath = "/api/tracks/" + track + "/stream";
 const profile = await mkdtemp(join(tmpdir(), "soundtime-browser-"));
 const chrome = process.env.CHROME_BIN || (process.platform === "darwin"
   ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "google-chrome");
+// Container Chromium runs as an unprivileged user, with no capabilities, mounts,
+// or host sockets. Docker's seccomp profile denies Chromium's nested namespace sandbox.
+const containerArgs = process.env.SOUNDTIME_CONTAINER_BROWSER === "true" ? ["--no-sandbox"] : [];
 const browser = spawn(chrome, [
+  ...containerArgs,
   "--headless", "--lang=en-US", "--disable-background-networking", "--no-first-run", "--mute-audio",
   "--autoplay-policy=no-user-gesture-required", "--remote-debugging-port=0",
   "--remote-debugging-address=127.0.0.1", "--user-data-dir=" + profile, "about:blank",
-], { stdio: "ignore" });
+], { stdio: ["ignore", "ignore", "pipe"] });
+let chromeLog = "";
+browser.stderr.setEncoding("utf8");
+browser.stderr.on("data", text => { chromeLog = (chromeLog + text).slice(-1800); });
 const exited = once(browser, "exit").catch(() => {});
 let launchError;
 browser.on("error", error => { launchError = error; });
@@ -29,7 +36,7 @@ async function until(label, get, timeout = 20000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
     if (launchError) throw launchError;
-    if (browser.exitCode !== null || browser.signalCode) throw new Error("Chrome exited during " + label);
+    if (browser.exitCode !== null || browser.signalCode) throw new Error("Chrome exited during " + label + " (" + (browser.signalCode || browser.exitCode) + "): " + chromeLog);
     const value = await get();
     if (value) return value;
     await delay(100);
@@ -71,7 +78,10 @@ try {
     if (msg.method === "Network.responseReceived") {
       const response = msg.params.response;
       const url = new URL(response.url);
-      if (url.origin === origin && url.pathname === "/api/auth/login") logins.push(response.status);
+      if (url.origin === origin && url.pathname === "/api/auth/login") {
+        const value = Object.entries(response.headers).find(([name]) => name.toLowerCase() === "retry-after")?.[1];
+        logins.push({status:response.status, retry:value});
+      }
       if (url.origin === origin && url.pathname.startsWith("/api/playlists/") && response.status >= 200) {
         mutations.push({path:url.pathname,status:response.status});
       }
@@ -116,8 +126,7 @@ try {
     const destination="/playlists/"+listener.playlist;
     await send("Page.navigate",{url:origin+"/login?next="+encodeURIComponent(destination)});
     await until("login form",()=>evaluate("Boolean(document.querySelector('form input[name=password]'))"));
-    const checkpoint=logins.length;
-    await evaluate(`(()=>{
+    const submit = () => evaluate(`(()=>{
       const form=document.querySelector("form input[name=password]").form;
       for(const [name,value] of Object.entries(${JSON.stringify({username:listener.username,password:listener.password})})){
         const input=form.elements.namedItem(name);
@@ -126,8 +135,21 @@ try {
       }
       form.requestSubmit();
     })()`,true);
-    await until("login HTTP response",()=>logins.length>checkpoint);
-    assert.equal(logins.at(-1),200,"Fixture account could not log in through the UI");
+    const deadline = Date.now() + 60000;
+    for (;;) {
+      const checkpoint = logins.length;
+      await submit();
+      await until("login HTTP response",()=>logins.length>checkpoint);
+      const {status,retry} = logins.at(-1);
+      if (status !== 429) {
+        assert.equal(status,200,"Fixture account could not log in through the UI");
+        break;
+      }
+      const milliseconds = /^\d+$/.test(retry || "") ? Number(retry)*1000 : Date.parse(retry)-Date.now();
+      const wait = Math.max(1000, Number.isFinite(milliseconds) ? milliseconds : 6000) + 250;
+      assert.ok(Date.now()+wait < deadline, "Login cooldown exceeded preparation budget");
+      await delay(wait);
+    }
     await until("signed-in listener's playlist",()=>evaluate(
       "location.pathname===" + JSON.stringify(destination) +
       " && Boolean(document.querySelector('button.play-cell')) && !!localStorage.getItem('soundtime_access_token')"));
@@ -266,6 +288,10 @@ try {
       const {phase,listeners}=JSON.parse(line);
       let result;
       if (phase==="add") result=await addToPlaylists(listeners);
+      else if (phase==="authenticate") {
+        await asListener(listeners[0]);
+        result={authenticated:true, attempts:logins.length};
+      }
       else if (phase==="first_sound") result=await firstSound(listeners[0]);
       else if (phase==="measure") {
         await asListener(listeners[0]);

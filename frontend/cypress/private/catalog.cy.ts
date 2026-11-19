@@ -26,10 +26,21 @@ describe('Catalog navigation and favorites', () => {
           } });
         });
         cy.get('main h1').should('contain.text', 'Explore');
-        if (width === 390) cy.get('header button[aria-label=Search]').click();
-        else cy.get('body').trigger('keydown', { key: 'k', ctrlKey: true });
         cy.intercept('GET', '**/api/p2p/search?*').as('networkSearch');
-        cy.get('[role=dialog] input[type=search]').type(fixture.artist + '{enter}');
+        if (width === 390) {
+          cy.contains('main [role=tab]', 'Genres').click();
+          cy.location('search').should('eq', '?tab=genres');
+          cy.reload();
+          cy.contains('main [role=tab]', 'Genres').should('have.attr', 'aria-selected', 'true');
+          cy.go('back');
+          cy.location('pathname').should('eq', '/explore');
+          cy.location('search').should('eq', '');
+          cy.contains('main [role=tab]', 'Recently added').should('have.attr', 'aria-selected', 'true');
+          cy.get('main form[role=search] input[name=q]').type(fixture.artist + '{enter}');
+        } else {
+          cy.get('body').trigger('keydown', { key: 'k', ctrlKey: true });
+          cy.get('[role=dialog] input[type=search]').type(fixture.artist + '{enter}');
+        }
         cy.location('pathname').should('eq', '/search');
         if (width === 390) {
           const network = 'main section[aria-label="Network Results"]';
@@ -47,7 +58,7 @@ describe('Catalog navigation and favorites', () => {
         cy.go('back');
         cy.contains('main h1', fixture.artist).should('be.visible');
         cy.go('back');
-        cy.location('search').should('include', encodeURIComponent(fixture.artist));
+        cy.location('search').should(query => expect(new URLSearchParams(query).get('q')).to.eq(fixture.artist));
         cy.get('main a[href^="/artists/"]').contains(fixture.artist).click();
         cy.get('main a[href="/albums/' + fixture.albumId + '"]').first().click();
         cy.get('main [role=group]').filter((_, el) => el.getAttribute('aria-label') === track.title)

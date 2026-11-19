@@ -22,6 +22,9 @@ pub enum P2pError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("local QUIC handshake budget exhausted")]
+    ConnectionPoolBusy,
+
     #[error("connection error: {0}")]
     Connection(String),
 

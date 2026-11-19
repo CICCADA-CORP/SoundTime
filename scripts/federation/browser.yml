@@ -1,0 +1,13 @@
+services:
+  browser:
+    profiles: [measurement]
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    image: soundtime-federation-browser:${COMPOSE_PROJECT_NAME}
+    pull_policy: never
+    init: true
+    shm_size: 256mb
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [ingress]

@@ -189,77 +189,84 @@ impl P2pNode {
         ensure!(!providers.is_empty(), "no authorized range provider");
         for peer in providers {
             let peer_grant = ReadGuard::peer(&peer.to_string());
-            let result = track
-                .during(
-                    peer_grant.during(tokio::time::timeout(ATTEMPT_TIMEOUT, async {
-                        let slots = self.ranges.peer_slots(&self.ranges.readers_by_peer, peer);
-                        let _peer = slots.acquire_owned().await?;
-                        let _global = self.ranges.reads.acquire().await?;
-                        ensure!(
-                            self.providers(id, req).await?.contains(&peer),
-                            "offer expired"
-                        );
-                        let mut relayed = false;
-                        let window = if peer == self.node_id() {
-                            let encoded = self.encode_range(req).await?;
-                            range_transport::decode_window(req, &encoded)?
-                        } else {
-                            // Pace admission of useful incoming audio; proof overhead is measured separately.
-                            self.ranges
-                                .download
-                                .admit(peer, req.length as usize)
-                                .await?;
-
-                            let conn = self.ranges.pool.get_connection(peer).await?;
-                            let relay_only_path = || {
-                                let paths = conn.paths();
-                                paths
-                                    .iter()
-                                    .any(|path| path.is_selected() && path.is_relay())
-                                    && paths.iter().all(|path| path.is_relay())
-                            };
-                            let before = relay_only_path();
-                            let verified =
-                                range_transport::fetch_window(&conn, req, track.subscription())
-                                    .await?;
-                            relayed = (before || self._config.relay_only) && relay_only_path();
-                            verified
-                        };
-                        ensure!(
-                            self.providers(id, req).await?.contains(&peer),
-                            "offer revoked"
-                        );
-                        if peer != self.node_id() {
-                            self.ranges.proof_bytes_received.fetch_add(
-                                (window.response_bytes - window.data.len()) as u64,
-                                Ordering::Relaxed,
-                            );
-                            self.ranges.verified_windows.fetch_add(1, Ordering::Relaxed);
-                            if relayed {
-                                self.ranges
-                                    .relay_windows_verified
-                                    .fetch_add(1, Ordering::Relaxed);
-                            }
-                            self.audio_bytes_received
-                                .fetch_add(window.data.len() as u64, Ordering::Relaxed);
-                        }
-                        Ok::<_, anyhow::Error>(window.data)
-                    })),
-                )
-                .await?;
-            if let Ok(Ok(Ok(data))) = result {
-                return Ok(data);
-            }
-            self.ranges.pool.invalidate(&peer).await;
-            let mut failures = self.ranges.failed.lock().expect("range supplier cooldown");
-            if failures.len() < MAX_QUEUED_WINDOWS {
-                failures.insert(peer, Instant::now());
+            let attempt = self.fetch_from_provider(id, req, peer, &track);
+            // A revoked track ends the whole request. A revoked supplier merely
+            // loses its own attempt, including a pending semaphore or token wait.
+            if let Ok(fetched) = track.during(peer_grant.during(attempt)).await? {
+                if let Some(bytes) = fetched? {
+                    return Ok(bytes);
+                }
             }
         }
-        bail!(
-            "range providers unavailable for publication {}",
-            req.publication
-        )
+        bail!("range providers unavailable for publication {}", req.publication)
+    }
+
+    async fn fetch_from_provider(
+        &self, id: Uuid, req: &WindowRequest, peer: EndpointId, track: &ReadGuard,
+    ) -> Result<Option<Bytes>> {
+        // The bounded flight table also covers these local waits. A slow local
+        // quota must not use the peer's network timeout or record a failed peer.
+        let slots = self.ranges.peer_slots(&self.ranges.readers_by_peer, peer);
+        let _peer = slots.acquire_owned().await?;
+        let _global = self.ranges.reads.acquire().await?;
+        let remote = peer != self.node_id();
+        if remote {
+            self.ranges.download.admit(peer, req.length as usize).await?;
+        }
+        if !self.providers(id, req).await?.contains(&peer) {
+            return Ok(None);
+        }
+
+        let (window, relayed) = if remote {
+            let deadline = tokio::time::Instant::now() + ATTEMPT_TIMEOUT;
+            let connection = match tokio::time::timeout_at(deadline, self.ranges.pool.get_connection(peer)).await {
+                Ok(Ok(conn)) => conn,
+                Ok(Err(P2pError::ConnectionPoolBusy)) => return Err(P2pError::ConnectionPoolBusy.into()),
+                _ => { self.note_range_failure(peer); return Ok(None); }
+            };
+            let relay_only_path = || {
+                let paths = connection.paths();
+                paths.iter().any(|path| path.is_selected() && path.is_relay())
+                    && paths.iter().all(|path| path.is_relay())
+            };
+            let before = relay_only_path();
+            let fetch = range_transport::fetch_window(&connection, req, track.subscription());
+            match tokio::time::timeout_at(deadline, fetch).await {
+                Ok(Ok(window)) => (window, (before || self._config.relay_only) && relay_only_path()),
+                _ => {
+                    self.ranges.pool.invalidate_connection(&connection);
+                    self.note_range_failure(peer);
+                    return Ok(None);
+                }
+            }
+        } else {
+            let encoded = match self.encode_range(req).await {
+                Ok(encoded) => encoded,
+                Err(_) => return Ok(None),
+            };
+            let Ok(window) = range_transport::decode_window(req, &encoded) else {
+                return Ok(None);
+            };
+            (window, false)
+        };
+        if !self.providers(id, req).await?.contains(&peer) {
+            return Ok(None);
+        }
+        if remote {
+            self.ranges.proof_bytes_received.fetch_add(
+                (window.response_bytes - window.data.len()) as u64, Ordering::Relaxed);
+            self.ranges.verified_windows.fetch_add(1, Ordering::Relaxed);
+            if relayed { self.ranges.relay_windows_verified.fetch_add(1, Ordering::Relaxed); }
+            self.audio_bytes_received.fetch_add(window.data.len() as u64, Ordering::Relaxed);
+        }
+        Ok(Some(window.data))
+    }
+
+    fn note_range_failure(&self, peer: EndpointId) {
+        let mut failures = self.ranges.failed.lock().expect("range supplier cooldown");
+        if failures.len() < MAX_QUEUED_WINDOWS {
+            failures.insert(peer, Instant::now());
+        }
     }
 
     pub(super) async fn handle_range_connection(

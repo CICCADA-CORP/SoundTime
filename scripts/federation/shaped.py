@@ -85,7 +85,7 @@ class Links:
         source, target = self.nodes[src]["ip"], self.nodes[dst]["ip"]
         ping = run(self.command(src, "ping", "-4", "-n", "-q", "-I", source, "-c", "7", "-i", "0.2", "-W", "2", target, cap="NET_RAW"))
         match = re.search(r"= ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+) ms", ping)
-        require(match and "0% packet loss" in ping and "100% packet loss" not in ping, "RTT calibration failed: " + ping)
+        require(match and re.search(r"(?:^|, )0% packet loss", ping), "RTT calibration failed: " + ping)
         low, mean, high, jitter = map(float, match.groups())
         # Each calibration server terminates after its one test or its idle deadline.
         command = self.command(dst, "iperf3", "-s", "-1", "-p", "15201", "-B", target, "--forceflush", "--idle-timeout", "12")

@@ -202,7 +202,17 @@ export default {
 
   // Explore
   "explore.title": "Explore",
-  "explore.editorialPlaylists": "Weekly Playlists",
+  "explore.newInCatalog": "Recently added",
+  "explore.searchCatalog": "Search the catalog",
+  "explore.recentTracks": "Recent tracks",
+  "explore.allAlbums": "All albums",
+  "explore.allArtists": "All artists",
+  "explore.allPlaylists": "All playlists",
+  "explore.shuffleCatalog": "Shuffle catalog",
+  "explore.emptyCatalog": "No music has been added yet.",
+  "explore.emptyGenres": "No genres are listed yet.",
+  "explore.emptySelections": "No catalog selections yet.",
+  "explore.editorialPlaylists": "Catalog selections",
   "explore.tracks": "Tracks",
   "explore.albums": "Albums",
   "explore.artists": "Artists",

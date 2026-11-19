@@ -1,0 +1,18 @@
+# The archived binary configures public relays internally. Both of its Docker
+# networks are internal, and its embedded DNS cannot forward external requests.
+# mDNS on the isolated peers network lets the original ID-only dialler reply.
+services:
+  backend-b:
+    environment:
+      P2P_LOCAL_DISCOVERY: "true"
+    dns: [127.0.0.1]
+  backend-c:
+    image: soundtime-federation-historical:${COMPOSE_PROJECT_NAME}
+    pull_policy: never
+    environment:
+      P2P_LOCAL_DISCOVERY: "true"
+      P2P_DHT_DISCOVERY: "false"
+      P2P_RENDEZVOUS_URL: ""
+      P2P_SEED_PEERS: ""
+      P2P_BIND_PORT: "11204"
+    dns: [127.0.0.1]

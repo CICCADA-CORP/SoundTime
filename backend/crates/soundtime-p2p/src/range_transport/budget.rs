@@ -62,8 +62,8 @@ impl Budget {
         ensure!(bytes as f64 <= BURST, "range exceeds bandwidth burst");
         loop {
             let delay = {
-                let now = Instant::now();
                 let mut state = self.state.lock().expect("range bandwidth");
+                let now = Instant::now();
                 let (total, peers) = &mut *state;
                 total.replenish(now, self.global);
                 let mut delay = total.delay(bytes, self.global);

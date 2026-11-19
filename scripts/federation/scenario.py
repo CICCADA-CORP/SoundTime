@@ -334,16 +334,30 @@ def probe_stream(node, track_id, audio):
             return exc.code
 
 
+def browser_command(node, playlist, track, title):
+    mode = os.getenv("FEDERATION_BROWSER", "native")
+    if mode == "native":
+        return ["node", str(Path(__file__).with_name("browser-playback.mjs")),
+                node.url, playlist, track, title, "--session"]
+    project = os.getenv("SOUNDTIME_TEST_COMPOSE_PROJECT", "")
+    require(mode == "container" and re.fullmatch(r"st-fed-[0-9a-f]{16}", project)
+            and node.name in {"A", "B", "C"}, "Container browser needs this disposable Compose project")
+    return ["docker", "compose", "--env-file", "/dev/null", "--project-name", project,
+            "--file", str(Path(__file__).with_name("compose.yml")),
+            "--file", str(Path(__file__).with_name("browser.yml")),
+            "run", "--no-deps", "--rm", "-T", "browser",
+            "http://proxy-" + node.name.lower(), playlist, track, title, "--session"]
+
+
 class BrowserSession:
     """Log into the actual UI with fixture credentials sent over the private stdin pipe."""
 
     def __init__(self, stack, node, track, title, playlists, listeners):
         self.listeners = [{"name": f"Listener {i}", "playlist": pid, **node.login_credentials[account[0]]}
                           for i, (pid, account) in enumerate(zip(playlists, listeners), 1)]
-        self.errors = stack.enter_context(tempfile.TemporaryFile(mode="w+"))
+        self.errors = stack.enter_context(tempfile.TemporaryFile(mode="w+", dir=os.getenv("FEDERATION_ARTIFACT_DIR")))
         self.proc = subprocess.Popen(
-            ["node", str(Path(__file__).with_name("browser-playback.mjs")),
-             node.url, playlists[0], track, title, "--session"],
+            browser_command(node, playlists[0], track, title),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.errors, text=True,
         )
         stack.callback(self.close)

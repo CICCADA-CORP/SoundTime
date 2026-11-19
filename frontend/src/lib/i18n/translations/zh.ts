@@ -202,7 +202,17 @@ export default {
 
   // Explore
   "explore.title": "发现",
-  "explore.editorialPlaylists": "本周推荐",
+  "explore.newInCatalog": "最新添加",
+  "explore.searchCatalog": "搜索曲库",
+  "explore.recentTracks": "最近添加的歌曲",
+  "explore.allAlbums": "全部专辑",
+  "explore.allArtists": "全部艺人",
+  "explore.allPlaylists": "全部歌单",
+  "explore.shuffleCatalog": "随机播放",
+  "explore.emptyCatalog": "曲库中暂时没有音乐。",
+  "explore.emptyGenres": "暂无流派信息。",
+  "explore.emptySelections": "暂无精选歌单。",
+  "explore.editorialPlaylists": "曲库精选",
   "explore.tracks": "曲目",
   "explore.albums": "专辑",
   "explore.artists": "艺术家",

@@ -202,7 +202,17 @@ export default {
 
   // Explore
   "explore.title": "Обзор",
-  "explore.editorialPlaylists": "Плейлисты недели",
+  "explore.newInCatalog": "Новинки",
+  "explore.searchCatalog": "Поиск по каталогу",
+  "explore.recentTracks": "Недавно добавленные треки",
+  "explore.allAlbums": "Все альбомы",
+  "explore.allArtists": "Все исполнители",
+  "explore.allPlaylists": "Все плейлисты",
+  "explore.shuffleCatalog": "Слушать вперемешку",
+  "explore.emptyCatalog": "В каталоге пока нет музыки.",
+  "explore.emptyGenres": "Жанры пока не указаны.",
+  "explore.emptySelections": "Подборок пока нет.",
+  "explore.editorialPlaylists": "Подборки каталога",
   "explore.tracks": "Треки",
   "explore.albums": "Альбомы",
   "explore.artists": "Исполнители",

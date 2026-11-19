@@ -2,6 +2,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from email.utils import parsedate_to_datetime
 import json
 import math
 import os
@@ -14,6 +15,8 @@ import sys
 import threading
 import time
 from urllib.parse import urlsplit
+from urllib.error import HTTPError
+import load_public
 
 from scenario import (BrowserSession, Instance, ScenarioError, counters, difference, fetch_range,
                       require, wait_for, wav_fixture)
@@ -43,7 +46,10 @@ def preflight(mode):
 
 def compose(project, *args, data=None, timeout=120):
     cmd = ["docker", "compose", "--env-file", "/dev/null", "--project-name", project,
-           "--file", str(HERE / "compose.yml"), *args]
+           "--file", str(HERE / "compose.yml")]
+    if os.environ.get("SOUNDTIME_TEST_PUBLIC_LOAD") == "1":
+        cmd += ["--file",str(HERE / "load-public.yml")]
+    cmd.extend(args)
     return subprocess.run(cmd, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           timeout=timeout, check=True).stdout
 
@@ -64,8 +70,7 @@ def docker_bytes(value):
     return round(float(match[1]) * units[match[2]])
 
 
-def telemetry(project, nodes, stop, samples, errors):
-    ids = {compose(project, "ps", "-q", role).decode().strip()[:12]: role for role in ROLES}
+def telemetry(project, ids, readers, nodes, stop, samples, errors):
     while not stop.is_set():
         sample = {"unix_s": time.time(), "containers": {}, "cache": {}}
         try:
@@ -79,17 +84,39 @@ def telemetry(project, nodes, stop, samples, errors):
                                                "network_total": row["NetIO"]}
             # A paused C must never prevent measurements on the public instance.
             sample["cache"] = nodes[1].call("/admin/storage/status")["cache"]
+            sample["proxy_connections"] = load_public.connections(compose, project, readers)
         except Exception as exc:
             errors.append(str(exc))
         samples.append(sample)
         stop.wait(4)
 
 
-def seed(project, virtual, titles):
+def seed(project, virtual, titles, owner=None):
     output = compose(project, "exec", "-T", "db-b", "psql", "-X", "-qAt", "-U", "soundtime",
                      "-d", "soundtime", "-v", f"origins={virtual}", "-v", f"titles={titles}",
+                     "-v", "fenced="+("true" if owner else "false"), "-v", "worker="+(owner or ""),
                      data=(HERE / "load-seed.sql").read_bytes(), timeout=1800)
     return json.loads(output.decode().strip().splitlines()[-1])
+
+
+def register_listener(node, username, counts):
+    deadline = time.monotonic() + 90
+    while True:
+        try:
+            return node.account(username)
+        except ScenarioError as exc:
+            error = exc.__cause__
+            if not isinstance(error, HTTPError) or error.code != 429:
+                raise
+            require(error.url.endswith("/api/auth/register"), "Unexpected rate limit after account creation")
+            value = error.headers.get("Retry-After", "6")
+            try:
+                pause = max(1, float(value))
+            except ValueError:
+                pause = max(1, parsedate_to_datetime(value).timestamp() - time.time())
+            require(time.monotonic()+pause+.25 < deadline, "Registration Retry-After exceeded preparation budget")
+            counts["registration_429"] += 1
+            time.sleep(pause+.25)
 
 
 def mp3_fixture(project, node):
@@ -177,7 +204,17 @@ def run(args, report):
             fetch_range(b, track, audio, 0, len(audio))
     mp3_fixture(project, a)
     witness = wait_for("browser MP3 on B", lambda: b.search("Browserwitness"))
-    report["seed"] = seed(project, virtual, titles)
+    if full:
+        prepared = json.loads(Path(os.environ["SOUNDTIME_TEST_LOAD_INDEX"]).read_text())
+        require(prepared["project"] == project, "Index report belongs to a different disposable project")
+        generation = int(load_public.sql(compose, project, "SELECT generation FROM federation_worker_lease "
+               "WHERE expires_at>clock_timestamp()"))
+        require(generation > prepared["generation"], "Public worker did not acquire a new generation")
+        report["index_preparation"] = prepared
+        report["serving_worker_generation"] = generation
+        report["seed"] = prepared["seed"]
+    else:
+        report["seed"] = seed(project, virtual, titles)
     for node in nodes:
         refreshed = node.call("/auth/refresh", method="POST", token="",
                               body={"refresh_token": node.refresh_token})
@@ -193,17 +230,28 @@ def run(args, report):
         require(cache["maximum_bytes"] == 0, "Cold profile requires zero-disk admission")
 
     # Create regular listeners after the index build to keep their JWTs fresh.
-    accounts = [b.account("loadlistener" + str(i)) for i in range(32 if full else 2)]
+    report["auth_preparation"] = auth = {"registration_429": 0}
+    accounts = [register_listener(b, "loadlistener"+str(i), auth) for i in range(32 if full else 2)]
     pid = b.playlist(accounts[0], "Load witness", [witness])
     report["profile"]["distinct_listener_accounts"] = len(accounts)
     report["physical_bytes_before"] = physical_storage(project)
+    ids, readers = load_public.containers(compose, project, ROLES, full)
+    report["nginx_and_connections"] = load_public.nginx_settings(compose, project)
+    if full:
+        require(report["nginx_and_connections"]["catalogue_least_conn_enabled"],"Public read tier missing from Nginx")
+        minimum, maximum = compose(project,"exec","-T","catalog-http","printenv",
+                                   "DB_MIN_CONNECTIONS","DB_MAX_CONNECTIONS").decode().splitlines()
+        report["nginx_and_connections"]["catalogue_pool_per_reader"] = {"minimum":int(minimum),"maximum":int(maximum)}
+    report["profile"]["catalogue_http_readers"] = len(readers)
     baseline = counters(nodes)
     report["container_samples"], report["monitor_errors"], report["browser_samples"] = [], [], []
     samples, errors, browsers = report["container_samples"], report["monitor_errors"], report["browser_samples"]
     stop = threading.Event()
     with ExitStack() as stack:
         browser = BrowserSession(stack, b, witness, "Browserwitness", [pid], [accounts[0]])
-        thread = threading.Thread(target=telemetry, args=(project, nodes, stop, samples, errors), daemon=True)
+        auth["browser"] = browser.phase("authenticate")
+        routed_before = load_public.routed_searches(compose,project,readers) if full else {}
+        thread = threading.Thread(target=telemetry, args=(project, ids, readers, nodes, stop, samples, errors), daemon=True)
         thread.start()
 
         def finish_telemetry():
@@ -245,12 +293,16 @@ def run(args, report):
                 raise
     report["transport_delta"] = difference(baseline, counters(nodes))
     report["cache_after"] = b.call("/admin/storage/status")["cache"]
+    routed = report["successful_searches_per_reader"] = {}
+    if full:
+        after = load_public.routed_searches(compose,project,readers)
+        routed.update({key: end-routed_before[key] for key,end in after.items()})
     report["physical_bytes_after"] = physical_storage(project)
     for key in ("search_to_screen_ms", "first_media_progress_ms"):
         report[key] = quantiles([row[key] for row in browsers])
     report["container_peak_memory_bytes"] = {
         role: max((row["containers"].get(role, {}).get("memory_bytes") or 0 for row in samples), default=0)
-        for role in ROLES}
+        for role in ids.values()}
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     report["orchestrator_peak_rss_bytes"] = peak if sys.platform == "darwin" else peak * 1024
     load = result["load"]
@@ -260,7 +312,9 @@ def run(args, report):
     report["workload_reached"] = bool(all_readers and scheduled and (warm or exercised_origins) and not result["omissions"])
     report["valid_browser_measurements"] = bool(browsers and "browser_error" not in report)
     report["screen_p95_within_300ms_in_sample"] = browsers != [] and report["search_to_screen_ms"]["p95"] <= 300
-    report["status"] = "measured" if (report["workload_reached"] or fault) and report["valid_browser_measurements"] else "incomplete"
+    observed_readers = all(routed[role]>0 and report["container_peak_memory_bytes"][role]>0
+                           for role in readers.values())
+    report["status"] = "measured" if (report["workload_reached"] or fault) and report["valid_browser_measurements"] and observed_readers else "incomplete"
     if report["status"] == "incomplete":
         raise ScenarioError("Incomplete workload or browser observations; inspect report.json")
 
@@ -268,6 +322,9 @@ def run(args, report):
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--preflight":
         preflight(sys.argv[2])
+        return
+    if len(sys.argv) == 3 and sys.argv[1] == "--prepare-public":
+        load_public.prepare(compose,seed,sys.argv[2])
         return
     parser = argparse.ArgumentParser()
     for name in ("a", "b", "c", "report"):
