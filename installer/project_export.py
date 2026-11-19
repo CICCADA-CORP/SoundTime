@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import json
+import re
 import secrets
 import shlex
 import zipfile
@@ -137,6 +138,12 @@ def archive(s, target, root, storage_env, secret_variables, *, language="fr"):
     if s["storage"]["kind"] == "s3":
         values.update(S3_ACCESS_KEY=s["storage"]["accessKey"], S3_SECRET_KEY=s["storage"]["secretKey"])
     model = _model(s, project, storage_env, guard)
+    # Reuse the deployment defaults shipped in the same installer. Keep the
+    # port and enable switch chosen during setup authoritative for this export.
+    base_compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    backend_env = model["services"]["backend"]["environment"]
+    for name, default in re.findall(r"^      (P2P_[A-Z0-9_]+): (\$\{\1:-[^}]*\})$", base_compose, re.M):
+        backend_env.setdefault(name, default)
     files = {".env": env.encode(), "compose.yaml": (json.dumps(model, indent=2, ensure_ascii=False) + "\n").encode()}
     if target == "nas":
         if __package__:

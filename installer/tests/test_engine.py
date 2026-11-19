@@ -94,6 +94,18 @@ class InstallationTests(unittest.TestCase):
         engine._configure(self.directory, self.settings)
         self.assertEqual(envfile.read_bytes(), engine._seal(original))
 
+    def test_portable_project_exposes_federation_controls(self):
+        settings = {**self.settings, "directory": "/volume1/docker/soundtime", "p2p": True, "peerPort": 22000}
+        _, contents = engine.export_project(settings, "nas")
+        with zipfile.ZipFile(io.BytesIO(contents)) as archive:
+            env = json.loads(archive.read("compose.yaml"))["services"]["backend"]["environment"]
+            self.assertEqual(env["P2P_ENABLED"], "true")
+            self.assertEqual(env["P2P_BIND_PORT"], "22000")
+            self.assertEqual(env["P2P_EXPLICIT_CATALOG"], "${P2P_EXPLICIT_CATALOG:-false}")
+            self.assertEqual(env["P2P_CACHE_MAX_SIZE"], "${P2P_CACHE_MAX_SIZE:-2GB}")
+            self.assertEqual(env["P2P_PEER_UPLOAD_BYTES_PER_SECOND"], "${P2P_PEER_UPLOAD_BYTES_PER_SECOND:-0}")
+            self.assertIn('P2P_CACHE_MAX_SIZE="2GB"', archive.read("qnap/backend.env").decode())
+
     def test_portable_project_can_be_generated_without_remote_files_or_docker(self):
         settings = {**self.settings, "directory": "/volume1/docker/ma musique", "musicDirectory": "/volume2/Albums"}
         for target in ("nas", "server", "vps", "vm", "cloud"):

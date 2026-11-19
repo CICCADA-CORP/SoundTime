@@ -145,7 +145,7 @@ To check a running instance, request `/healthz` through Nginx. If it fails, insp
 
 ### Connecting peers
 
-Web access and federation have separate controls. With P2P enabled, SoundTime instances can exchange catalog information and transfer audio over encrypted iroh connections. An administrator can add a known peer by its node ID. Operators can also configure a shared rendezvous for discovery. Keep the peer identity volume across restarts so other operators can continue to reach the same node. [Peer networking guide](docs/p2p-networking.md)
+Web access and federation have separate controls. With P2P enabled, SoundTime instances can exchange catalog information and transfer audio over encrypted iroh connections. An administrator can add a known peer by its node ID. Operators can also configure a shared rendezvous for discovery. Keep the peer identity volume across restarts so other operators can continue to reach the same node. The opt-in streaming mode lets a small instance follow catalogues and play remote tracks with a zero-byte audio cache. [Peer networking guide](docs/p2p-networking.md#verified-range-streaming-pilot)
 
 ## Development
 

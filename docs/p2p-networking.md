@@ -386,6 +386,15 @@ Run `scripts/test-p2p-federation.sh discovery` to exercise LAN discovery, a read
 
 ### Verified range streaming pilot
 
+For a small instance that can index remote tracks but has no disk space for remote audio, set these values in the deployment’s `.env` on participating instances. For an exported QNAP Container Station project, use `qnap/backend.env`. Recreate the backend, then follow the desired peers in the admin panel.
+
+```dotenv
+P2P_EXPLICIT_CATALOG=true
+P2P_VERSIONED_CATALOG=true
+P2P_RANGE_STREAMING=true
+P2P_CACHE_MAX_SIZE=0
+```
+
 Set `P2P_RANGE_STREAMING=true` on participants to advertise `soundtime/range/2` alongside the existing control protocol. The default is `false`. The receiver needs a current catalogue entry with the origin, publication UUID, revision, BLAKE3 hash and size, and an unexpired provider offer. When the option is enabled, an identified publication requires this range protocol. A provider error returns HTTP 503 before the first verified window, or terminates an already started response if all providers fail later. Historical records without an identified publication use the legacy path.
 
 The receiver validates Bao proofs for aligned 64 KiB windows before emitting any bytes. Concurrent requests for an overlapping window of the same publication share its in-flight QUIC stream. A slow or unavailable provider can be replaced at the current window. The pilot admits 32 active downloads and 32 uploads per process, with four per peer in each direction. Waiting windows are bounded at 512. Cancelling the last reader cancels the upstream operation. A partial range read creates no durable cache or offer.
