@@ -614,34 +614,19 @@ async fn seed_similar(
     exclude: &HashSet<Uuid>,
 ) -> Result<Vec<track::Model>, (StatusCode, String)> {
     let db = &state.db;
-    // Get or generate the seed track's embedding
-    let embedding = match crate::embeddings::get_track_embedding(db, seed_id).await {
-        Ok(Some(emb)) => emb,
-        Ok(None) => {
-            // No embedding yet — try to generate one on the fly
-            let seed = track::Entity::find_by_id(seed_id)
-                .one(db)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
-                .ok_or((StatusCode::NOT_FOUND, "Seed track not found".to_string()))?;
-
-            if let Err(e) = crate::embeddings::generate_and_store_embedding(db, &seed).await {
-                tracing::warn!(error = %e, track_id = %seed_id, "failed to generate embedding on the fly, falling back to seed_track");
-                return seed_track(state, seed_id, count, exclude).await;
-            }
-
-            match crate::embeddings::get_track_embedding(db, seed_id).await {
-                Ok(Some(emb)) => emb,
-                _ => return seed_track(state, seed_id, count, exclude).await,
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, track_id = %seed_id, "failed to fetch embedding, falling back to seed_track");
+    let mut excluded = exclude.clone();
+    excluded.insert(seed_id);
+    let exclude = &excluded;
+    // Explicitly choosing a seed makes a remote title eligible, just like a local one.
+    let embedding = match crate::embeddings::radio_seed_embedding(db, seed_id).await {
+        Ok(Some(embedding)) => embedding,
+        Ok(None) => return seed_track(state, seed_id, count, exclude).await,
+        Err(error) => {
+            tracing::warn!(%error, track_id = %seed_id, "failed to prepare radio seed embedding");
             return seed_track(state, seed_id, count, exclude).await;
         }
     };
 
-    // Query pgvector for similar tracks (fetch extra to account for excludes)
     let exclude_vec: Vec<Uuid> = exclude.iter().copied().collect();
     let similar_ids = crate::embeddings::find_similar_tracks(
         db,
@@ -679,8 +664,10 @@ async fn seed_similar(
         .filter_map(|id| track_map.get(&id).cloned())
         .collect();
 
-    if ordered.is_empty() {
-        return seed_track(state, seed_id, count, exclude).await;
+    if ordered.len() < count as usize {
+        let remaining = count - ordered.len() as u64;
+        excluded.extend(ordered.iter().map(|track| track.id));
+        ordered.extend(seed_track(state, seed_id, remaining, &excluded).await?);
     }
 
     // Light shuffle — swap adjacent pairs with 30% probability for variety

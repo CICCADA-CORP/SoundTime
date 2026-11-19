@@ -159,6 +159,14 @@ async fn main() {
                 }
             }
         }
+        // Historical original files now have a publication on standalone instances too.
+        match embeddings::backfill_embeddings(&projection_db).await {
+            Ok(count) if count > 0 => {
+                tracing::info!(count, "Local track embedding backfill complete")
+            }
+            Err(error) => tracing::warn!(%error, "Local track embedding backfill failed"),
+            _ => {}
+        }
     });
 
     tracing::info!("instance domain: {}", domain);
@@ -328,25 +336,6 @@ async fn main() {
 
     // Spawn the listing heartbeat worker (announces to public directory)
     listing_worker::spawn(state.clone());
-
-    // Backfill track embeddings (best-effort background task)
-    {
-        let db = state.db.clone();
-        tokio::spawn(async move {
-            // Small delay to let the server start first
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            match embeddings::backfill_embeddings(&db).await {
-                Ok(count) => {
-                    if count > 0 {
-                        tracing::info!(count, "Background embedding backfill completed");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Background embedding backfill failed (pgvector may not be available)");
-                }
-            }
-        });
-    }
 
     // Task tracker for async storage operations (sync, integrity check)
     let sync_task_tracker = soundtime_p2p::new_sync_tracker();

@@ -42,6 +42,12 @@ Each SoundTime instance has a persistent **Ed25519 keypair** that defines its **
 
 > **Tip**: Back up the secret key file to preserve your node's identity when migrating servers.
 
+## Storage used by music recommendations
+
+Following a peer adds its titles to the searchable catalogue. SoundTime generates a 32-dimensional similarity vector for a remote title when a listener chooses it as a similar-track radio seed, or when it appears in the most recent 500 plays used to update that listener’s taste profile. Existing vectors remain available after an upgrade. Radio can also draw playable titles from the catalogue by artist, genre and year while the similarity index is sparse.
+
+After historical publications have been restored at startup, each instance indexes its own active originals in pages of 64, with a half-second pause between pages. The same process runs when P2P is disabled. The similarity index resides in PostgreSQL and uses metadata only.
+
 ## Protocol
 
 SoundTime uses a custom application protocol identified by the ALPN `soundtime/p2p/1`. Messages are transmitted as **length-prefixed JSON** over QUIC bidirectional streams:
