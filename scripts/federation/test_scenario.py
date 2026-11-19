@@ -4,11 +4,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import scenario
 import historical
+import load
 import load_public
 import retention
 
@@ -21,6 +23,58 @@ class Response(io.BytesIO):
 
 
 class FederationScenarioTests(unittest.TestCase):
+    def open_fake_browser(self, stack, proc):
+        node = scenario.Instance("B", "http://unused")
+        node.login_credentials["user"] = {"username": "reader", "password": "fixture"}
+        stack.enter_context(patch.dict(scenario.os.environ, {"FEDERATION_BROWSER": "native"}))
+        stack.enter_context(patch.object(scenario.subprocess, "Popen", return_value=proc))
+        return scenario.BrowserSession(stack, node, "track", "title", ["playlist"], [("user", "token")])
+
+    def test_closed_browser_input_keeps_the_diagnostic_and_reaps_once(self):
+        proc = Mock()
+        proc.stdin.flush.side_effect = BrokenPipeError()
+        proc.stdin.close.side_effect = BrokenPipeError()
+        proc.wait.side_effect = [subprocess.TimeoutExpired("browser", 5),
+                                 subprocess.TimeoutExpired("browser", 3), -9]
+        with self.assertRaisesRegex(scenario.ScenarioError, "measure.*input pipe closed.*forward lost"):
+            with ExitStack() as stack:
+                browser = self.open_fake_browser(stack, proc)
+                browser.errors.write("forward lost")
+                browser.errors.flush()
+                browser.phase("measure")
+        browser.close()
+        self.assertEqual(proc.wait.call_args_list, [call(timeout=5), call(timeout=3), call(timeout=2)])
+        proc.terminate.assert_called_once()
+        proc.kill.assert_called_once()
+        proc.stdin.close.assert_called_once()
+        proc.stdout.close.assert_called_once()
+
+    def test_load_error_retains_diagnostics_and_partial_results_when_witness_wont_exit(self):
+        proc = Mock()
+        proc.stdin.close.side_effect = BrokenPipeError()
+        proc.wait.side_effect = subprocess.TimeoutExpired("browser", 2)
+        samples = [{"unix_s": 123, "search_to_screen_ms": 122}]
+        result = {"phase": "complete", "search_failed": 2}
+
+        def lose_forward(_args, report):
+            with ExitStack() as stack:
+                self.open_fake_browser(stack, proc)
+                report.update(generator_result=result, browser_samples=samples)
+                raise ConnectionRefusedError("public service port forward closed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            args = ["load.py", "--a", "A", "--b", "B", "--c", "C", "--mode", "load-full",
+                    "--report", str(path)]
+            with patch.object(load.sys, "argv", args), patch.object(load, "run", side_effect=lose_forward), \
+                 self.assertRaisesRegex(ConnectionRefusedError, "public service port forward closed"):
+                load.main()
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved["error"], "public service port forward closed")
+            self.assertEqual(saved["generator_result"], result)
+            self.assertEqual(saved["browser_samples"], samples)
+        proc.kill.assert_called_once()
+
     def test_archive_retries_only_initial_missing_address(self):
         peer = scenario.Instance("B", "")
         peer.node_id = "peer-b"
@@ -76,6 +130,36 @@ class FederationScenarioTests(unittest.TestCase):
         self.assertEqual([call.args[3] for call in compose.call_args_list], ["db-a","db-b","db-c","db-b"])
         self.assertIn("federation_event_bootstrap",compose.call_args_list[0].args[-1])
         pause.assert_called_once()
+
+    def test_public_limits_count_each_pool_and_the_effective_shm_mount(self):
+        def compose(_project, *args):
+            if "nginx" in args:
+                return b"worker_connections 4096;\nworker_rlimit_nofile 8192;"
+            if "ps" in args:
+                return b"17 nginx: worker process\n18 nginx: worker process"
+            if "awk" in args:
+                return b"8192 8192\n8192 8192"
+            if "printenv" in args:
+                return b"2\n24" if "backend-b" in args else b"1\n8"
+            self.assertIn("df", args)
+            return b"Filesystem Blocks Used Available Capacity Mounted on\nshm 262144 1 262143 1% /dev/shm"
+
+        pg = json.dumps({"reserved_slots": 3, "parallel_workers_per_gather": 1, "lease_sessions": 1})
+        with patch.dict(scenario.os.environ, {"SOUNDTIME_TEST_PUBLIC_LOAD": "1"}), \
+             patch.object(load_public, "sql", side_effect=["64", pg, "44", pg]):
+            observed = load_public.nginx_settings(compose, "project")["database_budget"]
+            self.assertEqual(observed["application_pool_ceiling"], 41)
+            self.assertEqual(observed["remaining_unreserved_slots"], 20)
+            self.assertEqual(observed["shared_memory_mount_bytes"], 256*1024*1024)
+            with self.assertRaisesRegex(scenario.ScenarioError, "exhaust PostgreSQL"):
+                load_public.nginx_settings(compose, "project")
+
+    def test_saturated_postgres_preserves_the_proxy_socket_measurement(self):
+        tcp = b"1: 0A000001:0050 0A000002:FFFF 01 0:0\n2: 0A000001:CCCC 0A000003:1F90 01 0:0"
+        with patch.object(load_public, "sql", side_effect=subprocess.CalledProcessError(2, "psql")):
+            sample = load_public.connections(Mock(return_value=tcp), "test", {"10.0.0.3:8080": "reader"})
+        self.assertEqual((sample["inbound_established"], sample["upstream_established"]), (1, 1))
+        self.assertIn("database_sampling_error", sample)
 
     def test_fixture_audio_is_reproducible_and_decodable(self):
         data = scenario.wav_fixture(10001, 7)

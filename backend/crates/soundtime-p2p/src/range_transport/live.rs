@@ -203,19 +203,30 @@ impl P2pNode {
 
     /// This is resolved at each end of a window. Only a fresh offer for this exact
     /// publication/version may supply it. Keeping a hash in the store grants no access.
-    async fn providers(&self, id: Uuid, req: &WindowRequest) -> Result<Vec<EndpointId>> {
-        let rows = self.db.query_all(Statement::from_sql_and_values(DbBackend::Postgres,
-            "SELECT DISTINCT s.provider FROM federation_track_providers s
-             JOIN track_publications p ON p.track_id=s.track_id
-             JOIN federation_catalogs c ON c.id=p.catalog_id
-             JOIN publication_versions v ON v.track_id=p.track_id AND v.revision=p.revision
-             WHERE p.track_id=$1 AND p.state='active' AND c.node_id=$2 AND p.origin_publication_id=$3
-               AND p.revision=$4 AND v.content_hash=$5 AND v.file_size=$6
-               AND NOT EXISTS(SELECT FROM federation_hidden_publications h WHERE h.track_id=p.track_id)
-               AND NOT EXISTS(SELECT FROM federation_content_blocks b WHERE b.content_hash=v.content_hash)
-               AND s.allowed AND (NOT $7 OR s.followed) AND s.online ORDER BY s.provider LIMIT $8",
-            [id.into(),req.origin.to_string().into(),req.publication.into(),i64::try_from(req.revision)?.into(),
-             req.hash.to_string().into(),i64::try_from(req.file_size)?.into(),self.explicit_catalog().into(),MAX_PROVIDERS.into()])).await?;
+    async fn providers(
+        &self,
+        id: Uuid,
+        req: &WindowRequest,
+        selected: Option<EndpointId>,
+    ) -> Result<Vec<EndpointId>> {
+        let rows = self
+            .db
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                include_str!("providers.sql"),
+                [
+                    id.into(),
+                    req.origin.to_string().into(),
+                    req.publication.into(),
+                    i64::try_from(req.revision)?.into(),
+                    req.hash.to_string().into(),
+                    i64::try_from(req.file_size)?.into(),
+                    self.explicit_catalog().into(),
+                    MAX_PROVIDERS.into(),
+                    selected.map(|p| p.to_string()).into(),
+                ],
+            ))
+            .await?;
         let mut providers = Vec::with_capacity(rows.len());
         for row in rows {
             let id: String = row.try_get("", "provider")?;
@@ -224,6 +235,11 @@ impl P2pNode {
                     providers.push(id);
                 }
             }
+        }
+        // A recheck is about the already selected supplier, independent of the
+        // shortlist and its cooldown order.
+        if selected.is_some() {
+            return Ok(providers);
         }
         let mut failures = self.ranges.failed.lock().expect("range supplier cooldown");
         failures.retain(|_, at| at.elapsed() < Duration::from_secs(10));
@@ -238,7 +254,7 @@ impl P2pNode {
     }
 
     pub async fn can_retain_version(&self, id: Uuid, req: &WindowRequest) -> Result<bool> {
-        Ok(!self.providers(id, req).await?.is_empty())
+        Ok(!self.providers(id, req, None).await?.is_empty())
     }
 
     pub async fn verified_range(self: &Arc<Self>, id: Uuid, req: WindowRequest) -> Result<Bytes> {
@@ -259,7 +275,7 @@ impl P2pNode {
 
     async fn fetch_from_providers(&self, id: Uuid, req: &WindowRequest) -> Result<Bytes> {
         let track = ReadGuard::track(id);
-        let providers = self.providers(id, req).await?;
+        let providers = self.providers(id, req, None).await?;
         ensure!(!providers.is_empty(), "no authorized range provider");
         let track = &track;
         read_from_sources(providers, |peer| async move {
@@ -300,7 +316,7 @@ impl P2pNode {
                 .admit(peer, req.length as usize)
                 .await?;
         }
-        if !self.providers(id, req).await?.contains(&peer) {
+        if self.providers(id, req, Some(peer)).await?.is_empty() {
             return Ok(SourceRead::Unavailable);
         }
 
@@ -337,7 +353,7 @@ impl P2pNode {
             };
             (window, false)
         };
-        if !self.providers(id, req).await?.contains(&peer) {
+        if self.providers(id, req, Some(peer)).await?.is_empty() {
             return Ok(SourceRead::Unavailable);
         }
         if remote {

@@ -22,3 +22,14 @@ test("a buffered listener, an empty socket and an interrupted listener", () => {
   assert.equal(interrupted.failed_starts, 1);
   assert.equal(interrupted.interruptions, 1);
 });
+
+test("retry delays grow, stay bounded and stagger peers after a shared failure", async () => {
+  const { audioRetryDelayMs } = await import("./load-audio.mjs");
+  for (const listener of [0, 32, 999]) {
+    const first = audioRetryDelayMs(listener, 1);
+    assert.ok(first >= 200 && first <= 250);
+    assert.ok(audioRetryDelayMs(listener, 3) > audioRetryDelayMs(listener, 2));
+    assert.ok(audioRetryDelayMs(listener, 10_000) <= 5000);
+  }
+  assert.notEqual(audioRetryDelayMs(0, 6), audioRetryDelayMs(1, 6));
+});

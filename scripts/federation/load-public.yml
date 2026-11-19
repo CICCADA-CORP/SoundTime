@@ -1,8 +1,13 @@
 # The same roles and Nginx routes as docker/compose.public.yml, on disposable site B.
 services:
+  db-b:
+    shm_size: ${PUBLIC_POSTGRES_SHM_SIZE:-256m}
+    command: [postgres, -c, "max_connections=${PUBLIC_POSTGRES_MAX_CONNECTIONS:-64}", -c, "max_parallel_workers_per_gather=1"]
   backend-b:
     environment:
       SOUNDTIME_ROLE: worker
+      DB_MIN_CONNECTIONS: "2"
+      DB_MAX_CONNECTIONS: ${PUBLIC_WORKER_DB_MAX_CONNECTIONS:-24}
   catalog-http:
     image: soundtime-federation-backend:${COMPOSE_PROJECT_NAME}
     pull_policy: never
@@ -25,7 +30,10 @@ services:
       retries: 90
   proxy-b:
     depends_on: [backend-b, frontend-b, catalog-http]
+    ulimits:
+      nofile: {soft: 8192, hard: 8192}
     volumes:
+      - ../../docker/nginx-public.conf:/etc/nginx/nginx.conf:ro
       - ../../docker/catalog-upstreams.conf:/etc/nginx/conf.d/catalog-upstreams.conf:ro
       - ../../docker/catalog-read.conf:/etc/nginx/soundtime-catalog.d/read.conf:ro
       - ./load-upstreams-log.conf:/etc/nginx/conf.d/load-upstreams-log.conf:ro

@@ -8,6 +8,7 @@ use uuid::Uuid;
 const TRACKS: &str = include_str!("../../src/api/search/tracks.sql");
 const ALBUMS: &str = include_str!("../../src/api/search/albums.sql");
 const ARTISTS: &str = include_str!("../../src/api/search/artists.sql");
+const NAME_MATCHES: &str = include_str!("../../src/api/search/name_matches.sql");
 const EXTENDED: &str = include_str!("../../src/api/search/network_results.sql");
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -134,6 +135,47 @@ pub async fn check(db: &DatabaseConnection) -> Result<()> {
     let needle: Uuid = row.try_get("", "id")?;
     let hash: String = row.try_get("", "hash")?;
     let provider: String = row.try_get("", "provider")?;
+    super::range_providers::check(&tx, needle, &provider, &hash).await?;
+    for (term, albums, artists) in [
+        ("commonfixture:*", false, false),
+        ("amBer:*", false, true),
+        ("cobalt:*", true, false),
+        ("amber:* & cobalt:*", false, false),
+    ] {
+        let names = tx
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                NAME_MATCHES,
+                [term.into()],
+            ))
+            .await?
+            .ok_or("missing search name matches")?;
+        assert_eq!(names.try_get::<bool>("", "albums")?, albums);
+        assert_eq!(names.try_get::<bool>("", "artists")?, artists);
+    }
+    // Record what each empty name lookup would cost on this exact database.
+    // The HTTP path only needs the first plan for a title-only search.
+    for (label, sql) in [
+        ("names", NAME_MATCHES),
+        ("albums", ALBUMS),
+        ("artists", ARTISTS),
+    ] {
+        let explain = format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}");
+        let stmt = if label == "names" {
+            Statement::from_sql_and_values(DbBackend::Postgres, explain, ["commonfixture:*".into()])
+        } else {
+            search_stmt(&explain, "commonfixture:*", 0, true)
+        };
+        let row = tx
+            .query_one(stmt)
+            .await?
+            .ok_or("missing name lookup plan")?;
+        let plan: Value = row.try_get("", "QUERY PLAN")?;
+        println!(
+            "{}",
+            json!({"phase":"search_names_explain","category":label,"term":"commonfixture:*","plan":plan})
+        );
+    }
     for sql in [TRACKS, ALBUMS, ARTISTS] {
         let term = if sql == TRACKS {
             "needleuniquefixture:*"

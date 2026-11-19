@@ -145,6 +145,26 @@ async fn private_access(
     next: Next,
     media: bool,
 ) -> Response {
+    let claims = request
+        .headers()
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(|token| validate_token(token, &state.jwt_secret).ok())
+        .filter(|claims| claims.token_type == TokenType::Access);
+
+    let authenticated = if let Some(claims) = claims {
+        request.extensions_mut().insert(AuthUser(claims));
+        // An access token admits the same metadata request in both visibility modes.
+        // Media still needs the setting to apply its private response headers.
+        if !media {
+            return next.run(request).await;
+        }
+        true
+    } else {
+        false
+    };
+
     let setting = soundtime_db::entities::instance_setting::Entity::find()
         .filter(soundtime_db::entities::instance_setting::Column::Key.eq("instance_private"))
         .one(&state.db)
@@ -159,17 +179,8 @@ async fn private_access(
                 .into_response()
         }
     };
-    let claims = request
-        .headers()
-        .get("authorization")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .and_then(|token| validate_token(token, &state.jwt_secret).ok())
-        .filter(|claims| claims.token_type == TokenType::Access);
-
-    if let Some(claims) = claims {
-        request.extensions_mut().insert(AuthUser(claims));
-    } else if is_private
+    if is_private
+        && !authenticated
         && !(media && super::media::authorized(request.headers(), &state.jwt_secret))
     {
         return (
@@ -233,6 +244,39 @@ mod tests {
             .route("/admin", get(ok_handler))
             .layer(axum_mw::from_fn_with_state(state.clone(), require_admin))
             .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn authenticated_metadata_needs_no_visibility_query() {
+        let state = test_state(); // no database connection
+        let uid = uuid::Uuid::new_v4();
+        let pair = generate_token_pair(uid, "listener", "user", &state.jwt_secret).unwrap();
+        let app = Router::new()
+            .route(
+                "/metadata",
+                get(
+                    move |axum::Extension(user): axum::Extension<AuthUser>| async move {
+                        assert_eq!(user.0.sub, uid);
+                        StatusCode::OK
+                    },
+                ),
+            )
+            .layer(axum_mw::from_fn_with_state(
+                state.clone(),
+                require_auth_if_private,
+            ))
+            .with_state(state);
+        for (token, expected) in [
+            (pair.access_token, StatusCode::OK),
+            (pair.refresh_token, StatusCode::SERVICE_UNAVAILABLE),
+        ] {
+            let req = HttpRequest::builder()
+                .uri("/metadata")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(app.clone().oneshot(req).await.unwrap().status(), expected);
+        }
     }
 
     #[tokio::test]

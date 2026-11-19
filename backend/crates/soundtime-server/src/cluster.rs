@@ -1,9 +1,17 @@
 //! Split PostgreSQL catalogue reads from the single owner of an instance identity.
 use axum::{middleware, routing::get, Router};
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
+use sea_orm::{
+    ConnAcquireErr, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, RuntimeErr, Statement,
+};
 use soundtime_db::{AppState, DatabaseConfig};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use uuid::Uuid;
+
+mod lease;
+use lease::LeaseSchedule;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -41,7 +49,8 @@ pub async fn has_lease(db: &DatabaseConnection) -> bool {
 /// Standbys acquire a new generation before opening the identity or touching its cache.
 pub async fn claim(db: DatabaseConnection, config: &DatabaseConfig) -> DatabaseConnection {
     let holder = Uuid::new_v4();
-    let generation = loop {
+    let (generation, mut lease) = loop {
+        let sent = Instant::now();
         let row = db
             .query_one(Statement::from_sql_and_values(
                 DbBackend::Postgres,
@@ -55,33 +64,117 @@ pub async fn claim(db: DatabaseConnection, config: &DatabaseConfig) -> DatabaseC
             .try_get::<Option<i64>>("", "generation")
             .expect("invalid generation")
         {
-            break generation;
+            break (generation, LeaseSchedule::confirmed(sent));
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     };
-    let active = soundtime_db::connect_named(config, Some(format!("st/{generation}/{holder}")))
-        .await
-        .expect("open fenced worker pool");
+    // A slow claim or pool handshake has already spent part of the first lease.
+    if Instant::now() >= lease.stop_at {
+        stop_owner(
+            holder,
+            generation,
+            "initial lease confirmation arrived after its safety deadline",
+        );
+    }
+    let connect = soundtime_db::connect_named(config, Some(format!("st/{generation}/{holder}")));
+    let active = match tokio::time::timeout_at(lease.stop_at.into(), connect).await {
+        Ok(Ok(pool)) if Instant::now() < lease.stop_at => pool,
+        Ok(Err(error)) => stop_owner(holder, generation, error),
+        _ => stop_owner(
+            holder,
+            generation,
+            "initial lease elapsed before worker pool was ready",
+        ),
+    };
     // Keep a dedicated pool for renewals, independent of listener load. A stuck
     // or replaced owner stops before the lease can be granted to another process.
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            tokio::time::sleep_until(lease.next_attempt.into()).await;
+            let sent = Instant::now();
+            let Some(until) = lease.attempt_deadline(sent) else {
+                stop_owner(
+                    holder,
+                    generation,
+                    "last confirmed lease reached its safety deadline",
+                );
+            };
             let renew = db.execute(Statement::from_sql_and_values(DbBackend::Postgres,
                 "UPDATE federation_worker_lease SET expires_at=clock_timestamp()+interval '15 seconds'
                  WHERE singleton AND holder=$1 AND generation=$2 AND expires_at>clock_timestamp()",
                 [holder.into(), generation.into()]));
-            match tokio::time::timeout(Duration::from_secs(5), renew).await {
-                Ok(Ok(update)) if update.rows_affected() == 1 => {}
-                _ => {
-                    tracing::error!(%holder, generation, "lost federation owner lease");
-                    std::process::exit(75);
+            match tokio::time::timeout_at(until.into(), renew).await {
+                Ok(Ok(update)) => {
+                    if let Err(reason) =
+                        lease.acknowledge(update.rows_affected(), sent, Instant::now())
+                    {
+                        stop_owner(holder, generation, reason);
+                    }
                 }
+                Ok(Err(error)) if transient_renewal(&error) => {
+                    tracing::warn!(%holder, generation, %error, "retrying federation lease renewal");
+                    lease.retry(Instant::now());
+                }
+                Ok(Err(error)) => stop_owner(holder, generation, error),
+                Err(_) => {
+                    tracing::warn!(%holder, generation, "federation lease renewal timed out");
+                    lease.retry(Instant::now());
+                }
+            }
+            if Instant::now() >= lease.stop_at {
+                stop_owner(
+                    holder,
+                    generation,
+                    "last confirmed lease reached its safety deadline",
+                );
             }
         }
     });
     tracing::info!(%holder, generation, "acquired federation owner lease");
     active
+}
+
+fn transient_renewal(error: &DbErr) -> bool {
+    use sea_orm::sqlx::Error;
+    let runtime = match error {
+        DbErr::ConnectionAcquire(ConnAcquireErr::Timeout) => return true,
+        DbErr::Conn(e) | DbErr::Exec(e) | DbErr::Query(e) => e,
+        _ => return false,
+    };
+    match runtime {
+        RuntimeErr::SqlxError(Error::Io(_) | Error::PoolTimedOut) => true,
+        RuntimeErr::SqlxError(Error::Database(db)) => db.code().is_some_and(|code| {
+            code.starts_with("08") || matches!(code.as_ref(), "53300" | "55P03" | "57014" | "57P03")
+        }),
+        _ => false,
+    }
+}
+
+fn stop_owner(holder: Uuid, generation: i64, reason: impl std::fmt::Display) -> ! {
+    tracing::error!(%holder, generation, %reason, "lost federation owner lease");
+    std::process::exit(75)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_transient_database_failures_are_retried() {
+        let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        assert!(transient_renewal(&DbErr::Exec(RuntimeErr::SqlxError(
+            sea_orm::sqlx::Error::Io(reset),
+        ))));
+        assert!(transient_renewal(&DbErr::ConnectionAcquire(
+            ConnAcquireErr::Timeout
+        )));
+        assert!(!transient_renewal(&DbErr::ConnectionAcquire(
+            ConnAcquireErr::ConnectionClosed
+        )));
+        assert!(!transient_renewal(&DbErr::Exec(RuntimeErr::Internal(
+            "invalid renewal SQL".into()
+        ))));
+    }
 }
 
 pub async fn serve_catalogue(db: DatabaseConnection, domain: String, jwt_secret: String) {

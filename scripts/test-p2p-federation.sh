@@ -5,6 +5,7 @@ export PYTHONDONTWRITEBYTECODE=1
 usage() {
     echo "Usage: scripts/test-p2p-federation.sh baseline|compatibility|historical|acceptance|shaped|relay|retention|cluster|load-smoke|load-full|rust-tests"
     echo "Set FEDERATION_BROWSER=container to run Chromium inside this disposable project."
+    echo "Load profiles use the same location for the HTTP generator; override with SOUNDTIME_LOAD_GENERATOR=native or container."
     echo "Set FEDERATION_ARTIFACT_DIR to choose where each run stores its report and logs."
 }
 
@@ -40,7 +41,8 @@ if [[ $mode == retention ]]; then
     export FEDERATION_CACHE_SIZE=256MB FEDERATION_RETAIN_B=true
 fi
 if [[ $mode == load-* ]]; then
-    # Check local generator capacity before building or starting the disposable project.
+    export SOUNDTIME_LOAD_GENERATOR=${SOUNDTIME_LOAD_GENERATOR:-$FEDERATION_BROWSER}
+    # Check generator mode and native limits before building or starting the disposable project.
     python3 "$(dirname "$0")/federation/load.py" --preflight "$mode"
     if [[ ${SOUNDTIME_LOAD_CACHE:-cold} == warm ]]; then
         export FEDERATION_CACHE_SIZE=1GB FEDERATION_RETAIN_B=true
@@ -57,7 +59,7 @@ project="st-fed-$(python3 -c 'import secrets; print(secrets.token_hex(8))')"
 export FEDERATION_SECRET
 FEDERATION_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 compose=(docker compose --env-file /dev/null --project-name "$project" --file "$root/scripts/federation/compose.yml")
-if [[ $FEDERATION_BROWSER == container ]]; then
+if [[ $FEDERATION_BROWSER == container || ( $mode == load-* && ${SOUNDTIME_LOAD_GENERATOR:-} == container ) ]]; then
     compose+=(--file "$root/scripts/federation/browser.yml")
 fi
 scale=()
@@ -105,7 +107,7 @@ finish() {
     if [[ $resources_started == true ]]; then
         "${compose[@]}" ps -a > "$run_dir/containers.txt"
         "${compose[@]}" logs --no-color 2>&1 | redact_audio_tokens > "$run_dir/containers.log"
-        "${compose[@]}" --profile migration down --volumes --timeout 10 > "$run_dir/cleanup.log" 2>&1 || status=1
+        "${compose[@]}" --profile migration --profile measurement down --volumes --timeout 10 > "$run_dir/cleanup.log" 2>&1 || status=1
     fi
     if [[ $images_started == true ]]; then
         for image in "soundtime-federation-backend:$project" "soundtime-federation-frontend:$project" "soundtime-federation-migration:$project" "soundtime-federation-relay:$project" "soundtime-federation-link-tools:$project" "soundtime-federation-browser:$project" "soundtime-federation-rust-tests:$project" "soundtime-federation-historical:$project"; do
@@ -148,7 +150,7 @@ build_services=(backend-a frontend-a migration-fixture)
 if [[ $mode == rust-tests ]]; then build_services=(migration-fixture rust-tests); fi
 if [[ $mode == relay ]]; then build_services+=(relay); fi
 if [[ $mode == shaped ]]; then build_services+=(link-tools); fi
-if [[ $FEDERATION_BROWSER == container ]]; then
+if [[ $FEDERATION_BROWSER == container || ( $mode == load-* && ${SOUNDTIME_LOAD_GENERATOR:-} == container ) ]]; then
     case "$mode" in
         baseline|acceptance|relay|load-*|shaped) build_services+=(browser) ;;
     esac
@@ -160,6 +162,12 @@ done
 stage=startup
 resources_started=true
 export SOUNDTIME_TEST_COMPOSE_PROJECT="$project"
+if [[ $mode == load-* && ${SOUNDTIME_LOAD_GENERATOR:-} == container ]]; then
+    stage=generator-preflight
+    "${compose[@]}" up -d --no-build --no-deps load-generator
+    "${compose[@]}" exec -T load-generator node /opt/soundtime-browser/load-client.mjs --preflight "$mode" > "$run_dir/generator-preflight.json"
+    stage=startup
+fi
 if [[ $mode == load-full ]]; then
     stage=public-index
     "${compose[@]}" up --detach --no-build --wait --wait-timeout 180 --scale catalog-http=2 catalog-http

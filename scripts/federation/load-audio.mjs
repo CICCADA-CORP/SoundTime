@@ -34,3 +34,10 @@ export class AudioDelivery {
     }));
   }
 }
+
+// Desynchronise listeners during a shared outage. A successful verified body chunk resets the streak.
+export function audioRetryDelayMs(listener, failures) {
+  const base = Math.min(5000, 250 * 2 ** Math.min(5, failures - 1));
+  const jitter = (37 * listener + 71 * failures) % 101;
+  return Math.round(base * (0.80 + jitter / 500));
+}

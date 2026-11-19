@@ -17,7 +17,10 @@ import time
 from urllib.parse import urlsplit
 from urllib.error import HTTPError
 import load_capacity
+import load_driver
 import load_public
+import load_providers
+import load_search
 
 from scenario import (BrowserSession, Instance, ScenarioError, counters, difference, fetch_range,
                       require, wait_for, wav_fixture)
@@ -32,6 +35,12 @@ def preflight(mode):
     require(os.getenv("SOUNDTIME_LOAD_FAULT", "none") in ("none", "origin-c"), "Unknown fault profile")
     requested_host = os.getenv("SOUNDTIME_LOAD_HOST")
     require(not requested_host or requested_host == platform.node(), "This is not the selected load host")
+    selected = load_driver.location()
+    host = {"os": platform.system(), "release": platform.release(), "architecture": platform.machine(),
+            "cpus": os.cpu_count(), "generator_location": selected}
+    if selected == "container":
+        # The launcher checks the actual Linux limits in the built generator image.
+        return host
     version = subprocess.check_output(["node", "--version"], text=True).strip()
     require(int(version.lstrip("v").split(".")[0]) >= 22, "Node 22+ is required")
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -40,14 +49,14 @@ def preflight(mode):
             f"The generator needs a per-process open-file limit of at least {wanted}")
     if soft != resource.RLIM_INFINITY and soft < wanted:
         resource.setrlimit(resource.RLIMIT_NOFILE, (wanted, hard))
-    return {"node": version, "os": platform.system(), "release": platform.release(),
-            "architecture": platform.machine(), "cpus": os.cpu_count(),
-            "open_file_limit": resource.getrlimit(resource.RLIMIT_NOFILE)[0]}
+    return {**host, "node": version, "open_file_limit": resource.getrlimit(resource.RLIMIT_NOFILE)[0]}
 
 
 def compose(project, *args, data=None, timeout=120):
     cmd = ["docker", "compose", "--env-file", "/dev/null", "--project-name", project,
            "--file", str(HERE / "compose.yml")]
+    if load_driver.location() == "container":
+        cmd += ["--file", str(HERE / "browser.yml")]
     if os.environ.get("SOUNDTIME_TEST_PUBLIC_LOAD") == "1":
         cmd += ["--file",str(HERE / "load-public.yml")]
     cmd.extend(args)
@@ -213,6 +222,8 @@ def run(args, report):
         report["seed"] = prepared["seed"]
     report["journal_preparation"] = {}
     load_public.wait_for_journals(compose, project, report["journal_preparation"], 900 if full else 120)
+    report["search_index_preparation"] = {}
+    load_search.wait_for_index(compose, project, report["search_index_preparation"], 900 if full else 120)
     for node in nodes:
         refreshed = node.call("/auth/refresh", method="POST", token="",
                               body={"refresh_token": node.refresh_token})
@@ -239,6 +250,9 @@ def run(args, report):
                                "indexed_tracks": virtual * titles}, "Incomplete synthetic index")
     wait_for("metadata searchable after FTS reconciliation",
              lambda: b.call("/search?q=Quartz0001&include_p2p=false")["tracks"], timeout=120)
+    if full:
+        report["local_search_plans"] = load_search.explain(compose, project, args.report)
+    report["range_provider_resolution"] = load_providers.explain(compose, project, media[0]["id"], args.report)
     cache = report["cache_before"] = b.call("/admin/storage/status")["cache"]
     if warm:
         require(cache["evictable_bytes"] >= sum(row["size"] for row in media), "Prewarming did not admit the audio")
@@ -251,7 +265,8 @@ def run(args, report):
     pid = b.playlist(accounts[0], "Load witness", [witness])
     report["profile"]["distinct_listener_accounts"] = len(accounts)
     report["physical_bytes_before"] = physical_storage(project)
-    ids, readers = load_public.containers(compose, project, ROLES, full)
+    roles = ROLES + (["load-generator"] if host["generator_location"] == "container" else [])
+    ids, readers = load_public.containers(compose, project, roles, full)
     report["nginx_and_connections"] = load_public.nginx_settings(compose, project)
     if full:
         require(report["nginx_and_connections"]["catalogue_least_conn_enabled"],"Public read tier missing from Nginx")
@@ -279,56 +294,46 @@ def run(args, report):
             stop.set()
             thread.join(60)
         stack.callback(finish_telemetry)
-        with subprocess.Popen(["node", str(HERE / "load-client.mjs")], stdin=subprocess.PIPE,
-                              stdout=subprocess.PIPE, text=True) as generator:
-            try:
-                generator.stdin.write(json.dumps({"base": b.url, "tokens": [a[1] for a in accounts],
-                    "profile": args.mode, "virtual_catalogues": virtual, "media": media}) + "\n")
-                generator.stdin.close()
-                row = generator.stdout.readline()
-                announced = json.loads(row) if row else {}
-                require(announced.get("phase") == "steady", "Generator failed during ramp")
-                # Both drivers run on the host. A delayed ramp notification must
-                # not admit browser samples after the generator has stopped.
-                seconds = 90 if full else 15
-                remaining = min(seconds, max(0, announced["end_unix_ms"] / 1000 - time.time()))
-                deadline = time.monotonic() + remaining
-                steady = deadline - seconds
-                with ThreadPoolExecutor(max_workers=3) as executor:
-                    sound = executor.submit(observe_sound, sound_browser, deadline, report) if full else None
-                    mutation = executor.submit(churn, a, b, 10 if full else 2)
-                    failure = executor.submit(pause_source, project, steady, full) if fault else None
-                    while time.monotonic() + 3 < deadline and generator.poll() is None:
-                        try:
-                            obs = browser.phase("measure")
-                            if time.monotonic() <= deadline:
-                                browsers.append({"unix_s": time.time(), "search_to_screen_ms": obs["search_to_screen_ms"],
-                                                 "first_media_progress_ms": obs["first_progress_ms"],
-                                                 "seek_progress": obs["after_seek_seconds"]})
-                        except Exception as exc:
-                            report["browser_error"] = str(exc)
-                            break
-                    row = generator.stdout.readline()
-                    require(row, "Missing generator result")
-                    result = report["generator_result"] = json.loads(row)
-                    require(generator.wait(timeout=15) == 0 and result["phase"] == "complete", "Generator failed")
+        cfg = {"base": b.url, "tokens": [account[1] for account in accounts], "profile": args.mode,
+               "virtual_catalogues": virtual, "media": media}
+        with load_driver.launch(project, host["generator_location"], cfg, report,
+                                args.report.with_name("generator-progress.jsonl")) as (generator, records):
+            announced, received = records.wait("steady", timeout=80 if full else 50)
+            seconds = 90 if full else 15
+            # The container and the orchestrator can have different wall clocks.
+            # Anchor the remaining plateau on receipt of the generator's frame.
+            deadline = received + min(seconds, max(0, announced["remaining_ms"] / 1000))
+            steady = deadline - seconds
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                sound = executor.submit(observe_sound, sound_browser, deadline, report) if full else None
+                mutation = executor.submit(churn, a, b, 10 if full else 2)
+                failure = executor.submit(pause_source, project, steady, full) if fault else None
+                while time.monotonic() + 3 < deadline and generator.poll() is None:
                     try:
-                        report["live_catalogue_change"] = mutation.result(timeout=120)
+                        obs = browser.phase("measure")
+                        if time.monotonic() <= deadline:
+                            browsers.append({"unix_s": time.time(), "search_to_screen_ms": obs["search_to_screen_ms"],
+                                             "first_media_progress_ms": obs["first_progress_ms"],
+                                             "seek_progress": obs["after_seek_seconds"]})
                     except Exception as exc:
-                        report["live_catalogue_change_error"] = str(exc)
-                    if sound:
-                        try:
-                            sound.result(timeout=125)
-                        except Exception as exc:
-                            report["sound_browser_error"] = str(exc)
-                    if failure:
-                        try:
-                            report["fault"] = failure.result(timeout=60)
-                        except Exception as exc:
-                            report["fault_error"] = str(exc)
-            except BaseException:
-                generator.kill()
-                raise
+                        report["browser_error"] = str(exc)
+                        break
+                records.wait("complete", timeout=max(5, deadline+30-time.monotonic()))
+                require(generator.wait(timeout=15) == 0, "Generator failed after writing its result")
+                try:
+                    report["live_catalogue_change"] = mutation.result(timeout=120)
+                except Exception as exc:
+                    report["live_catalogue_change_error"] = str(exc)
+                if sound:
+                    try:
+                        sound.result(timeout=125)
+                    except Exception as exc:
+                        report["sound_browser_error"] = str(exc)
+                if failure:
+                    try:
+                        report["fault"] = failure.result(timeout=60)
+                    except Exception as exc:
+                        report["fault_error"] = str(exc)
     # A saturated worker can fail ancillary requests. Retain the independent
     # generator and browser observations and identify missing server evidence.
     for field, probe in (

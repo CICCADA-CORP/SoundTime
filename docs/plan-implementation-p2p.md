@@ -99,6 +99,12 @@ Sur cette révision, le petit profil a servi six lecteurs et trois recherches pa
 
 Sur `74121e1`, C avait déjà reçu les premiers 64 Kio lorsque le banc a arrêté A pendant la lecture. C a reçu et vérifié les **4 194 348 octets sur la même réponse HTTP**. Le miroir B en a fourni 2 490 412. Le retrait ultérieur a bloqué les deux copies après 0,28 s sur B et 3,65 s sur C, où A restait bannie. La publication indépendante restait lisible. Dans le scénario multi-serveurs, la reprise de l’identité après arrêt brutal a pris 13,9 s. L’abonnement répondait HTTP 202 pendant la préparation du catalogue et l’index s’est mis à jour automatiquement une fois le pair prêt. Une autre recette de cette révision a reproduit un délai dépassé lors de la reconnexion du catalogue après redémarrage de son origine.
 
+Pour le premier essai public complet de `74121e1`, l’index a chargé les 298 000 lignes des 298 catalogues synthétiques en 67,5 secondes, aux côtés de deux origines audio réelles. Pendant la montée des 1 000 connexions, PostgreSQL a refusé des connexions et manqué de mémoire partagée. La redirection de ports macOS vers la VM a ensuite cessé de répondre. Le générateur a programmé 9 000 recherches en 90 secondes et en a terminé zéro avec succès. Cet essai ne fournit aucune mesure valide du délai d’affichage ni du premier son sous la charge publique. Le rapport du banc distingue désormais les objectifs demandés, les services effectivement rendus et les observations navigateur.
+
+La recette de `6c30fbe` a réussi ses 14 contrôles. Un utilisateur ordinaire a publié un titre. Un tiers a reçu HTTP 403 en tentant de le retirer. La suppression du compte créateur a abouti en HTTP 204. Dans les deux playlists, les mêmes entrées sont restées à leurs positions après redémarrage de l’origine et de l’abonné, avec la même révision retirée. Lors du parcours audio, Chromium a progressé après 336 ms et le saut à huit secondes a réussi.
+
+Sur 3 000 pistes, la résolution ciblée des fournisseurs de plages a rendu le même fournisseur que la vue générale, avec 32 nœuds de plan contre 110 et 33 blocs partagés consultés à chaud contre 67. Les durées des trois essais alternés se recouvrent. La validation du profil public repose sur les mesures de bout en bout du jeu à 298 000 pistes.
+
 **Commandes déjà disponibles**, depuis `backend/`, pour vérifier le socle et cibler les composants modifiés. La dernière nécessite `TEST_DATABASE_URL` pointant vers une base de test.
 
 ```sh

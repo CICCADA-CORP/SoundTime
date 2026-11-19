@@ -1,7 +1,7 @@
 """Exercise three fresh SoundTime instances through their public and admin HTTP APIs."""
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from datetime import datetime, timezone
 import hashlib
 import io
@@ -358,32 +358,62 @@ class BrowserSession:
         self.errors = stack.enter_context(tempfile.TemporaryFile(mode="w+", dir=os.getenv("FEDERATION_ARTIFACT_DIR")))
         self.proc = subprocess.Popen(
             browser_command(node, playlists[0], track, title),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.errors, text=True,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.errors, text=True, bufsize=0,
         )
-        stack.callback(self.close)
+        stack.push(self._exit)
 
     def phase(self, name):
-        self.proc.stdin.write(json.dumps({"phase": name, "listeners": self.listeners}) + "\n")
-        self.proc.stdin.flush()
+        require(self.proc is not None, f"Browser session already closed during {name}")
+        try:
+            self.proc.stdin.write(json.dumps({"phase": name, "listeners": self.listeners}) + "\n")
+            self.proc.stdin.flush()
+        except BrokenPipeError as error:
+            raise self.failure(name, "input pipe closed") from error
         if not select.select([self.proc.stdout], [], [], 120)[0]:
             raise ScenarioError(f"Browser timed out during {name}")
         line = self.proc.stdout.readline()
         if not line:
-            self.errors.seek(0)
-            raise ScenarioError(f"Browser {name} failed: {self.errors.read()[-2000:]}")
+            raise self.failure(name, "output pipe closed")
         result = json.loads(line)
         require(isinstance(result, dict) and result, f"Empty browser measurement during {name}")
         return result
 
-    def close(self):
-        self.proc.stdin.close()
+    def failure(self, name, reason):
+        fd = self.errors.fileno()
+        offset = max(0, os.fstat(fd).st_size - 2000)
+        detail = os.pread(fd, 2000, offset).decode(errors="replace").strip()
+        return ScenarioError(f"Browser {name} failed ({reason})" + (f": {detail}" if detail else ""))
+
+    def _exit(self, _type, original, _traceback):
         try:
-            self.proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self.proc.terminate()
-            self.proc.wait(timeout=5)
+            self.close()
+        except (OSError, subprocess.SubprocessError) as error:
+            if original is None:
+                raise
+            if hasattr(original, "add_note"):
+                original.add_note(f"Browser cleanup also failed: {error}")
+
+    def close(self):
+        proc, self.proc = self.proc, None
+        if proc is None:
+            return
+        try:
+            with suppress(OSError):
+                proc.stdin.close()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                with suppress(ProcessLookupError):
+                    proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    with suppress(ProcessLookupError):
+                        proc.kill()
+                    proc.wait(timeout=2)
         finally:
-            self.proc.stdout.close()
+            with suppress(OSError):
+                proc.stdout.close()
 
 
 def switch_backend(name, running):

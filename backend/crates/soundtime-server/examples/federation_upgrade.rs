@@ -10,6 +10,8 @@ use std::fs;
 
 #[path = "federation_upgrade/projections.rs"]
 mod projections;
+#[path = "federation_upgrade/range_providers.rs"]
+mod range_providers;
 #[path = "federation_upgrade/search.rs"]
 mod search;
 

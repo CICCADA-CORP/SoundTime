@@ -1,8 +1,13 @@
 # Apply with docker-compose.yml when running a SoundTime image with catalogue workers.
 services:
+  postgres:
+    shm_size: ${PUBLIC_POSTGRES_SHM_SIZE:-256m}
+    command: [postgres, -c, "max_connections=${PUBLIC_POSTGRES_MAX_CONNECTIONS:-64}", -c, "max_parallel_workers_per_gather=1"]
   backend:
     environment:
       SOUNDTIME_ROLE: worker
+      DB_MIN_CONNECTIONS: 2
+      DB_MAX_CONNECTIONS: ${PUBLIC_WORKER_DB_MAX_CONNECTIONS:-24}
   catalog-http:
     image: ghcr.io/ciccada-corp/soundtime-backend:latest
     restart: unless-stopped
@@ -18,7 +23,10 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
   nginx:
+    ulimits:
+      nofile: {soft: 8192, hard: 8192}
     volumes:
+      - ./docker/nginx-public.conf:/etc/nginx/nginx.conf:ro
       - ./docker/catalog-upstreams.conf:/etc/nginx/conf.d/catalog-upstreams.conf:ro
       - ./docker/catalog-read.conf:/etc/nginx/soundtime-catalog.d/read.conf:ro
     depends_on:

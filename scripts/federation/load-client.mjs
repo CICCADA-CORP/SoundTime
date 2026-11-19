@@ -1,25 +1,53 @@
 // Internal driver. All inputs and regular-listener credentials arrive on a private stdin pipe.
 import { execFileSync } from "node:child_process";
 import { setMaxListeners } from "node:events";
+import { readFileSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import http from "node:http";
-import { AudioDelivery } from "./load-audio.mjs";
+import { AudioDelivery, audioRetryDelayMs } from "./load-audio.mjs";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-const [line] = await Array.fromAsync(createInterface({ input: process.stdin }));
-const cfg = JSON.parse(line);
+const ingress = process.env.SOUNDTIME_LOAD_INGRESS === "true";
 const project = process.env.SOUNDTIME_TEST_COMPOSE_PROJECT || "";
-if (!/^st-fed-[0-9a-f]{16}$/.test(project) || !["load-smoke", "load-full"].includes(cfg.profile))
-  throw Error("An explicit profile and disposable project are required");
-const composeFile = fileURLToPath(new URL("./compose.yml", import.meta.url));
-const dockerPort = execFileSync("docker", [
-  "compose", "--env-file", "/dev/null", "-p", project, "-f", composeFile, "port", "proxy-b", "80",
-], { encoding: "utf8", timeout: 10000 }).trim();
-if (!/^127\.0\.0\.1:\d+$/.test(dockerPort) || cfg.base !== "http://" + dockerPort || !cfg.tokens?.length)
-  throw Error("Load clients require the current project's local proxy and listener credentials");
-
+if (!/^st-fed-[0-9a-f]{16}$/.test(project)) throw Error("A disposable project is required");
+function runtime(profile) {
+  if (!["load-smoke", "load-full"].includes(profile) || Number(process.versions.node.split(".")[0]) < 22)
+    throw Error("A load profile and Node 22+ are required");
+  const info = { location: ingress ? "container" : "native", node: process.version,
+    platform: process.platform, arch: process.arch, cpus: availableParallelism() };
+  if (ingress) {
+    if (process.platform !== "linux" || process.getuid() === 0) throw Error("Expected unprivileged Linux generator");
+    const limits = readFileSync("/proc/self/limits", "utf8").match(/^Max open files\s+(\d+|unlimited)\s+/m);
+    const minimum = profile === "load-full" ? 2048 : 128;
+    if (!limits || (limits[1] !== "unlimited" && Number(limits[1]) < minimum))
+      throw Error("Insufficient file descriptor limit inside the load generator");
+    info.open_file_limit = limits[1] === "unlimited" ? "unlimited" : Number(limits[1]);
+  }
+  return info;
+}
+if (process.argv[2] === "--preflight") {
+  console.log(JSON.stringify(runtime(process.argv[3])));
+  process.exit(0);
+}
+const [line] = await Array.fromAsync(createInterface({ input: process.stdin }));
+let cfg;
+try { cfg = JSON.parse(line); } catch { throw Error("Invalid generator input"); }
+const environment = runtime(cfg.profile);
+let permittedBase = "http://proxy-b";
+if (!ingress) {
+  const composeFile = fileURLToPath(new URL("./compose.yml", import.meta.url));
+  const port = execFileSync("docker", [
+    "compose", "--env-file", "/dev/null", "-p", project, "-f", composeFile, "port", "proxy-b", "80",
+  ], { encoding: "utf8", timeout: 10000 }).trim();
+  if (!/^127\.0\.0\.1:\d+$/.test(port)) throw Error("Expected a loopback proxy port");
+  permittedBase = "http://" + port;
+}
+if (cfg.base !== permittedBase || !cfg.tokens?.length)
+  throw Error("Load clients require the project's selected proxy and listener credentials");
+console.log(JSON.stringify({ phase: "started", runtime: environment }));
 const full = cfg.profile === "load-full";
 const clients = full ? 1000 : 6;
 const rate = full ? 100 : 3;
@@ -100,11 +128,12 @@ async function session(index) {
   // Half request one popular publication. Others round-robin across all test originals on A and C.
   const track = cfg.media[group < 2 ? 0 : (Math.floor(index / 4) * 2 + group - 1) % cfg.media.length];
   let offset = group === 0 ? 0 : 65536 * ((index * 37) % Math.floor(track.size / (2 * 65536)));
+  let failures = 0;
   sessions++;
   try {
     while (!controller.signal.aborted) {
       const began = performance.now();
-      let counted = false, delivered = 0, res;
+      let counted = false, delivered = 0, retryMs = 0, res;
       try {
         mediaAttempts++;
         res = await get("/api/tracks/" + track.id + "/stream", index, { Range: "bytes=" + offset + "-" });
@@ -125,6 +154,7 @@ async function session(index) {
             if (position >= 44 && chunk[j] !== ((position - 44) % 256) * track.seed % 127 + 64)
               throw Error("incorrect_audio");
           }
+          if (chunk.length > 0) failures = 0;
           delivered += chunk.length;
           audioDelivery.record(index, now, chunk.length);
           if (now >= steady && now <= end) {
@@ -141,12 +171,14 @@ async function session(index) {
           if (delivered) interruptions++; else failedStarts++;
           audioDelivery.failed(index, delivered > 0);
           countError("media", error);
-          await delay(250);
+          retryMs = audioRetryDelayMs(index, ++failures);
         }
       } finally {
         res?.destroy();
         if (counted) openResponses--;
       }
+      if (retryMs && !controller.signal.aborted)
+        await delay(retryMs, undefined, { signal: controller.signal });
     }
   } finally {
     sessions--;
@@ -183,11 +215,14 @@ const sampling = setInterval(() => {
   samples.push({ ms: Math.round(performance.now() - start), media_sessions: sessions,
     open_media_responses: openResponses, search_inflight: queries, interruptions, errors: { ...errors },
     rss_bytes: process.memoryUsage().rss, useful_media_bytes: bytes });
+  if (samples.length % 5 === 0)
+    console.log(JSON.stringify({ phase: "sample", ...samples.at(-1), search_started: searchStarts,
+      search_completed: searchTimes.length, search_failed: searchErrors, media_failed_starts: failedStarts }));
 }, 1000);
 
 await delay(ramp);
 console.log(JSON.stringify({ phase: "steady", clients, search_per_second: rate, duration_s: duration / 1000,
-  end_unix_ms: performance.timeOrigin + end }));
+  remaining_ms: Math.max(0, end - performance.now()), end_unix_ms: performance.timeOrigin + end }));
 await delay(Math.max(1, end - performance.now()));
 clearInterval(dispatch);
 clearInterval(sampling);
@@ -209,7 +244,7 @@ const load = {
   target_bytes_per_second_per_reader: readRate, open_media_peak: peakOpen,
 };
 const generator = {
-  rss_peak_bytes: Math.max(0, ...samples.map(s => s.rss_bytes)), cpu: process.cpuUsage(startedCpu),
+  runtime: environment, rss_peak_bytes: Math.max(0, ...samples.map(s => s.rss_bytes)), cpu: process.cpuUsage(startedCpu),
   event_loop_utilization: performance.eventLoopUtilization(startedLoop).utilization,
   event_loop_delay_p99_ms: loop.percentile(99) / 1e6, search_dispatch_lag_ms: quantiles(dispatchLag),
 };

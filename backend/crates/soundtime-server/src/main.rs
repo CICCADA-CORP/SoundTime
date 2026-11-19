@@ -82,11 +82,26 @@ async fn main() {
         .init();
 
     // Database connection
+    let role = cluster::Role::configured();
     let db_config = soundtime_db::DatabaseConfig::from_env();
     tracing::info!("connecting to database...");
-    let db = soundtime_db::connect(&db_config)
-        .await
-        .expect("failed to connect to database");
+    let db = match role {
+        cluster::Role::Worker => {
+            // Migration, lease acquisition and subsequent renewals are sequential.
+            // Keep one dedicated session available while the serving pool is busy.
+            let control = soundtime_db::DatabaseConfig {
+                min_connections: 1,
+                max_connections: 1,
+                ..db_config.clone()
+            };
+            soundtime_db::connect_named(&control, Some("soundtime/worker-lease".into())).await
+        }
+        cluster::Role::Catalogue => {
+            soundtime_db::connect_named(&db_config, Some("soundtime/catalog-http".into())).await
+        }
+        cluster::Role::Standalone => soundtime_db::connect(&db_config).await,
+    }
+    .expect("failed to connect to database");
 
     // Run migrations
     tracing::info!("running database migrations...");
@@ -105,7 +120,6 @@ async fn main() {
         tracing::warn!("JWT_SECRET is short or uses a documented placeholder");
     }
     let domain = std::env::var("SOUNDTIME_DOMAIN").unwrap_or_else(|_| "localhost:8080".to_string());
-    let role = cluster::Role::configured();
     if role == cluster::Role::Catalogue {
         cluster::serve_catalogue(db, domain, jwt_secret).await;
         return;

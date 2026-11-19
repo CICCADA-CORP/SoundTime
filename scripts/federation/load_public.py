@@ -122,6 +122,30 @@ def nginx_settings(compose, project):
                       '/^Max open files/ {print $4, $5}', *paths).decode().splitlines()
     result["live_worker_nofile_soft_hard"] = sorted(set(rlimits))
     result["postgres_max_connections"] = int(sql(compose, project, "SHOW max_connections"))
+    if os.environ.get("SOUNDTIME_TEST_PUBLIC_LOAD") == "1":
+        def pool(service, replica=1):
+            values = compose(project, "exec", "-T", "--index", str(replica), service, "printenv",
+                             "DB_MIN_CONNECTIONS", "DB_MAX_CONNECTIONS").decode().splitlines()
+            minimum, maximum = map(int, values)
+            return {"minimum": minimum, "maximum": maximum}
+
+        worker = pool("backend-b")
+        readers = [pool("catalog-http", replica) for replica in (1, 2)]
+        limits = json.loads(sql(compose, project, """SELECT json_build_object(
+            'reserved_slots',current_setting('superuser_reserved_connections')::int +
+                current_setting('reserved_connections')::int,
+            'parallel_workers_per_gather',current_setting('max_parallel_workers_per_gather')::int,
+            'lease_sessions',(SELECT count(*) FROM pg_stat_activity
+                              WHERE datname=current_database() AND application_name='soundtime/worker-lease'))"""))
+        require(limits["lease_sessions"] == 1, "Worker needs its own live lease session")
+        client_limit = 1 + worker["maximum"] + sum(reader["maximum"] for reader in readers)
+        remaining = result["postgres_max_connections"] - limits["reserved_slots"] - client_limit
+        require(remaining >= 1, "The configured pools exhaust PostgreSQL before probes and maintenance")
+        shm = compose(project, "exec", "-T", "db-b", "df", "-Pk", "/dev/shm").decode().splitlines()[-1].split()
+        require(shm[-1] == "/dev/shm", "PostgreSQL shared memory mount is missing")
+        result["database_budget"] = {**limits, "worker_serving_pool": worker, "catalogue_pools": readers,
+                                     "application_pool_ceiling": client_limit, "remaining_unreserved_slots": remaining,
+                                     "shared_memory_mount_bytes": int(shm[1])*1024}
     return result
 
 
@@ -132,12 +156,25 @@ def connections(compose, project, readers):
     result = {"inbound_established": sum(r[1].endswith(":0050") for r in rows),
               "upstream_established": sum(r[2].upper().endswith(":1F90") for r in rows)}
     if readers:
-        db_activity = sql(compose, project,
-            "SELECT host(client_addr)||' '||count(*) FROM pg_stat_activity "
-            "WHERE client_addr IS NOT NULL AND datname=current_database() GROUP BY client_addr")
-        by_address = {ip: int(n) for ip,n in (line.split() for line in db_activity.splitlines())}
-        result["database_sessions_per_reader"] = {
-            role: by_address.get(address.split(":")[0],0) for address,role in readers.items()}
+        try:
+            db_activity = sql(compose, project, """SELECT json_build_array(ip,role,count(*))
+                FROM (SELECT host(client_addr) AS ip, CASE
+                    WHEN application_name LIKE 'st/%' THEN 'worker'
+                    WHEN application_name='soundtime/worker-lease' THEN 'lease'
+                    WHEN application_name='soundtime/catalog-http' THEN 'catalogue' ELSE 'other' END AS role
+                    FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend') s
+                GROUP BY ip,role""")
+            by_role, by_address = {}, {}
+            for line in db_activity.splitlines():
+                ip, role, count = json.loads(line)
+                by_role[role] = by_role.get(role, 0) + count
+                if role == "catalogue":
+                    by_address[ip] = count
+            result["database_sessions_by_role"] = by_role
+            result["database_sessions_per_reader"] = {
+                role: by_address.get(address.split(":")[0], 0) for address, role in readers.items()}
+        except subprocess.SubprocessError as error:
+            result["database_sampling_error"] = str(error)
     return result
 
 

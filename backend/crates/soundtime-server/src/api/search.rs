@@ -39,6 +39,12 @@ pub struct SearchResults {
     pub p2p_results: Option<Vec<RemoteSearchHit>>,
 }
 
+#[derive(FromQueryResult)]
+struct NameMatches {
+    albums: bool,
+    artists: bool,
+}
+
 /// Helper: build a tsquery string from user input.
 /// Splits on whitespace, wraps each word with `:*` for prefix matching,
 /// and joins with `&` for AND semantics.
@@ -239,8 +245,6 @@ pub async fn search(
         )
     };
 
-    // Each category is one bounded query; artist/album display names are read
-    // in the same statement as eligibility, ordering, and track metadata.
     for row in state
         .db
         .query_all(statement(include_str!("search/tracks.sql")))
@@ -249,28 +253,44 @@ pub async fn search(
     {
         result.tracks.push(track_hit(&row)?);
     }
-    for row in state
-        .db
-        .query_all(statement(include_str!("search/albums.sql")))
-        .await
-        .map_err(database_error)?
-    {
-        let model = album::Model::from_query_result(&row, "").map_err(database_error)?;
-        let name = row
-            .try_get("", "result_artist_name")
-            .map_err(database_error)?;
-        result
-            .albums
-            .push(super::albums::AlbumResponse::from_model(model, name));
+    // Avoid planning the availability joins for categories with no matching names.
+    // Every candidate still goes through the full availability query below.
+    let names = NameMatches::find_by_statement(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        include_str!("search/name_matches.sql"),
+        [terms.as_str().into()],
+    ))
+    .one(&state.db)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| database_error(DbErr::Custom("missing search name matches".into())))?;
+    if names.albums {
+        for row in state
+            .db
+            .query_all(statement(include_str!("search/albums.sql")))
+            .await
+            .map_err(database_error)?
+        {
+            let model = album::Model::from_query_result(&row, "").map_err(database_error)?;
+            let name = row
+                .try_get("", "result_artist_name")
+                .map_err(database_error)?;
+            result
+                .albums
+                .push(super::albums::AlbumResponse::from_model(model, name));
+        }
     }
-    let artists = artist::Model::find_by_statement(statement(include_str!("search/artists.sql")))
-        .all(&state.db)
-        .await
-        .map_err(database_error)?;
-    result.artists = artists
-        .into_iter()
-        .map(super::artists::ArtistResponse::from)
-        .collect();
+    if names.artists {
+        let artists =
+            artist::Model::find_by_statement(statement(include_str!("search/artists.sql")))
+                .all(&state.db)
+                .await
+                .map_err(database_error)?;
+        result.artists = artists
+            .into_iter()
+            .map(super::artists::ArtistResponse::from)
+            .collect();
+    }
     result.total = result.tracks.len() + result.albums.len() + result.artists.len();
     if params.include_p2p.unwrap_or(false) {
         if let Some(node) = node {
