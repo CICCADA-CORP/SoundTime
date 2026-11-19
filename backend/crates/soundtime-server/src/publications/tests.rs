@@ -10,7 +10,7 @@ use sea_orm::{
 };
 use sha2::{Digest, Sha256};
 use soundtime_audio::{
-    storage::{OpenedMedia, StorageError},
+    storage::{AnalysisFile, OpenedMedia, StorageError},
     AudioStorage, StorageBackend,
 };
 use soundtime_db::AppState;
@@ -26,6 +26,8 @@ use std::{
 use tokio::sync::Notify;
 use uuid::Uuid;
 
+mod scan;
+
 const PATH: &str = "shared.wav";
 const ORIGINAL: &[u8] = b"original audio bytes";
 const OTHER: &[u8] = b"replaced audio bytes";
@@ -36,8 +38,22 @@ struct WatchedStorage {
     files: AudioStorage,
     calls: AtomicUsize,
     pause_open: AtomicBool,
+    pause_analysis: AtomicBool,
     opened: Notify,
     resume: Notify,
+}
+
+impl WatchedStorage {
+    fn new(root: &std::path::Path) -> Self {
+        Self {
+            files: AudioStorage::new(root),
+            calls: AtomicUsize::new(0),
+            pause_open: AtomicBool::new(false),
+            pause_analysis: AtomicBool::new(false),
+            opened: Notify::new(),
+            resume: Notify::new(),
+        }
+    }
 }
 
 #[sea_orm_migration::async_trait::async_trait]
@@ -59,6 +75,21 @@ impl StorageBackend for WatchedStorage {
     async fn file_exists(&self, path: &str) -> Result<bool, StorageError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.files.file_exists(path).await
+    }
+
+    async fn prepare_analysis(&self, path: &str) -> Result<AnalysisFile, StorageError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let file = self.files.prepare_analysis(path).await?;
+        if self.pause_analysis.swap(false, Ordering::SeqCst) {
+            self.opened.notify_one();
+            self.resume.notified().await;
+        }
+        Ok(file)
+    }
+
+    async fn hash_file(&self, path: &str) -> Result<String, StorageError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.files.hash_file(path).await
     }
 
     fn full_path(&self, _: &str) -> PathBuf {
@@ -84,8 +115,9 @@ impl StorageBackend for WatchedStorage {
     ) -> Result<String, StorageError> {
         panic!("unexpected cover write")
     }
-    async fn list_files(&self, _: &str) -> Result<Vec<String>, StorageError> {
-        panic!("unexpected source scan")
+    async fn list_files(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.files.list_files(prefix).await
     }
 }
 
@@ -151,13 +183,7 @@ async fn exercise(url: &str) -> Result<()> {
     let db = Database::connect(url).await?;
     Migrator::up(&db, None).await?;
     let dir = tempfile::tempdir()?;
-    let disk = Arc::new(WatchedStorage {
-        files: AudioStorage::new(dir.path()),
-        calls: AtomicUsize::new(0),
-        pause_open: AtomicBool::new(false),
-        opened: Notify::new(),
-        resume: Notify::new(),
-    });
+    let disk = Arc::new(WatchedStorage::new(dir.path()));
     let owner = Uuid::new_v4();
     let artist = Uuid::new_v4();
     let withdrawn = Uuid::new_v4();
@@ -270,9 +296,7 @@ async fn exercise(url: &str) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "requires the disposable PostgreSQL federation fixture and permission to create a database"]
-async fn historical_withdrawal_defers_original_io_and_preserves_shared_files() -> Result<()> {
+async fn with_fixture(test: impl AsyncFnOnce(&str) -> Result<()>) -> Result<()> {
     // The worker claims the next due job globally. A fresh database prevents it
     // from ever touching another test's withdrawals or configured storage.
     let mut url = url::Url::parse(&std::env::var("TEST_DATABASE_URL")?)?;
@@ -282,9 +306,15 @@ async fn historical_withdrawal_defers_original_io_and_preserves_shared_files() -
         .execute_unprepared(&format!("CREATE DATABASE {fixture}"))
         .await?;
     url.set_path(&format!("/{fixture}"));
-    let result = exercise(url.as_str()).await;
+    let result = test(url.as_str()).await;
     admin
         .execute_unprepared(&format!("DROP DATABASE {fixture} WITH (FORCE)"))
         .await?;
     result
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL federation fixture and permission to create a database"]
+async fn historical_withdrawal_defers_original_io_and_preserves_shared_files() -> Result<()> {
+    with_fixture(exercise).await
 }

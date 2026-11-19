@@ -1,5 +1,9 @@
 # Mesurer la charge fédérée
 
+Le worker réserve une place dès l’ouverture d’une lecture HTTP et la libère à la fin du corps ou à la déconnexion du lecteur. Les limites par défaut sont de 128 lectures simultanées, 8 par compte et 32 pour l’ensemble des auditeurs anonymes. Le profil Compose public et son banc utilisent 1 536, 48 et 256, ce qui permet aux 32 comptes du pilote de se partager les 1 000 lecteurs. Les variables du worker sont `SOUNDTIME_MAX_ACTIVE_STREAMS`, `SOUNDTIME_MAX_STREAMS_PER_ACCOUNT` et `SOUNDTIME_MAX_ANONYMOUS_STREAMS`. Pour régler le profil Compose public, employer les mêmes suffixes avec le préfixe `PUBLIC_`. Un accès par jeton et le cookie signé du lecteur partagent le quota du compte. L’instance compte ensemble les anonymes, quelle que soit leur adresse IP. Un compte saturé reçoit HTTP 429. Une capacité globale ou anonyme épuisée renvoie HTTP 503. Les deux réponses indiquent `Retry-After: 1`.
+
+Le rapport `range_provider_resolution` mesure sur B la sélection des sources disponibles pour une publication précise. Il conserve le temps SQL et les blocs PostgreSQL consultés. Le fichier `range-providers-explain.json` contient le plan générique complet exécuté en lecture seule avant le plateau.
+
 Le banc crée trois instances SoundTime isolées. Les origines A et C servent de vrais fichiers via QUIC. B indexe les catalogues et reçoit simultanément des lectures et des recherches sur son URL publique locale, derrière Nginx. Un navigateur Chrome se connecte comme utilisateur, affiche une recherche, lance un MP3 depuis sa playlist et déplace la tête de lecture.
 
 | Profil | Catalogues distants sur B | Audio servi par A et C | Lectures HTTP simultanées visées | Recherches/s visées | Montée, puis observation |

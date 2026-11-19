@@ -678,7 +678,8 @@ async fn sync_file(
     }
     let excluded: bool = tx.query_one(sea_orm::Statement::from_sql_and_values(sea_orm::DbBackend::Postgres,
         "SELECT EXISTS(SELECT FROM tracks t JOIN track_publications p ON p.track_id=t.id WHERE p.state='withdrawn' \
-         AND (t.file_path=$1 OR t.file_hash=$2 OR (t.file_hash IS NULL AND t.content_hash=$3))) AS excluded", [path.into(), hash.as_str().into(), blob_hash.clone().into()]))
+         AND (t.file_path=$1 OR t.file_hash=$2 OR (t.file_hash IS NULL AND t.content_hash=$3)))
+         OR EXISTS(SELECT FROM federation_withdrawn_fingerprints WHERE expected_sha256=$2) AS excluded", [path.into(), hash.as_str().into(), blob_hash.clone().into()]))
         .await.map_err(|e|e.to_string())?.expect("EXISTS returns a row").try_get("", "excluded").map_err(|e|e.to_string())?;
     if excluded {
         return Ok(SyncOutcome::Present);
@@ -997,6 +998,7 @@ mod tests {
         db.execute_unprepared(
             "CREATE TEMP TABLE track_publications(track_id uuid PRIMARY KEY, state text NOT NULL);
             CREATE TEMP TABLE federation_missing_sources(track_id uuid PRIMARY KEY);
+            CREATE TEMP TABLE federation_withdrawn_fingerprints(track_id uuid PRIMARY KEY,expected_sha256 text);
             CREATE TEMP TABLE federation_managed_originals(file_path text PRIMARY KEY,sha256 text NOT NULL)",
         )
         .await

@@ -270,6 +270,11 @@ def run(args, report):
     report["nginx_and_connections"] = load_public.nginx_settings(compose, project)
     if full:
         require(report["nginx_and_connections"]["catalogue_least_conn_enabled"],"Public read tier missing from Nginx")
+        stream_limits = compose(project, "exec", "-T", "backend-b", "printenv",
+                                "SOUNDTIME_MAX_ACTIVE_STREAMS", "SOUNDTIME_MAX_STREAMS_PER_ACCOUNT",
+                                "SOUNDTIME_MAX_ANONYMOUS_STREAMS").decode().splitlines()
+        report["profile"]["http_stream_limits"] = dict(zip(
+            ("instance", "per_account", "anonymous"), map(int, stream_limits), strict=True))
         minimum, maximum = compose(project,"exec","-T","catalog-http","printenv",
                                    "DB_MIN_CONNECTIONS","DB_MAX_CONNECTIONS").decode().splitlines()
         report["nginx_and_connections"]["catalogue_pool_per_reader"] = {"minimum":int(minimum),"maximum":int(maximum)}

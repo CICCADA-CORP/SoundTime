@@ -447,13 +447,22 @@ async fn main() {
         ));
 
     // Only native, read-only media handlers accept the restricted media cookie.
+    let stream_budget = auth::stream_budget::StreamBudget::configured();
     let media_api = Router::new()
-        .route("/tracks/{id}/stream", get(api::audio::stream_track))
-        .route("/media/{*path}", get(api::audio::serve_media))
-        .layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            auth::middleware::require_media_if_private,
-        ));
+        .route(
+            "/tracks/{id}/stream",
+            get(api::audio::stream_track).layer(axum_middleware::from_fn_with_state(
+                (state.clone(), stream_budget),
+                auth::middleware::require_stream_if_private,
+            )),
+        )
+        .route(
+            "/media/{*path}",
+            get(api::audio::serve_media).layer(axum_middleware::from_fn_with_state(
+                state.clone(),
+                auth::middleware::require_media_if_private,
+            )),
+        );
 
     // Always-public routes (setup, auth) — never gated by private mode
     let always_public_api = Router::new()

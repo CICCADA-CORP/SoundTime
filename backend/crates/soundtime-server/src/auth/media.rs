@@ -37,7 +37,7 @@ fn issue(user: Uuid, exp: i64, secret: &str) -> Result<String, jsonwebtoken::err
     )
 }
 
-pub(super) fn authorized(headers: &HeaderMap, secret: &str) -> bool {
+pub(super) fn account(headers: &HeaderMap, secret: &str) -> Option<Uuid> {
     let token = headers
         .get_all(header::COOKIE)
         .iter()
@@ -45,16 +45,14 @@ pub(super) fn authorized(headers: &HeaderMap, secret: &str) -> bool {
         .flat_map(|cookies| cookies.split(';'))
         .filter_map(|cookie| cookie.trim().split_once('='))
         .find_map(|(name, value)| (name == COOKIE).then_some(value));
-    let Some(token) = token else {
-        return false;
-    };
+    let token = token?;
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_audience(&[AUDIENCE]);
     validation.leeway = 0;
-    let Ok(key) = DecodingKey::from_secret(secret.as_bytes()) else {
-        return false;
-    };
-    decode::<MediaGrant>(token, &key, &validation).is_ok()
+    let key = DecodingKey::from_secret(secret.as_bytes()).ok()?;
+    decode::<MediaGrant>(token, &key, &validation)
+        .ok()
+        .map(|data| data.claims.sub)
 }
 
 fn cookie_headers(request: &HeaderMap, token: &str, lifetime: i64) -> HeaderMap {
@@ -129,19 +127,19 @@ mod tests {
             header::COOKIE,
             format!("other=1; {COOKIE}={media}").parse().unwrap(),
         );
-        assert!(authorized(&headers, secret));
-        assert!(!authorized(&headers, "wrong-signing-key"));
+        assert_eq!(account(&headers, secret), Some(id));
+        assert!(account(&headers, "wrong-signing-key").is_none());
         assert!(validate_token(&media, secret).is_err());
         let expired = issue(id, Utc::now().timestamp() - 1, secret).unwrap();
         headers.insert(
             header::COOKIE,
             format!("{COOKIE}={expired}").parse().unwrap(),
         );
-        assert!(!authorized(&headers, secret));
+        assert!(account(&headers, secret).is_none());
         let pair = generate_token_pair(id, "test", "user", secret).unwrap();
         for token in [pair.access_token, pair.refresh_token] {
             headers.insert(header::COOKIE, format!("{COOKIE}={token}").parse().unwrap());
-            assert!(!authorized(&headers, secret));
+            assert!(account(&headers, secret).is_none());
         }
     }
 
