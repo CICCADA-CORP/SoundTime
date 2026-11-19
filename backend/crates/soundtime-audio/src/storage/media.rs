@@ -7,12 +7,14 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncSeekExt},
 };
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 struct FileVersion {
     length: u64,
     modified: SystemTime,
     #[cfg(unix)]
     changed: (i64, i64),
+    #[cfg(unix)]
+    inode: (u64, u64),
 }
 
 impl FileVersion {
@@ -30,8 +32,25 @@ impl FileVersion {
             modified: meta.modified()?,
             #[cfg(unix)]
             changed: (meta.ctime(), meta.ctime_nsec()),
+            #[cfg(unix)]
+            inode: (meta.dev(), meta.ino()),
         })
     }
+}
+
+/// Opaque identity used to revalidate a verified original before cleanup.
+#[derive(PartialEq, Eq)]
+pub struct MediaVersion(Version);
+
+#[derive(PartialEq, Eq)]
+enum Version {
+    Local(FileVersion),
+    Object {
+        bucket: String,
+        key: String,
+        etag: Option<String>,
+        version: Option<String>,
+    },
 }
 
 enum Source {
@@ -94,6 +113,24 @@ impl OpenedMedia {
                 key,
                 version,
                 etag,
+            },
+        })
+    }
+
+    pub fn version(&self) -> MediaVersion {
+        MediaVersion(match &self.source {
+            Source::Local(_, stamp) => Version::Local(stamp.clone()),
+            Source::Object {
+                bucket,
+                key,
+                etag,
+                version,
+                ..
+            } => Version::Object {
+                bucket: bucket.clone(),
+                key: key.clone(),
+                etag: etag.clone(),
+                version: version.clone(),
             },
         })
     }

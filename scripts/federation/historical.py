@@ -39,6 +39,23 @@ def old_identity(node):
     return status["node_id"]
 
 
+def initial_archived_ping(origin, peer):
+    attempts = 0
+
+    def dial():
+        nonlocal attempts
+        attempts += 1
+        reply = origin.call(f"/admin/p2p/peers/{peer.node_id}/ping", method="POST")["message"]
+        if reply.casefold() == "ping failed: connection error: no addressing information available":
+            return False
+        require(reply.startswith("pong received: Pong {") and peer.node_id in reply,
+                f"{origin.name}: unexpected historical Pong for {peer.name}: {reply}")
+        return True
+
+    wait_for("initial historical mDNS route", dial, timeout=8)
+    return attempts
+
+
 def run(args, report):
     a, b, c = nodes = [Instance(letter, getattr(args, letter.lower())) for letter in "ABC"]
     report["historical_backend"] = inspect_c(os.environ["SOUNDTIME_TEST_COMPOSE_PROJECT"],
@@ -69,7 +86,7 @@ def run(args, report):
             "The modern node did not withhold its catalogue-producing v1 ping")
     # The older HTTP route accepts only an ID. The original dialler may resolve
     # B over mDNS or use the route learned on the preceding QUIC connection.
-    c.ping(b)
+    report["initial_mdns_dials"] = initial_archived_ping(c, b)
     time.sleep(1)
     require(not public_track(b, historic) and not public_track(c, modern),
             "The catalogues crossed the unfollowed boundary")

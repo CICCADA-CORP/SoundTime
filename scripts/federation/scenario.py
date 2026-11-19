@@ -126,7 +126,7 @@ class Instance:
         expected = "Catalogue followed" if followed else "Catalogue unfollowed"
         require(result["message"] == expected, f"{self.name}: {result['message']}")
 
-    def upload(self, title, pcm, extension="wav", mime="audio/wav"):
+    def upload(self, title, pcm, extension="wav", mime="audio/wav", *, token=None):
         boundary = secrets.token_hex(24)
         fields = [
             f'--{boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n{title}\r\n'.encode(),
@@ -135,7 +135,7 @@ class Instance:
              f'\r\nContent-Type: {mime}\r\n\r\n').encode(),
             pcm, f"\r\n--{boundary}--\r\n".encode(),
         ]
-        result = self.call("/upload", method="POST", body=b"".join(fields),
+        result = self.call("/upload", method="POST", body=b"".join(fields), token=token,
                            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
         require(result["title"] == title and result["duration"] > 0, f"{self.name}: unusable WAV {title}")
         return str(UUID(result["id"]))
@@ -156,8 +156,8 @@ class Instance:
                       body={"track_id": track_id, "position": position})
         return str(UUID(playlist["id"]))
 
-    def positions(self, playlist_id):
-        tracks = self.call("/playlists/" + playlist_id)["tracks"]
+    def positions(self, playlist_id, *, token=None):
+        tracks = self.call("/playlists/" + playlist_id, token=token)["tracks"]
         # Older responses expose position only through the ordering of the array.
         return [{"position": t.get("position", i), "track_id": t["id"], "title": t["title"],
                  "availability": t.get("availability")} for i, t in enumerate(tracks)]
@@ -709,6 +709,11 @@ def _exercise(args, report, stack):
         check(report, "browser_playlist_actions_and_withdrawal", True, milestone=8)
     fetch_range(c, tracks["independent_C"], main_audio, 0, 64)
     check(report, "independent_publication_still_plays", True)
+    if args.mode == "acceptance":
+        from account_withdrawal import exercise as withdraw_creator
+        withdraw_creator(a, b, listeners[0], tracks["cancel_A"], anchors[0],
+                         report.setdefault("creator_account_withdrawal", {}))
+        check(report, "creator_account_withdrawal_survives_both_restarts", True, milestone=3)
 
 
 def main():

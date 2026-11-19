@@ -276,7 +276,7 @@ pub async fn resolve_report(
             ));
         }
         change = Some(
-            crate::publications::remove(&tx, &state, &trk, local)
+            crate::publications::remove(&tx, &trk, local)
                 .await
                 .map_err(moderation_db_error)?,
         );
@@ -447,7 +447,7 @@ pub async fn moderate_track(
     let local = crate::publications::local(&tx, trk.id)
         .await
         .map_err(moderation_db_error)?;
-    let change = crate::publications::remove(&tx, &state, &trk, local)
+    let change = crate::publications::remove(&tx, &trk, local)
         .await
         .map_err(moderation_db_error)?;
     let msg = if local {

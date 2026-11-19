@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import scenario
+import historical
 import load_public
 import retention
 
@@ -20,6 +21,24 @@ class Response(io.BytesIO):
 
 
 class FederationScenarioTests(unittest.TestCase):
+    def test_archive_retries_only_initial_missing_address(self):
+        peer = scenario.Instance("B", "")
+        peer.node_id = "peer-b"
+        origin = scenario.Instance("C", "")
+        no_route = "ping failed: connection error: No addressing information available"
+        for replies, count in [
+                ([no_route, "pong received: Pong { node_id: peer-b }"], 2),
+                (["ping failed: connection error: timed out"], 1),
+                (["pong received: Pong { node_id: someone-else }"], 1)]:
+            with self.subTest(replies=replies), patch.object(scenario.time, "sleep"), \
+                 patch.object(origin, "call", side_effect=[{"message": s} for s in replies]) as dial:
+                if len(replies) == 2:
+                    self.assertEqual(historical.initial_archived_ping(origin, peer), count)
+                else:
+                    with self.assertRaisesRegex(scenario.ScenarioError, "unexpected historical Pong"):
+                        historical.initial_archived_ping(origin, peer)
+                self.assertEqual(dial.call_count, count)
+
     def test_midstream_outage_checks_the_same_http_body_after_the_cut(self):
         window = 65536
         audio = scenario.wav_fixture(window * 3, 19)

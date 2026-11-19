@@ -2,6 +2,7 @@
 import { execFileSync } from "node:child_process";
 import { setMaxListeners } from "node:events";
 import http from "node:http";
+import { AudioDelivery } from "./load-audio.mjs";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
@@ -35,6 +36,7 @@ loop.enable();
 const start = performance.now();
 const steady = start + ramp;
 const end = steady + duration;
+const audioDelivery = new AudioDelivery(clients, steady, end, readRate);
 const startedCpu = process.cpuUsage();
 const startedLoop = performance.eventLoopUtilization();
 const searchTimes = [], scheduledTimes = [], firstBytes = [], steadyFirstBytes = [];
@@ -65,7 +67,7 @@ async function search(index, scheduled) {
   queries++;
   const begin = performance.now();
   const origin = 1 + index % cfg.virtual_catalogues;
-  const term = index % 4 === 0 ? "Melody" + String(index % 20).padStart(2, "0")
+  const term = index % 4 === 0 ? "Melody" + String(Math.floor(index / 4) % 20).padStart(2, "0")
     : "Quartz" + String(origin).padStart(4, "0");
   try {
     const res = await get("/api/search?q=" + term + "&include_p2p=false&limit=10", index);
@@ -75,7 +77,9 @@ async function search(index, scheduled) {
       if (size > 2 * 1024 * 1024) throw Error("response_too_large");
       body += chunk;
     }
-    if (res.statusCode !== 200 || !JSON.parse(body).tracks?.length) throw Error("invalid_search_" + res.statusCode);
+    if (res.statusCode !== 200) throw Error("invalid_search_" + res.statusCode);
+    if (!JSON.parse(body).tracks?.some(track => track.title?.split(" ").includes(term)))
+      throw Error("missing_search_result");
     if (scheduled >= steady && performance.now() <= end) {
       searchTimes.push(performance.now() - begin);
       scheduledTimes.push(performance.now() - scheduled);
@@ -122,6 +126,7 @@ async function session(index) {
               throw Error("incorrect_audio");
           }
           delivered += chunk.length;
+          audioDelivery.record(index, now, chunk.length);
           if (now >= steady && now <= end) {
             bytes += chunk.length;
             mediaBytesByOrigin[track.source] = (mediaBytesByOrigin[track.source] || 0) + chunk.length;
@@ -134,6 +139,7 @@ async function session(index) {
       } catch (error) {
         if (!controller.signal.aborted) {
           if (delivered) interruptions++; else failedStarts++;
+          audioDelivery.failed(index, delivered > 0);
           countError("media", error);
           await delay(250);
         }
@@ -163,7 +169,7 @@ const dispatch = setInterval(() => {
       due++;
       dispatchLag.push(now - scheduled);
     }
-    if (queries >= pendingLimit || now - scheduled > 1000) {
+    if (queries >= pendingLimit || now >= end || now - scheduled > 1000) {
       if (scheduled >= steady) omitted++;
       continue;
     }
@@ -180,7 +186,8 @@ const sampling = setInterval(() => {
 }, 1000);
 
 await delay(ramp);
-console.log(JSON.stringify({ phase: "steady", clients, search_per_second: rate, duration_s: duration / 1000 }));
+console.log(JSON.stringify({ phase: "steady", clients, search_per_second: rate, duration_s: duration / 1000,
+  end_unix_ms: performance.timeOrigin + end }));
 await delay(Math.max(1, end - performance.now()));
 clearInterval(dispatch);
 clearInterval(sampling);
@@ -189,13 +196,17 @@ agent.destroy();
 await Promise.allSettled([...readers, ...pending]);
 loop.disable();
 
-const steadySamples = samples.filter(s => s.ms >= ramp + 1000);
+const steadySamples = samples.filter(s => s.ms >= ramp + 1000 && s.ms <= ramp + duration);
+const sampleTimes = [ramp + 1000, ...steadySamples.map(s => s.ms), ramp + duration];
+const maxSampleGap = Math.max(...sampleTimes.slice(1).map((time, i) => time - sampleTimes[i]));
 const load = {
   dispatched_search_per_second: searchStarts / (duration / 1000),
   completed_search_per_second: searchTimes.length / (duration / 1000),
   target_readers: clients, observed_open_media: quantiles(steadySamples.map(s => s.open_media_responses)),
   samples_at_target: steadySamples.filter(s => s.open_media_responses === clients).length,
-  steady_samples: steadySamples.length, open_media_peak: peakOpen,
+  steady_samples: steadySamples.length, steady_seconds: duration / 1000, max_sample_gap_ms: maxSampleGap,
+  samples_with_all_reader_sessions: steadySamples.filter(s => s.media_sessions === clients).length,
+  target_bytes_per_second_per_reader: readRate, open_media_peak: peakOpen,
 };
 const generator = {
   rss_peak_bytes: Math.max(0, ...samples.map(s => s.rss_bytes)), cpu: process.cpuUsage(startedCpu),
@@ -210,5 +221,5 @@ console.log(JSON.stringify({
   search_due: expectedSearches, search_started: searchStarts, search_completed: searchTimes.length,
   search_failed: searchErrors, search_open_at_deadline: Math.max(0, searchStarts - searchErrors - searchTimes.length),
   media_attempts: mediaAttempts, media_starts: mediaStarts, media_failed_starts: failedStarts, interruptions,
-  useful_bytes: bytes, client_audio_bytes_by_publication_origin: mediaBytesByOrigin, errors, samples,
+  useful_bytes: bytes, per_reader_delivery: audioDelivery.results(), client_audio_bytes_by_publication_origin: mediaBytesByOrigin, errors, samples,
 }));

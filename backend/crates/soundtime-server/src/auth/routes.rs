@@ -776,7 +776,7 @@ pub async fn delete_account(
             .map_err(db_error)?
         {
             changes.push(
-                crate::publications::remove(&tx, &state, &trk, true)
+                crate::publications::remove(&tx, &trk, true)
                     .await
                     .map_err(db_error)?,
             );

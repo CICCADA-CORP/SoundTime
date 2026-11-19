@@ -439,6 +439,7 @@ pub async fn run_sync(
                         .filter(track::Column::Id.eq(row.id))
                         .filter(track::Column::FilePath.eq(&row.file_path))
                         .filter(track::Column::FileHash.is_null())
+                        .filter(crate::storage_catalog::reusable_track())
                         .exec(&state.db)
                         .await
                         .map_err(|e| e.to_string())?;
@@ -448,9 +449,19 @@ pub async fn run_sync(
         }
     }
 
+    // Include withdrawn historical originals. A move may race the background SHA-256 job.
+    let legacy_blob_sizes: HashSet<i64> = if new_files.is_empty() {
+        HashSet::new()
+    } else {
+        state.db.query_all(sea_orm::Statement::from_string(sea_orm::DbBackend::Postgres,
+            "SELECT DISTINCT file_size FROM tracks WHERE file_hash IS NULL AND content_hash IS NOT NULL
+             AND file_path<>'' AND file_path !~ '^[a-zA-Z][a-zA-Z0-9+.-]*:'"))
+            .await.map_err(|e| e.to_string())?.into_iter().map(|r| r.try_get("", "file_size"))
+            .collect::<Result<_,_>>().map_err(|e| e.to_string())?
+    };
     let total = new_files.len() as u64;
     for (idx, path) in new_files.into_iter().enumerate() {
-        match sync_file(state, path, &legacy_by_size).await {
+        match sync_file(state, path, &legacy_by_size, &legacy_blob_sizes).await {
             Ok(SyncOutcome::Imported) => report.imported += 1,
             Ok(SyncOutcome::Moved) => report.moved += 1,
             Ok(SyncOutcome::Present) => report.skipped += 1,
@@ -591,10 +602,45 @@ enum SyncOutcome {
     Imported,
 }
 
+async fn legacy_blob_hash(
+    path: &Path,
+    expected_sha: &str,
+    sizes: &HashSet<i64>,
+) -> Result<Option<String>, String> {
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncReadExt;
+    if sizes.is_empty() {
+        return Ok(None);
+    }
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let size = file.metadata().await.map_err(|e| e.to_string())?.len();
+    if !i64::try_from(size).is_ok_and(|size| sizes.contains(&size)) {
+        return Ok(None);
+    }
+    let mut blob = soundtime_p2p::BlobHasher::new();
+    let mut sha = Sha256::new();
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).await.map_err(|e| e.to_string())?;
+        if read == 0 {
+            break;
+        }
+        blob.update(&buffer[..read]);
+        sha.update(&buffer[..read]);
+    }
+    if format!("{:x}", sha.finalize()) != expected_sha {
+        return Err("original changed while it was being scanned".into());
+    }
+    Ok(Some(blob.finalize().to_hex().to_string()))
+}
+
 async fn sync_file(
     state: &AppState,
     path: &str,
     legacy_by_size: &HashMap<i64, Vec<Uuid>>,
+    legacy_blob_sizes: &HashSet<i64>,
 ) -> Result<SyncOutcome, String> {
     let source = state
         .storage
@@ -602,6 +648,7 @@ async fn sync_file(
         .await
         .map_err(|e| e.to_string())?;
     let hash = source.sha256.clone();
+    let blob_hash = legacy_blob_hash(&source.path, &hash, legacy_blob_sizes).await?;
     let tx = crate::storage_catalog::begin_write(&state.db)
         .await
         .map_err(|e| e.to_string())?;
@@ -631,7 +678,7 @@ async fn sync_file(
     }
     let excluded: bool = tx.query_one(sea_orm::Statement::from_sql_and_values(sea_orm::DbBackend::Postgres,
         "SELECT EXISTS(SELECT FROM tracks t JOIN track_publications p ON p.track_id=t.id WHERE p.state='withdrawn' \
-         AND (t.file_path=$1 OR t.file_hash=$2)) AS excluded", [path.into(), hash.as_str().into()]))
+         AND (t.file_path=$1 OR t.file_hash=$2 OR (t.file_hash IS NULL AND t.content_hash=$3))) AS excluded", [path.into(), hash.as_str().into(), blob_hash.clone().into()]))
         .await.map_err(|e|e.to_string())?.expect("EXISTS returns a row").try_get("", "excluded").map_err(|e|e.to_string())?;
     if excluded {
         return Ok(SyncOutcome::Present);
@@ -654,18 +701,6 @@ async fn sync_file(
             .all(&tx)
             .await
             .map_err(|e| e.to_string())?;
-        let blob_hash = if candidates.iter().any(|r| r.content_hash.is_some()) {
-            Some(
-                soundtime_p2p::BlobHash::new(
-                    tokio::fs::read(local_path)
-                        .await
-                        .map_err(|e| e.to_string())?,
-                )
-                .to_string(),
-            )
-        } else {
-            None
-        };
         let mut matches = candidates.into_iter().filter(|r| match &r.content_hash {
             Some(h) => blob_hash.as_ref() == Some(h),
             None => {

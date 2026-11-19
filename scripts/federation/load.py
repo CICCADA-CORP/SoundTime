@@ -16,6 +16,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 from urllib.error import HTTPError
+import load_capacity
 import load_public
 
 from scenario import (BrowserSession, Instance, ScenarioError, counters, difference, fetch_range,
@@ -162,6 +163,19 @@ def pause_source(project, steady, full):
             "end_s_since_steady": round(time.monotonic() - steady, 2)}
 
 
+def observe_sound(browser, deadline, report):
+    observations = report["sound_browser_samples"]
+    while time.monotonic() + 3 < deadline:
+        try:
+            sample = browser.phase("first_sound")
+        except Exception as exc:
+            report["sound_browser_error"] = str(exc)
+            return
+        if time.monotonic() <= deadline:
+            observations.append({"unix_s": time.time(), **sample})
+        time.sleep(2)
+
+
 def run(args, report):
     host = preflight(args.mode)
     project = os.getenv("SOUNDTIME_TEST_COMPOSE_PROJECT", "")
@@ -248,10 +262,15 @@ def run(args, report):
     baseline = counters(nodes)
     report["container_samples"], report["monitor_errors"], report["browser_samples"] = [], [], []
     samples, errors, browsers = report["container_samples"], report["monitor_errors"], report["browser_samples"]
+    report["sound_browser_samples"] = []
     stop = threading.Event()
     with ExitStack() as stack:
         browser = BrowserSession(stack, b, witness, "Browserwitness", [pid], [accounts[0]])
         auth["browser"] = browser.phase("authenticate")
+        if full:
+            sound_playlist = b.playlist(accounts[1], "Playback witness", [witness])
+            sound_browser = BrowserSession(stack, b, witness, "Browserwitness", [sound_playlist], [accounts[1]])
+            auth["sound_browser"] = sound_browser.phase("authenticate")
         routed_before = load_public.routed_searches(compose,project,readers) if full else {}
         thread = threading.Thread(target=telemetry, args=(project, ids, readers, nodes, stop, samples, errors), daemon=True)
         thread.start()
@@ -267,10 +286,16 @@ def run(args, report):
                     "profile": args.mode, "virtual_catalogues": virtual, "media": media}) + "\n")
                 generator.stdin.close()
                 row = generator.stdout.readline()
-                require(row and json.loads(row)["phase"] == "steady", "Generator failed during ramp")
-                steady = time.monotonic()
-                deadline = steady + (90 if full else 15)
-                with ThreadPoolExecutor(max_workers=2) as executor:
+                announced = json.loads(row) if row else {}
+                require(announced.get("phase") == "steady", "Generator failed during ramp")
+                # Both drivers run on the host. A delayed ramp notification must
+                # not admit browser samples after the generator has stopped.
+                seconds = 90 if full else 15
+                remaining = min(seconds, max(0, announced["end_unix_ms"] / 1000 - time.time()))
+                deadline = time.monotonic() + remaining
+                steady = deadline - seconds
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    sound = executor.submit(observe_sound, sound_browser, deadline, report) if full else None
                     mutation = executor.submit(churn, a, b, 10 if full else 2)
                     failure = executor.submit(pause_source, project, steady, full) if fault else None
                     while time.monotonic() + 3 < deadline and generator.poll() is None:
@@ -287,19 +312,42 @@ def run(args, report):
                     require(row, "Missing generator result")
                     result = report["generator_result"] = json.loads(row)
                     require(generator.wait(timeout=15) == 0 and result["phase"] == "complete", "Generator failed")
-                    report["live_catalogue_change"] = mutation.result(timeout=120)
+                    try:
+                        report["live_catalogue_change"] = mutation.result(timeout=120)
+                    except Exception as exc:
+                        report["live_catalogue_change_error"] = str(exc)
+                    if sound:
+                        try:
+                            sound.result(timeout=125)
+                        except Exception as exc:
+                            report["sound_browser_error"] = str(exc)
                     if failure:
-                        report["fault"] = failure.result(timeout=60)
+                        try:
+                            report["fault"] = failure.result(timeout=60)
+                        except Exception as exc:
+                            report["fault_error"] = str(exc)
             except BaseException:
                 generator.kill()
                 raise
-    report["transport_delta"] = difference(baseline, counters(nodes))
-    report["cache_after"] = b.call("/admin/storage/status")["cache"]
+    # A saturated worker can fail ancillary requests. Retain the independent
+    # generator and browser observations and identify missing server evidence.
+    for field, probe in (
+        ("transport_delta", lambda: difference(baseline, counters(nodes))),
+        ("cache_after", lambda: b.call("/admin/storage/status")["cache"]),
+        ("physical_bytes_after", lambda: physical_storage(project)),
+    ):
+        try:
+            report[field] = probe()
+        except Exception as exc:
+            errors.append(f"{field}: {exc}")
     routed = report["successful_searches_per_reader"] = {}
     if full:
-        after = load_public.routed_searches(compose,project,readers)
-        routed.update({key: end-routed_before[key] for key,end in after.items()})
-    report["physical_bytes_after"] = physical_storage(project)
+        try:
+            after = load_public.routed_searches(compose, project, readers)
+            routed.update({key: end-routed_before[key] for key,end in after.items()})
+        except Exception as exc:
+            errors.append(f"routed searches: {exc}")
+    report["first_sound_ms"] = quantiles([s["first_sound_ms"] for s in report["sound_browser_samples"]])
     for key in ("search_to_screen_ms", "first_media_progress_ms"):
         report[key] = quantiles([row[key] for row in browsers])
     report["container_peak_memory_bytes"] = {
@@ -307,18 +355,18 @@ def run(args, report):
         for role in ids.values()}
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     report["orchestrator_peak_rss_bytes"] = peak if sys.platform == "darwin" else peak * 1024
-    load = result["load"]
-    all_readers = load["steady_samples"] > 0 and load["samples_at_target"] == load["steady_samples"]
-    scheduled = load["dispatched_search_per_second"] >= (100 if full else 3) * .99
-    exercised_origins = all(report["transport_delta"][name]["sent"] > 0 for name in ("A", "C"))
-    report["workload_reached"] = bool(all_readers and scheduled and (warm or exercised_origins) and not result["omissions"])
-    report["valid_browser_measurements"] = bool(browsers and "browser_error" not in report)
-    report["screen_p95_within_300ms_in_sample"] = browsers != [] and report["search_to_screen_ms"]["p95"] <= 300
-    observed_readers = all(routed[role]>0 and report["container_peak_memory_bytes"][role]>0
-                           for role in readers.values())
-    report["status"] = "measured" if (report["workload_reached"] or fault) and report["valid_browser_measurements"] and observed_readers else "incomplete"
-    if report["status"] == "incomplete":
-        raise ScenarioError("Incomplete workload or browser observations; inspect report.json")
+    assessment = report["capacity"] = load_capacity.assess(report)
+    report["workload_reached"] = assessment["workload_reached"]
+    report["valid_browser_measurements"] = all(ok for name, ok in assessment["evidence"].items()
+                                               if name.startswith("browser_"))
+    report["screen_p95_within_300ms_in_sample"] = assessment["service"]["screen_p95_within_300ms"]
+    report["status"] = "measured"
+    if fault and assessment["verdict"] == "fault_observation_incomplete":
+        raise ScenarioError("Fault injection or witness evidence incomplete; inspect report.json")
+    if full and not fault and assessment["verdict"] != "passed":
+        raise ScenarioError(f"Public capacity {assessment['verdict']}; inspect capacity and observations in report.json")
+    if not full and not fault and (not report["workload_reached"] or not report["valid_browser_measurements"]):
+        raise ScenarioError("Smoke workload or browser observations incomplete; inspect report.json")
 
 
 def main():

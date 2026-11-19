@@ -309,3 +309,174 @@ async fn preparing_journal_answers_without_publishing_a_partial_head() -> Result
     ));
     Ok(())
 }
+
+/// A subscriber that already has a snapshot must see the next committed source
+/// transition without waiting for its six-hour lease refresh.
+#[tokio::test]
+#[ignore = "requires a disposable migrated TEST_DATABASE_URL"]
+async fn historical_title_and_nas_transitions_preserve_cursor_and_mirror() -> Result<()> {
+    use super::source::{answer, Request, Response};
+    let mut options = sea_orm::ConnectOptions::new(std::env::var("TEST_DATABASE_URL")?);
+    options.max_connections(1).min_connections(1);
+    let db = Database::connect(options).await?;
+    db.execute_unprepared(
+        "CREATE TEMP TABLE federation_event_bootstrap(singleton boolean,complete boolean);
+         INSERT INTO federation_event_bootstrap VALUES(true,true)",
+    )
+    .await?;
+    let origin = SecretKey::generate();
+    let a = origin.public();
+    let mirror = SecretKey::generate();
+    let receiver = SecretKey::generate().public();
+    let id = Uuid::new_v4();
+    let artist = Uuid::new_v4();
+    let Response::Head(base) = answer(&db, &origin, Request::Head).await? else {
+        bail!("expected ready catalogue")
+    };
+    crate::peer_policy::follow(&db, &a.to_string(), true).await?;
+    let snap = Uuid::new_v4();
+    begin(&db, a, snap, base).await?;
+    apply_page(
+        &db,
+        a,
+        &serde_json::to_vec(&Page {
+            snapshot: snap,
+            cut: base,
+            number: 0,
+            last: true,
+            entries: vec![],
+        })?,
+    )
+    .await?;
+    db.execute(sql(
+        "INSERT INTO artists(id,name) VALUES($1,$2)",
+        [artist.into(), artist.to_string().into()],
+    ))
+    .await?;
+    db.execute(sql("INSERT INTO tracks(id,title,artist_id,file_path,format,file_size,content_hash,duration_secs)
+         VALUES($1,'',$2,$3,'wav',8000,$4,1.25)", [id.into(),artist.into(),format!("{id}.wav").into(),crate::BlobHash::new(id.as_bytes()).to_string().into()])).await?;
+    let Response::Snapshot { entries, .. } = answer(
+        &db,
+        &origin,
+        Request::Snapshot {
+            cut: base + 1,
+            after: Some(Uuid::from_u128(id.as_u128() - 1)),
+        },
+    )
+    .await?
+    else {
+        bail!("expected initial page")
+    };
+    let legacy = entries.first().context("missing historical track")?;
+    legacy.verify()?;
+    assert_eq!(legacy.publication.manifest.publication, id);
+    assert_eq!(
+        legacy.publication.manifest.media.as_ref().unwrap().title,
+        "Untitled"
+    );
+
+    db.execute(sql(
+        "UPDATE tracks SET title='Corrected title' WHERE id=$1",
+        [id.into()],
+    ))
+    .await?;
+    let Response::Changes(initial) = answer(
+        &db,
+        &origin,
+        Request::Changes {
+            after: base,
+            cut: base + 2,
+        },
+    )
+    .await?
+    else {
+        bail!("expected metadata changes")
+    };
+    assert_eq!(initial.len(), 2);
+    for change in &initial {
+        apply_delta(&db, a, &serde_json::to_vec(change)?).await?;
+    }
+    let Change::Put(corrected) = &initial[1].change else {
+        bail!("missing corrected title")
+    };
+    assert_eq!(
+        corrected.publication.manifest.media.as_ref().unwrap().title,
+        "Corrected title"
+    );
+    let mirrored = lease::Offer::issue(&mirror, corrected.publication.clone(), 1, true)?;
+    assert!(lease::accept(&db, receiver, a, &mirrored, Some(1)).await?);
+    let available_mirror = || async {
+        Ok::<_,anyhow::Error>(db.query_one(sql("SELECT 1 FROM federation_track_providers v JOIN track_publications p USING(track_id)
+           JOIN federation_catalogs c ON c.id=p.catalog_id WHERE c.node_id=$1 AND p.origin_publication_id=$2 AND v.provider=$3
+           AND v.allowed AND v.followed AND v.online",
+            [a.to_string().into(),id.into(),mirror.public().to_string().into()])).await?.is_some())
+    };
+    assert!(available_mirror().await?);
+    db.execute(sql(
+        "INSERT INTO federation_missing_sources VALUES($1) ON CONFLICT DO NOTHING",
+        [id.into()],
+    ))
+    .await?;
+    db.execute(sql(
+        "INSERT INTO federation_missing_sources VALUES($1) ON CONFLICT DO NOTHING",
+        [id.into()],
+    ))
+    .await?;
+    let Response::Changes(missing) = answer(
+        &db,
+        &origin,
+        Request::Changes {
+            after: base + 2,
+            cut: base + 3,
+        },
+    )
+    .await?
+    else {
+        bail!("missing outage event")
+    };
+    assert_eq!(missing.len(), 1);
+    assert!(matches!(
+        &missing[0].change,
+        Change::RemoveOffer { revision: 2, .. }
+    ));
+    apply_delta(&db, a, &serde_json::to_vec(&missing[0])?).await?;
+    assert_eq!(offers(&db, a, id).await?, 0);
+    assert!(available_mirror().await?);
+    db.execute(sql(
+        "DELETE FROM federation_missing_sources WHERE track_id=$1",
+        [id.into()],
+    ))
+    .await?;
+    let Response::Head(head) = answer(&db, &origin, Request::Head).await? else {
+        bail!("missing head")
+    };
+    assert_eq!(head, base + 4);
+    let Response::Changes(restored) = answer(
+        &db,
+        &origin,
+        Request::Changes {
+            after: base + 3,
+            cut: head,
+        },
+    )
+    .await?
+    else {
+        bail!("missing restoration event")
+    };
+    let [change] = restored.as_slice() else {
+        bail!("expected one restoration")
+    };
+    let Change::Put(reissued) = &change.change else {
+        bail!("expected renewed origin offer")
+    };
+    assert_eq!(
+        serde_json::to_vec(&reissued.publication)?,
+        serde_json::to_vec(&corrected.publication)?
+    );
+    apply_delta(&db, a, &serde_json::to_vec(change)?).await?;
+    assert_eq!(offers(&db, a, id).await?, 1);
+    assert!(available_mirror().await?);
+    let row=db.query_one(sql("SELECT payload->>'title' AS title FROM federation_events WHERE catalog_id=(SELECT id FROM federation_catalogs WHERE is_local) AND cursor=$1",[(base+1).into()])).await?.unwrap();
+    assert_eq!(row.try_get::<String>("", "title")?, "");
+    Ok(())
+}

@@ -605,6 +605,12 @@ pub async fn update_track(
 
     let mut active: track::ActiveModel = existing.into();
     if let Some(title) = body.title {
+        if title.trim().is_empty() || title.chars().count() > 255 || title.contains('\0') {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Title must contain 1 to 255 characters".into(),
+            ));
+        }
         active.title = Set(title);
     }
     if let Some(genre) = body.genre {
@@ -655,7 +661,7 @@ pub async fn delete_track(
             "You can only withdraw your own publications".into(),
         ));
     }
-    let change = crate::publications::remove(&tx, &state, &track, true)
+    let change = crate::publications::remove(&tx, &track, true)
         .await
         .map_err(db_error)?;
     tx.commit().await.map_err(db_error)?;

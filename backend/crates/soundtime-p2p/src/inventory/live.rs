@@ -10,6 +10,7 @@ use iroh::{endpoint::Connection, Endpoint, EndpointId};
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     sync::{atomic::Ordering, Arc, Mutex, Weak},
     time::Duration,
 };
@@ -68,36 +69,96 @@ impl Catalogs {
     }
 }
 
+/// All catalogue requests read a fixed position or a summary. Repeating Head
+/// registers the same reader idempotently. Apply a response only once, outside
+/// this exchange, after the final policy check.
+async fn exchange_catalog<F: Future<Output = Result<()>>>(
+    pool: &ConnectionPool,
+    peer: EndpointId,
+    request: &Request,
+    authorize: impl Fn() -> F,
+) -> Result<Response> {
+    use iroh::endpoint::{ConnectionError, ReadToEndError};
+    use tokio::time::{timeout_at, Instant};
+
+    let bytes = serde_json::to_vec(request)?;
+    let deadline = Instant::now() + RPC_TIMEOUT * 2;
+    let mut retried = false;
+    loop {
+        timeout_at(deadline, authorize())
+            .await
+            .context("catalogue policy timed out")??;
+        let attempt = deadline.min(Instant::now() + RPC_TIMEOUT);
+        let conn = timeout_at(attempt, pool.get_connection(peer))
+            .await
+            .context("catalogue dial timed out")??;
+        // A small Head is how every resumption starts. Leave time to replace
+        // a pre-crash QUIC connection that still accepts streams locally.
+        let until = if !retried && matches!(request, Request::Head) {
+            attempt.min(Instant::now() + Duration::from_secs(3))
+        } else {
+            attempt
+        };
+        let operation = async {
+            let (mut send, mut recv) = conn.open_bi().await?;
+            send.write_all(&bytes).await?;
+            send.finish()?;
+            Ok::<_, anyhow::Error>(recv.read_to_end(FRAME).await?)
+        };
+        let failure = match timeout_at(until, operation).await {
+            Ok(Ok(reply)) => {
+                timeout_at(deadline, authorize())
+                    .await
+                    .context("catalogue policy timed out")??;
+                return match serde_json::from_slice(&reply)? {
+                    Response::Preparing => Err(crate::P2pError::CatalogPreparing.into()),
+                    response => Ok(response),
+                };
+            }
+            Ok(Err(error)) => {
+                let oversized = matches!(
+                    error.downcast_ref::<ReadToEndError>(),
+                    Some(ReadToEndError::TooLong)
+                );
+                let lost = conn.close_reason().is_some()
+                    || error.chain().any(|cause| cause.is::<ConnectionError>());
+                if oversized || !lost {
+                    return Err(error);
+                }
+                error
+            }
+            Err(timeout) => anyhow::Error::new(timeout).context("catalogue RPC timed out"),
+        };
+        // Compare the stable QUIC ID: late failures cannot evict a replacement
+        // installed by another reader of the same catalogue.
+        pool.invalidate_connection(&conn);
+        if retried || Instant::now() >= deadline {
+            return Err(failure);
+        }
+        tracing::debug!(%peer, %failure, "retrying catalogue read on a fresh connection");
+        retried = true;
+    }
+}
+
 impl P2pNode {
     pub fn versioned_catalog(&self) -> bool {
         self._config.versioned_catalog && self.explicit_catalog()
     }
 
     pub(super) async fn catalog_rpc(&self, peer: EndpointId, request: Request) -> Result<Response> {
-        let policy = crate::peer_policy::get(&self.db, &peer.to_string()).await?;
-        ensure!(
-            !policy.banned && (policy.followed || matches!(request, Request::Withdrawal { .. })),
-            "catalogue provider denied"
-        );
-        let deadline = tokio::time::Instant::now() + RPC_TIMEOUT;
-        let conn = tokio::time::timeout_at(deadline, self.catalogs.pool.get_connection(peer))
-            .await
-            .context("catalogue dial timed out")??;
-        let operation = async {
-            let (mut send, mut recv) = conn.open_bi().await?;
-            send.write_all(&serde_json::to_vec(&request)?).await?;
-            send.finish()?;
-            let bytes = recv.read_to_end(FRAME).await?;
-            Ok::<_, anyhow::Error>(serde_json::from_slice(&bytes)?)
-        };
-        match tokio::time::timeout_at(deadline, operation).await {
-            Ok(Ok(Response::Preparing)) => Err(crate::P2pError::CatalogPreparing.into()),
-            Ok(Ok(resp)) => Ok(resp),
-            error => {
-                self.catalogs.pool.invalidate_connection(&conn);
-                error.context("catalogue RPC timed out")?
+        let id = peer.to_string();
+        exchange_catalog(&self.catalogs.pool, peer, &request, || async {
+            let policy = crate::peer_policy::get(&self.db, &id).await?;
+            if policy.banned {
+                return Err(crate::P2pError::PeerBlocked(id.clone()).into());
             }
-        }
+            ensure!(
+                policy.followed || matches!(request, Request::Withdrawal { .. }),
+                "catalogue provider is no longer followed"
+            );
+            Ok(())
+        })
+        .await
     }
 
     pub(super) async fn serve_catalog(&self, conn: Connection) -> Result<()> {
@@ -456,5 +517,113 @@ impl P2pNode {
                 })
                 .await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection_pool::isolated_pair;
+    use std::sync::atomic::AtomicUsize;
+
+    #[tokio::test]
+    async fn silent_catalogue_summary_redials_once_and_reuses_the_working_session() -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(12), async {
+            let (server, pool) = isolated_pair(inventory::ALPN).await?;
+            let reads = async {
+                for expected in [41, 42] {
+                    let result =
+                        exchange_catalog(&pool, server.id(), &Request::Head, || async { Ok(()) })
+                            .await?;
+                    ensure!(
+                        matches!(result,Response::Head(n) if n==expected),
+                        "wrong catalogue head"
+                    );
+                }
+                Ok::<_, anyhow::Error>(())
+            };
+            let serves = async {
+                let stale = server
+                    .accept()
+                    .await
+                    .context("missing initial connection")?
+                    .await?;
+                let (_silent, mut first) = stale.accept_bi().await?;
+                let request = first.read_to_end(512).await?;
+                ensure!(
+                    matches!(serde_json::from_slice::<Request>(&request)?, Request::Head),
+                    "expected summary"
+                );
+                let fresh = server
+                    .accept()
+                    .await
+                    .context("missing replacement connection")?
+                    .await?;
+                ensure!(
+                    stale.stable_id() != fresh.stable_id(),
+                    "reused stale session"
+                );
+                for head in [41, 42] {
+                    let (mut send, mut recv) = fresh.accept_bi().await?;
+                    ensure!(
+                        recv.read_to_end(512).await? == request,
+                        "replayed a different request"
+                    );
+                    send.write_all(&serde_json::to_vec(&Response::Head(head))?)
+                        .await?;
+                    send.finish()?;
+                    let _ = send.stopped().await?;
+                }
+                Ok::<_, anyhow::Error>(())
+            };
+            tokio::try_join!(reads, serves)?;
+            assert_eq!(pool.established(), 2);
+            Ok(())
+        })
+        .await?
+    }
+
+    #[tokio::test]
+    async fn catalogue_retry_and_receipt_both_enforce_current_ban() -> Result<()> {
+        for interrupted in [true, false] {
+            let (server, pool) = isolated_pair(inventory::ALPN).await?;
+            let checks = AtomicUsize::new(0);
+            let peer = server.id();
+            let denied = tokio::sync::Notify::new();
+            let request = exchange_catalog(&pool, peer, &Request::Head, || async {
+                if checks.fetch_add(1, Ordering::Relaxed) > 0 {
+                    denied.notify_one();
+                    return Err(crate::P2pError::PeerBlocked(peer.to_string()).into());
+                }
+                Ok(())
+            });
+            let serve = async {
+                let conn = server.accept().await.context("missing connection")?.await?;
+                let (mut send, mut recv) = conn.accept_bi().await?;
+                recv.read_to_end(512).await?;
+                if interrupted {
+                    // Keep the old session alive and silent until the retry's policy check.
+                    denied.notified().await;
+                } else {
+                    send.write_all(&serde_json::to_vec(&Response::Head(19))?)
+                        .await?;
+                    send.finish()?;
+                    let _ = send.stopped().await?;
+                }
+                Ok::<_, anyhow::Error>(())
+            };
+            let (result, served) = tokio::time::timeout(Duration::from_secs(12), async {
+                tokio::join!(request, serve)
+            })
+            .await?;
+            served?;
+            assert!(matches!(
+                result.unwrap_err().downcast_ref::<crate::P2pError>(),
+                Some(crate::P2pError::PeerBlocked(_))
+            ));
+            assert_eq!(checks.load(Ordering::Relaxed), 2);
+            assert_eq!(pool.established(), 1);
+        }
+        Ok(())
     }
 }

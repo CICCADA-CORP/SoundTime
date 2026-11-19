@@ -199,6 +199,30 @@ impl ConnectionPool {
 }
 
 #[cfg(test)]
+pub(crate) async fn isolated_pair(
+    alpn: &'static [u8],
+) -> anyhow::Result<(Endpoint, ConnectionPool)> {
+    use iroh::{
+        address_lookup::memory::MemoryLookup,
+        endpoint::{presets::Minimal, PortmapperConfig},
+    };
+    let base = || {
+        Endpoint::builder(Minimal)
+            .clear_ip_transports()
+            .clear_relay_transports()
+            .portmapper_config(PortmapperConfig::Disabled)
+            .bind_addr("127.0.0.1:0")
+    };
+    let server = base()?.alpns(vec![alpn.to_vec()]).bind().await?;
+    let addr = EndpointAddr::new(server.id()).with_ip_addr(server.bound_sockets()[0]);
+    let client = base()?
+        .address_lookup(MemoryLookup::from_endpoint_info([addr]))
+        .bind()
+        .await?;
+    Ok((server, ConnectionPool::new(client, alpn)))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

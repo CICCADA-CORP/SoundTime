@@ -1,7 +1,7 @@
 mod analysis;
 mod media;
 pub use analysis::AnalysisFile;
-pub use media::{MediaReader, OpenedMedia};
+pub use media::{MediaReader, MediaVersion, OpenedMedia};
 
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
