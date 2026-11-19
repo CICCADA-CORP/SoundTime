@@ -1,359 +1,122 @@
-<p align="center">
-  <img src="docs/assets/logo-white.png" alt="SoundTime Logo" width="130" />
-</p>
+# SoundTime
 
-<h1 align="center">SoundTime</h1>
+SoundTime is a self-hosted music server for your own audio collection. Browse by artist or album, build a queue, and listen from a desktop or mobile browser. You decide who can access the web catalog and whether your server shares music with other SoundTime instances.
 
-<p align="center">
-  <strong>Self-hosted music streaming with peer-to-peer sharing</strong>
-</p>
+[Quick start](#quick-start) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md)
 
-<p align="center">
-  <a href="https://github.com/CICCADA-CORP/SoundTime/actions/workflows/ci.yml"><img src="https://github.com/CICCADA-CORP/SoundTime/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License" /></a>
-  <img src="https://img.shields.io/badge/version-0.1.0-green.svg" alt="Version" />
-  <img src="https://img.shields.io/badge/rust-1.93%2B-orange.svg" alt="Rust" />
-  <img src="https://img.shields.io/badge/node-20%2B-339933.svg" alt="Node" />
-</p>
+![SoundTime playing Last Light from the demo library, with cover art on the left and the next three tracks queued on the right](docs/assets/soundtime-player.webp)
 
-<p align="center">
-  <a href="https://discord.gg/UVCZCNcJvM">
-    <img src="https://img.shields.io/badge/Discord-Join%20the%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join Discord" />
-  </a>
-</p>
+## Quick start
 
-<p align="center">
-  <a href="#features">Features</a> •
-  <a href="#screenshots">Screenshots</a> •
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#architecture">Architecture</a> •
-  <a href="#faq">FAQ</a> •
-  <a href="docs/api-reference.md">API Reference</a> •
-  <a href="CONTRIBUTING.md">Contributing</a>
-</p>
+This setup uses Git, OpenSSL and Docker with Compose v2. Compose pulls the published AMD64 or ARM64 images from GitHub Container Registry. To run changes from your checkout, follow the [development setup](#development).
 
+### 1. Configure a new instance
 
----
-
-SoundTime is a self-hosted music streaming platform built with **Rust** and **SvelteKit**. Upload your music library, organize it into playlists, and share tracks across instances using **peer-to-peer networking** powered by [iroh](https://iroh.computer/) (by [n0.computer](https://n0.computer/)).
-
-Unlike centralized platforms, SoundTime gives you full control over your music. Run it on your own server, connect with other SoundTime instances through encrypted P2P channels, and enjoy a modern, responsive listening experience.
-
-## Features
-
-### 🎵 Music Streaming
-- **Upload & organize** — Drag-and-drop upload with automatic metadata extraction (artist, album, track number, cover art)
-- **Adaptive streaming** — OPUS transcoding at 320/128/64 kbps with server-side caching
-- **Autoplay** — Continuous playback that automatically queues similar tracks when the queue empties, with toggle in mini and expanded player
-- **Waveform visualization** — Real-time audio waveform display powered by Symphonia
-- **Lyrics support** — Fetch and display lyrics from multiple providers (Musixmatch, Lyrics.com)
-- **Full-text search** — Search across tracks, albums, and artists instantly
-
-### 📚 Library Management
-- **Albums & artists** — Auto-organized from metadata with cover art support
-- **Playlists** — Create, edit, and share public or private playlists
-- **Personal libraries** — Curate your own collection from available tracks
-- **Favorites & history** — Track your listening habits and bookmark songs
-- **Batch upload** — Upload entire albums or folders at once
-
-### 🌐 Peer-to-Peer Network
-- **iroh-powered P2P** — Encrypted QUIC connections via [iroh](https://iroh.computer/) 1.5 for peer discovery and track sharing
-- **Peer discovery** — opt into a shared [SoundTime rendezvous](docs/p2p-networking.md#discover-other-soundtime-instances-through-a-rendezvous) to find other nodes by ID, including relay-only instances. Iroh resolves known IDs via [Pkarr](https://pkarr.org/) on the Mainline DHT by default.
-- **Relay support** — NAT traversal through [n0.computer](https://n0.computer/) production relay servers
-- **Content-addressed storage** — Tracks identified by BLAKE3 hashes via iroh-blobs
-- **Distributed search** — Bloom filter-based routing sends queries only to relevant peers
-- **Track health monitoring** — Auto-retry on failure, 3-strike dereference with automatic re-referencing when peers return online
-- **Duplicate resolution** — Best-copy selection based on format quality, bitrate, sample rate, and peer availability
-- **Incremental catalog sync** — Delta-based sync avoids re-sending already-known tracks
-- **Network visualization** — Interactive D3.js force-directed graph of your P2P network topology
-- **Peer management** — Add, ping, and manage connected peers from the admin panel
-- **Public instance listing** — Optional registration on the SoundTime directory for discoverability
-
-### 🛡️ Security & Privacy
-- **Argon2id** password hashing (OWASP-recommended)
-- **JWT authentication** — Short-lived access tokens (15 min) + refresh tokens (7 days)
-- **Rate limiting** — Per-IP throttling on auth endpoints via tower-governor
-- **Security headers** — HSTS, X-Content-Type-Options, X-Frame-Options
-- **CORS controls** — Configurable allowed origins
-
-### 🤖 AI-Powered Features
-- **Editorial playlists** — AI-generated curated playlists based on your library (OpenAI-compatible APIs)
-- **Smart metadata enrichment** — Automatic metadata lookup via MusicBrainz
-
-### 🌍 Internationalization
-- 5 languages out of the box: **English**, **Français**, **Español**, **中文**, **Русский**
-- Auto-detection from browser language
-- Easy to add new translations
-
-### 🔧 Administration
-- **Dashboard** — Track counts, user stats, storage status at a glance
-- **User management** — Roles (admin/user), banning, moderation
-- **Content moderation** — Report system with review workflow
-- **Storage management** — Integrity checks, S3 sync, filesystem monitoring
-- **Instance settings** — Configurable from the admin panel
-- **Terms of Service** — Customizable ToS with editor
-
-## Screenshots
-
-<p align="center">
-  <em>Screenshots coming soon — see <a href="#quick-start">Quick Start</a> to try it yourself!</em>
-</p>
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| **Backend** | Rust, [Axum](https://github.com/tokio-rs/axum) 0.8, [Sea-ORM](https://www.sea-ql.org/SeaORM/) 1.1, PostgreSQL 16 |
-| **Frontend** | [SvelteKit](https://kit.svelte.dev/) 2, Svelte 5, Tailwind CSS, shadcn-svelte |
-| **Auth** | Argon2id, JWT (jsonwebtoken), tower-governor |
-| **Audio** | [Lofty](https://github.com/Serial-ATA/lofty-rs) (metadata), [Symphonia](https://github.com/pdeljanov/Symphonia) (decode/waveform) |
-| **P2P** | [iroh](https://iroh.computer/) 1.5 (QUIC), iroh-blobs 0.105 (content-addressed storage) |
-| **Visualization** | [D3.js](https://d3js.org/) 7 (network graph) |
-| **Storage** | Local filesystem or AWS S3-compatible |
-| **Deployment** | Docker Compose, Nginx reverse proxy |
-
-## Quick Start
-
-For an existing installation with P2P data, back up the volume before upgrading its index. [P2P upgrade and rollback instructions](docs/p2p-networking.md#upgrading-the-p2p-store).
-
-### One-Click Install (recommended)
-
-The fastest way to get SoundTime running on any machine (Linux, macOS, Windows WSL):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/main/install.sh | bash
-```
-
-or with `wget`:
-
-```bash
-wget -qO- https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/main/install.sh | bash
-```
-
-This will automatically:
-- ✅ Check prerequisites (Docker, Docker Compose, git)
-- ✅ Clone the repository to `~/soundtime`
-- ✅ Generate a secure `.env` with random secrets
-- ✅ Pull multi-arch Docker images (works on x86_64 and Apple Silicon / ARM64)
-- ✅ Start all services
-
-> **Custom install path?** Set `SOUNDTIME_INSTALL_DIR` before running:
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/main/install.sh | SOUNDTIME_INSTALL_DIR=/opt/soundtime bash
-> ```
-
-### Docker Compose (manual)
-
-If you prefer to set things up manually:
-
-```bash
+```sh
 git clone https://github.com/CICCADA-CORP/SoundTime.git
 cd SoundTime
-
-# Configure environment
-cp .env.example .env
-# Set POSTGRES_PASSWORD in .env and use the output of openssl rand -base64 32 for JWT_SECRET
-
-# Launch all services
-docker compose up
+(umask 077 && cp .env.example .env)
 ```
 
-Open [SoundTime](http://localhost:8880) to create the administrator account in the setup wizard. Nginx serves both the application and its API on this port. Set `NGINX_PORT` to change it.
+Open `.env` and set the following values before starting the containers. Run `openssl rand -hex 32` twice to generate two independent secrets.
 
-### Local Development
+| Setting | What to enter |
+| --- | --- |
+| `POSTGRES_PASSWORD` | The first generated value. Compose uses it for PostgreSQL and the backend connection. |
+| `JWT_SECRET` | The second generated value. Keep it across upgrades so existing sessions remain valid. |
+| `P2P_ENABLED` | Set to `false` for a standalone server. The Compose default is `true`. |
 
-See the [Development Guide](docs/development.md) for a complete setup walkthrough.
+For an automated installation with the default peer networking settings, the project also ships a Bash installer. It generates credentials on a fresh installation and uses `~/soundtime` by default. [Installer and usage](install.sh)
 
-**Prerequisites**: Rust 1.97+, Node.js 24 LTS, PostgreSQL 16 with pgvector
+### 2. Start the services
 
-```bash
-# Configure the environment and enable the loopback PostgreSQL port in docker-compose.yml
-cp .env.example .env
-docker compose up postgres -d
-
-# Backend (terminal 1)
-cd backend
-cargo run
-
-# Frontend (terminal 2)
-cd frontend
-npm install
-npm run dev
+```sh
+docker compose config --quiet
+docker compose pull
+docker compose up -d
+docker compose ps
 ```
 
-### Production Deployment
+Open the setup wizard through Nginx and create the administrator account. Choose **Private Instance** to require sign-in for the catalog and audio streams and to close public registration. For a standalone server, also turn off **P2P Network (iroh)** in the wizard. Complete setup before giving other people access. [Open setup](http://localhost:8880/setup)
 
-The deployment guide covers SSL, custom domains, S3 storage, read-only SMB and NFS music libraries, and P2P configuration. [Deployment Guide](docs/deployment.md)
+### 3. Play your first track
 
-## Architecture
+Sign in, open **Upload**, and add an audio file. Open **Tracks** and press **Play**. SoundTime reads artist, album and cover tags during import. A track without an album stays in **Tracks** and on its artist’s page. An explicitly named album appears in **Albums**, even when you own only one of its tracks.
 
-SoundTime follows a modular monorepo architecture with a Rust backend organized into 6 specialized crates:
+## Library and playback
 
-```
-soundtime/
-├── backend/
-│   └── crates/
-│       ├── soundtime-server     # Axum HTTP server, routes, auth, middleware
-│       ├── soundtime-db         # Sea-ORM entities & database connection pool
-│       ├── soundtime-migration  # Database migrations (PostgreSQL)
-│       ├── soundtime-audio      # Audio metadata, storage, waveform generation
-│       ├── soundtime-p2p        # P2P networking via iroh (discovery, health, search)
-│       └── soundtime-plugin     # Plugin system (WASM/extism-based extensions)
-├── frontend/
-│   └── src/
-│       ├── lib/
-│       │   ├── components/      # 11 UI components (AudioPlayer, NetworkGraph…)
-│       │   ├── stores/          # Svelte 5 rune stores (auth, player, queue)
-│       │   └── i18n/            # 5 language packs
-│       └── routes/              # 16 SvelteKit pages
-├── docker/                      # Dockerfiles + Nginx config
-├── docs/                        # Documentation
-└── docker-compose.yml           # Full-stack orchestration
-```
+- **Import a collection.** Upload MP3, FLAC, Ogg, WAV, AAC, Opus, M4A or AIFF files. SoundTime converts AIFF uploads to FLAC. On Linux, you can also mount an existing SMB or NFS library read-only and import its files from the administration panel. [Network library setup](docs/deployment.md#read-only-smb-and-nfs-music-libraries)
+- **Choose what plays next.** Search for a track, album or artist, build a playlist, or start a radio station from a track, artist or genre. The player keeps the queue available as you browse and supports seeking, shuffle, repeat and lock-screen controls on compatible browsers.
+- **Keep a personal collection.** Save favorites, revisit listening history and make playlists public or private. Explore brings together recent releases, trending tracks and genres from the catalog.
+- **Fill in missing metadata.** Administrators can look up a track on MusicBrainz or run a batch for tracks missing a recording ID. Each run checks its starting list once and reports matches, empty results and provider errors separately.
 
-```
-┌─────────────┐     ┌──────────────────────────────────────────────┐
-│   Browser    │────▶│              Nginx (reverse proxy)           │
-└─────────────┘     └────────┬──────────────────────┬──────────────┘
-                             │                      │
-                    ┌────────▼────────┐    ┌────────▼────────┐
-                    │    Frontend     │    │     Backend      │
-                    │   SvelteKit 3   │    │    Axum 0.8      │
-                    │   Port 3000     │    │    Port 8080     │
-                    └─────────────────┘    └────────┬─────────┘
-                                                    │
-                                    ┌───────────────┼───────────────┐
-                                    │               │               │
-                           ┌────────▼──┐   ┌───────▼──┐   ┌───────▼──────┐
-                           │ PostgreSQL │   │  Audio   │   │   P2P Node   │
-                           │   16      │   │ Storage  │   │  iroh/QUIC   │
-                           └───────────┘   └──────────┘   └──────┬───────┘
-                                                                 │
-                                                        ┌────────▼────────┐
-                                                        │ n0.computer     │
-                                                        │ Relay Servers   │
-                                                        └─────────────────┘
-```
+## Operating an instance
 
-For a deep dive, see the [Architecture Guide](docs/architecture.md).
+Nginx serves the web interface and the API on the same origin. The default web port is **8880** and can be changed with `NGINX_PORT`. The stock Compose file also publishes the frontend on TCP 3000, the backend on TCP 8080 and the peer transport on UDP 11204 by default. For an internet-facing installation, configure HTTPS and restrict host ports to the services you intend to expose. [Deployment guide](docs/deployment.md)
 
-## Documentation
+| Data to keep | Default location |
+| --- | --- |
+| Accounts, catalog, playlists and instance settings | PostgreSQL 16 with pgvector, in the `postgres_data` volume |
+| Uploaded audio and artwork | The `music_data` volume, or your configured S3-compatible bucket |
+| Peer identity and blob store | The `p2p_data` volume |
+| Database credentials and token-signing secret | The install directory’s `.env` file |
 
-| Guide | Description |
-|-------|-------------|
-| [Architecture](docs/architecture.md) | System design, crate responsibilities, data flow |
-| [API Reference](docs/api-reference.md) | Complete REST API documentation (60+ endpoints) |
-| [Deployment](docs/deployment.md) | Production setup, SSL, S3, environment variables |
-| [Development](docs/development.md) | Local dev setup, testing, project structure |
-| [P2P Networking](docs/p2p-networking.md) | iroh protocol, relay servers, content addressing |
+Before an upgrade, back up the database, media, configuration and any peer store. If the instance has an iroh-blobs 0.96 store, follow the index migration procedure before starting a newer backend. The backend applies database migrations at startup. [Backups](docs/deployment.md#backups) · [P2P upgrade and rollback](docs/p2p-networking.md#upgrading-the-p2p-store)
 
-## Contributing
+From the install directory, update the checkout and restart with the published images.
 
-We welcome contributions of all kinds! Whether you're fixing a typo, adding a feature, or improving documentation — every contribution matters.
-
-- 📖 Read the [Contributing Guide](CONTRIBUTING.md)
-- 🐛 Found a bug? [Open an issue](https://github.com/CICCADA-CORP/SoundTime/issues/new?template=bug_report.md)
-- 💡 Have an idea? [Request a feature](https://github.com/CICCADA-CORP/SoundTime/issues/new?template=feature_request.md)
-- 🔐 Security issue? See our [Security Policy](SECURITY.md)
-
-## Community
-- 🎮 [**Join our Discord**](https://discord.gg/UVCZCNcJvM) — Chat with the developers, get support, and share feedback
-- 📋 [GitHub Issues](https://github.com/CICCADA-CORP/SoundTime/issues) — Bug reports & feature requests
-- 💬 [GitHub Discussions](https://github.com/CICCADA-CORP/SoundTime/discussions) — Questions & ideas
-
-## FAQ
-
-<details>
-<summary><strong>What is SoundTime?</strong></summary>
-<br>
-SoundTime is a self-hosted music streaming server. You install it on your own hardware, upload your personal music library, and stream it from anywhere — on desktop, mobile, or any device with a web browser.
-</details>
-
-<details>
-<summary><strong>How does the P2P network work?</strong></summary>
-<br>
-SoundTime uses <a href="https://iroh.computer/">iroh</a> to establish encrypted QUIC connections between instances. When enabled, your node can discover other SoundTime instances, exchange catalog metadata, and stream tracks directly peer-to-peer — without any central server. All connections go through NAT-traversal relay servers provided by <a href="https://n0.computer/">n0.computer</a>.
-</details>
-
-<details>
-<summary><strong>Is my data encrypted?</strong></summary>
-<br>
-Yes. All P2P connections use end-to-end encryption via iroh's QUIC transport. Passwords are hashed with Argon2id (OWASP-recommended). API authentication uses short-lived JWT tokens.
-</details>
-
-<details>
-<summary><strong>Can I use SoundTime without the P2P features?</strong></summary>
-<br>
-Absolutely. P2P is entirely optional. If you don't set the <code>P2P_ENABLED=true</code> environment variable, SoundTime works as a standalone self-hosted music server with no external connections.
-</details>
-
-<details>
-<summary><strong>What audio formats are supported?</strong></summary>
-<br>
-SoundTime supports MP3, FLAC, WAV, OGG, AAC, AIFF and most common formats via <a href="https://github.com/pdeljanov/Symphonia">Symphonia</a> and <a href="https://github.com/Serial-ATA/lofty-rs">Lofty</a>. Uploaded tracks can be transcoded to OPUS at 320/128/64 kbps for adaptive streaming.
-</details>
-
-<details>
-<summary><strong>How many users / tracks can it handle?</strong></summary>
-<br>
-SoundTime is designed for personal use, small or big communities. It has been tested with libraries of several thousand tracks and a handful of concurrent users. Performance depends primarily on your server's storage I/O and available memory.
-</details>
-
-<details>
-<summary><strong>Can I run SoundTime on a Raspberry Pi?</strong></summary>
-<br>
-Yes. The Docker images are multi-arch (x86_64 and ARM64). A Raspberry Pi 4 with 4 GB of RAM is sufficient for personal use. OPUS transcoding will be slower on ARM but works fine for a single user.
-</details>
-
-<details>
-<summary><strong>How do I update SoundTime?</strong></summary>
-<br>
-
-```bash
-cd ~/soundtime  # or your install directory
-git pull
+```sh
+git pull --ff-only
 docker compose pull
 docker compose up -d
 ```
 
-Database migrations run automatically on startup.
-</details>
+To check a running instance, request `/healthz` through Nginx. If it fails, inspect startup and database connection messages with `docker compose logs --tail=100 backend`. [Local health endpoint](http://localhost:8880/healthz)
 
-<details>
-<summary><strong>Is there a mobile app?</strong></summary>
-<br>
-There is no dedicated mobile app — SoundTime is a progressive web application. The frontend is fully responsive and supports the <strong>Media Session API</strong>, so your phone's lock screen displays cover art, title, artist, and playback controls natively.
-</details>
+### Connecting peers
 
-## Security
+Web access and federation have separate controls. With P2P enabled, SoundTime instances can exchange catalog information and transfer audio over encrypted iroh connections. An administrator can add a known peer by its node ID. Operators can also configure a shared rendezvous for discovery. Keep the peer identity volume across restarts so other operators can continue to reach the same node. [Peer networking guide](docs/p2p-networking.md)
 
-If you discover a security vulnerability, please report it responsibly. See [SECURITY.md](SECURITY.md) for details.
+## Development
+
+The browser client uses Svelte 5, SvelteKit and shadcn-svelte. The Rust backend uses Axum for HTTP, SeaORM for PostgreSQL, Lofty for audio tags and Symphonia for waveform analysis. Redis tracks trending plays in the Compose deployment. [Architecture](docs/ARCHITECTURE.md)
+
+CI uses **Rust 1.97** and **Node.js 24**. For local development, start PostgreSQL 16 with pgvector and set `DATABASE_URL` and `JWT_SECRET` in the repository’s `.env`. If PostgreSQL runs in Compose, enable its loopback port mapping and use the same database password in `DATABASE_URL`. Run the following commands from the repository root in separate terminals. [Development setup](docs/development.md#quick-setup)
+
+```sh
+cd backend
+cargo run --locked -p soundtime-server
+```
+
+```sh
+cd frontend
+npm ci
+npm run dev
+```
+
+The development client proxies `/api` to the backend on port 8080. [Open the development client](http://localhost:5173)
+
+| Check | Run from | Command |
+| --- | --- | --- |
+| Rust workspace tests | `backend/` | `cargo test --locked --workspace --all-features` |
+| Svelte and TypeScript checks | `frontend/` | `npm run check` |
+| Frontend unit tests | `frontend/` | `npm test` |
+| Private-instance playback through Nginx | Repository root, after `npm ci` in `frontend/` | `./scripts/test-private-listening.sh` |
+
+The playback test starts a disposable Compose project and exercises the browser in headless mode. CI also runs the PostgreSQL integration tests against a dedicated test database. [CI workflow](.github/workflows/ci.yml)
+
+## Project resources
+
+| I want to… | Where to go |
+| --- | --- |
+| Configure storage, a domain or TLS | [Self-hosting guide](docs/SELF_HOSTING.md) · [Deployment reference](docs/deployment.md) |
+| Build an integration or an extension | [HTTP API](docs/api-reference.md) · [Plugin development](docs/plugin-development.md) · [Themes](docs/themes.md) |
+| Follow changes or contribute a patch | [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md) |
+| Ask a question or report a bug | [GitHub Discussions](https://github.com/CICCADA-CORP/SoundTime/discussions) · [Discord](https://discord.gg/UVCZCNcJvM) · [Issue tracker](https://github.com/CICCADA-CORP/SoundTime/issues) |
+| Report a security vulnerability privately | [Security policy](SECURITY.md) |
 
 ## License
 
-SoundTime is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+SoundTime is maintained by CICCADA and distributed under the GNU Affero General Public License, version 3 or later (`AGPL-3.0-or-later`). [License text](LICENSE)
 
-This means you can use, modify, and distribute SoundTime freely, but if you run a modified version as a network service, you must make the source code available to its users.
-
----
-
-## ⚠️ Disclaimer
-
-SoundTime is a **self-hosted music streaming tool** designed for managing and streaming your **own personal music library**. The peer-to-peer features are intended for sharing legally owned or royalty-free content between instances you operate or trust.
-
-**The developers of SoundTime do not endorse, encourage, or condone the use of this software for sharing, distributing, or hosting copyrighted material without proper authorization from the rights holders.**
-
-Each SoundTime instance is independently operated. The responsibility for the content hosted, shared, or made available through a given node lies **entirely with the operator of that node** — not with the authors, contributors, or maintainers of the SoundTime software.
-
-By using SoundTime, you acknowledge that:
-- You are solely responsible for ensuring that all content on your instance complies with applicable copyright laws and regulations in your jurisdiction.
-- The SoundTime project and its contributors bear **no liability** for any unlawful use of the software.
-- P2P connections are made at the discretion of instance operators. Connecting to another node does not imply endorsement of its content.
-
-If you are a rights holder and believe your content is being shared through a SoundTime instance, please contact the **operator of that specific instance** directly.
-
----
-
-<p align="center">
-  Made with ❤️ by <a href="https://github.com/CICCADA-CORP">CICCADA</a>
-</p>
+Each operator is responsible for the media they host and share. Use recordings you have permission to distribute when sharing with peers. Rights holders can contact the operator of the instance serving the recording.
