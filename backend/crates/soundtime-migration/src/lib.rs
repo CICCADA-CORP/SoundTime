@@ -51,6 +51,7 @@ mod m20261119_000002_original_proofs;
 mod m20261119_000003_search_rank_generation;
 mod m20261119_000004_catalog_credits;
 mod m20261119_000006_recording_tags;
+mod m20261119_000007_direct_search_page;
 
 pub struct Migrator;
 
@@ -123,6 +124,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261119_000003_search_rank_generation::Migration),
             Box::new(m20261119_000004_catalog_credits::Migration),
             Box::new(m20261119_000006_recording_tags::Migration),
+            Box::new(m20261119_000007_direct_search_page::Migration),
         ]
     }
 }

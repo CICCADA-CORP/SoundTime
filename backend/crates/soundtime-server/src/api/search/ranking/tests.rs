@@ -1,3 +1,5 @@
+mod direct;
+
 use super::*;
 use crate::api::search::{search, SearchParams};
 use anyhow::{ensure, Context, Result};
@@ -39,6 +41,7 @@ async fn exercise(url: &str) -> Result<()> {
         DELETE FROM federation_search_jobs WHERE kind='initial'",
     )
     .await?;
+    direct::exercise(&db).await?;
     let dir = tempfile::tempdir()?;
     let app = Arc::new(AppState {
         db: db.clone(),

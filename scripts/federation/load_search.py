@@ -12,7 +12,7 @@ QUERIES = Path(__file__).resolve().parents[2] / "backend/crates/soundtime-server
 
 def lookup(category):
     query = (QUERIES / (category + ".sql")).read_text()
-    if category == "ranked_page":
+    if category in ("ranked_page", "ranked_direct"):
         prefix = (QUERIES / "rank_prefix.sql").read_text()
         names = (QUERIES / "name_matches.sql").read_text()
         # psql captures the actual transaction snapshot and ranked UUIDs. The
@@ -20,7 +20,7 @@ def lookup(category):
         setup = f"PREPARE corpus(text,bigint) AS {prefix};\nEXECUTE corpus(:'term',65)\n\\gset corpus_\n"
         return (setup, "text,text,jsonb,bigint,bigint,bool,bool",
                 ":'term',:'corpus_snapshot',(:'corpus_ids'::jsonb - 64),10,0,true,true",
-                "WITH names AS MATERIALIZED (" + names + ")," + query)
+                "WITH names AS MATERIALIZED (" + names + ")," + (QUERIES / "rank_valid.sql").read_text() + query)
     if category == "rank_prefix":
         return "", "text,bigint", ":'term',65", query
     if category == "name_matches":
@@ -52,7 +52,7 @@ def explain(compose, project, report_path):
     # Sample the two skipped availability queries once to diagnose the old path.
     for term in ("Quartz0001:*", "Melody00:*"):
         lookups = [("tracks", "generic"), ("tracks", "custom"), ("name_matches", "generic"),
-                   ("rank_prefix", "generic"), ("ranked_page", "generic")]
+                   ("rank_prefix", "generic"), ("ranked_page", "generic"), ("ranked_direct", "generic")]
         if term == "Quartz0001:*":
             lookups.extend([("artists", "generic"), ("albums", "generic")])
         for category, mode in lookups:

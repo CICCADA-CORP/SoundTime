@@ -26,9 +26,9 @@ class LocalSearchPlans(unittest.TestCase):
             self.assertIn("BEGIN READ ONLY", script)
             self.assertIn("statement_timeout = '8s'", script)
             self.assertLessEqual(timeout, 14)
-            names = ("ranked_page", "rank_prefix", "tracks", "artists", "albums", "name_matches")
+            names = ("ranked_direct", "ranked_page", "rank_prefix", "tracks", "artists", "albums", "name_matches")
             category = next(n for n in names if (load_search.QUERIES / (n + ".sql")).read_text() in script)
-            if category == "ranked_page":
+            if category in ("ranked_page", "ranked_direct"):
                 self.assertIn("EXECUTE corpus(:'term',65)\n\\gset corpus_", script)
                 self.assertIn(":'corpus_snapshot',(:'corpus_ids'::jsonb - 64),10,0,true,true", script)
             calls.append((category, args[-1], "force_generic_plan" in script))
@@ -39,13 +39,14 @@ class LocalSearchPlans(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             result = load_search.explain(run, "fixture", Path(folder) / "report.json")
             plans = json.loads((Path(folder) / result["plan_file"]).read_text())
-        self.assertEqual(len(plans), 12)
-        self.assertEqual(len(result["samples"]), 12)
+        self.assertEqual(len(plans), 14)
+        self.assertEqual(len(result["samples"]), 14)
         for term in ["term=Quartz0001:*", "term=Melody00:*"]:
             self.assertIn(("tracks", term, True), calls)
             self.assertIn(("tracks", term, False), calls)
             self.assertIn(("name_matches", term, True), calls)
             self.assertIn(("rank_prefix", term, True), calls)
             self.assertIn(("ranked_page", term, True), calls)
+            self.assertIn(("ranked_direct", term, True), calls)
         self.assertEqual(next(p for p in plans if p["category"] == "artists")["error"], "statement timeout")
         self.assertIn("explain", plans[-1])

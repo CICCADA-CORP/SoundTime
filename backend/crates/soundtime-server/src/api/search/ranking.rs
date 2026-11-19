@@ -4,7 +4,10 @@ use sea_orm::{ConnectionTrait, DbBackend, DbErr, FromQueryResult, QueryResult, S
 use soundtime_db::AppState;
 use std::{
     collections::HashMap,
-    sync::{Arc, LazyLock, Mutex, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, LazyLock, Mutex, Weak,
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::OnceCell;
@@ -13,12 +16,19 @@ use uuid::Uuid;
 const PREFIX: usize = 64;
 const MAX_ENTRIES: usize = 512;
 const TTL: Duration = Duration::from_secs(8);
-const PAGE: &str = concat!(
-    "WITH names AS MATERIALIZED (",
-    include_str!("name_matches.sql"),
-    "),",
-    include_str!("ranked_page.sql")
-);
+macro_rules! visible_page {
+    ($body:literal) => {
+        concat!(
+            "WITH names AS MATERIALIZED (",
+            include_str!("name_matches.sql"),
+            "),",
+            include_str!("rank_valid.sql"),
+            include_str!($body)
+        )
+    };
+}
+const DIRECT: &str = visible_page!("ranked_direct.sql");
+const PAGE: &str = visible_page!("ranked_page.sql");
 
 struct Prefix {
     snapshot: String,
@@ -31,6 +41,9 @@ struct Entry {
     owner: Weak<AppState>,
     started: Instant,
     prefix: OnceCell<Option<Prefix>>,
+    // A mirror, legacy copy or filtered position can make this prefix unsuitable
+    // for the cheaper proof. Further requests may always use the full check.
+    needs_full_check: AtomicBool,
 }
 
 type Key = (usize, String);
@@ -59,6 +72,7 @@ fn entry(state: &Arc<AppState>, key: &Key) -> Option<Arc<Entry>> {
         owner: Arc::downgrade(state),
         started: Instant::now(),
         prefix: OnceCell::new(),
+        needs_full_check: AtomicBool::new(false),
     });
     cache.insert(key.clone(), slot.clone());
     Some(slot)
@@ -104,11 +118,10 @@ pub(super) async fn page(
     let Some(prefix) = slot.prefix.get_or_try_init(|| rank(state, terms)).await? else {
         return Ok(None);
     };
-    let rows = state
-        .db
-        .query_all(Statement::from_sql_and_values(
+    let query = |sql: &'static str| {
+        Statement::from_sql_and_values(
             DbBackend::Postgres,
-            PAGE,
+            sql,
             [
                 terms.into(),
                 prefix.snapshot.as_str().into(),
@@ -118,8 +131,22 @@ pub(super) async fn page(
                 strict.into(),
                 enabled.into(),
             ],
-        ))
-        .await?;
+        )
+    };
+    let rows = if slot.needs_full_check.load(Ordering::Relaxed) {
+        state.db.query_all(query(PAGE)).await?
+    } else {
+        let rows = state.db.query_all(query(DIRECT)).await?;
+        let status = rows
+            .first()
+            .ok_or_else(|| DbErr::Custom("missing direct page status".into()))?;
+        if status.try_get::<bool>("", "usable")? && !status.try_get::<bool>("", "direct")? {
+            slot.needs_full_check.store(true, Ordering::Relaxed);
+            state.db.query_all(query(PAGE)).await?
+        } else {
+            rows
+        }
+    };
     let first = rows
         .first()
         .ok_or_else(|| DbErr::Custom("missing search page status".into()))?;
