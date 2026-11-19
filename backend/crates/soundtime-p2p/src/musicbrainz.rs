@@ -1,25 +1,482 @@
-//! MusicBrainz API client for enriching track metadata.
-//!
-//! Uses the MusicBrainz Web Service v2 to look up recordings by title+artist
-//! and retrieve canonical metadata (MusicBrainz ID, genre, year, etc.).
-//!
-//! Rate-limited to 1 request/second per MusicBrainz API terms.
-
-use serde::Deserialize;
+//! Shared MusicBrainz recording resolution for imports and administrative enrichment.
+use anyhow::{bail, ensure, Result};
+use reqwest::{Client, Response, StatusCode};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::time::Duration;
-use tokio::sync::Semaphore;
-use tracing::{debug, warn};
+use tokio::{sync::Mutex, time::Instant};
+use uuid::Uuid;
 
-/// MusicBrainz API base URL.
+mod ranking;
+#[cfg(test)]
+mod tests;
+
 const MB_BASE_URL: &str = "https://musicbrainz.org/ws/2";
-
-/// User-Agent required by MusicBrainz API policy.
 const MB_USER_AGENT: &str = "SoundTime/0.1.0 (https://github.com/CICCADA-CORP/SoundTime)";
+const PAGE_SIZE: usize = 25;
+static NEXT_REQUEST: Mutex<Option<Instant>> = Mutex::const_new(None);
 
-/// Rate-limit: max 1 concurrent request (MusicBrainz enforces 1 req/s).
-static MB_SEMAPHORE: Semaphore = Semaphore::const_new(1);
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Artist {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "sort-name")]
+    pub sort_name: Option<String>,
+}
 
-/// A resolved recording from MusicBrainz.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ArtistCredit {
+    pub name: Option<String>,
+    #[serde(default)]
+    pub joinphrase: String,
+    pub artist: Artist,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Release {
+    pub id: String,
+    pub title: String,
+    pub date: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Tag {
+    pub name: String,
+    #[serde(default)]
+    pub count: i32,
+}
+
+fn list<'de, D, T>(input: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(input)?.unwrap_or_default())
+}
+
+fn search_score<'de, D: Deserializer<'de>>(input: D) -> Result<u8, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Score {
+        Number(u8),
+        Text(String),
+    }
+    match Option::<Score>::deserialize(input)? {
+        Some(Score::Number(n)) => Ok(n),
+        Some(Score::Text(s)) => s.parse().map_err(serde::de::Error::custom),
+        None => Ok(0),
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Recording {
+    pub id: String,
+    pub title: String,
+    pub length: Option<u64>,
+    pub disambiguation: Option<String>,
+    #[serde(rename = "artist-credit", default, deserialize_with = "list")]
+    pub artist_credit: Vec<ArtistCredit>,
+    #[serde(default, deserialize_with = "list")]
+    pub releases: Vec<Release>,
+    #[serde(default, deserialize_with = "list")]
+    pub tags: Vec<Tag>,
+    #[serde(default, deserialize_with = "list")]
+    pub isrcs: Vec<String>,
+    #[serde(rename = "first-release-date")]
+    pub first_release_date: Option<String>,
+    #[serde(default, deserialize_with = "search_score")]
+    pub score: u8,
+}
+
+impl Recording {
+    pub fn credited_artist(&self) -> String {
+        self.artist_credit
+            .iter()
+            .map(|c| {
+                let name = c
+                    .name
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&c.artist.name);
+                format!("{}{}", name, c.joinphrase)
+            })
+            .collect()
+    }
+
+    fn prefer_album(&mut self, album: Option<&str>) {
+        self.releases.sort_by(|a, b| {
+            let known = |release: &Release| release.date.as_ref().is_some_and(|s| !s.is_empty());
+            known(b).cmp(&known(a)).then_with(|| a.date.cmp(&b.date))
+        });
+        if let Some(album) = album.filter(|s| !s.trim().is_empty()) {
+            let name = ranking::normalize(album);
+            self.releases
+                .sort_by_key(|release| ranking::normalize(&release.title) != name);
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum RecordingMatch {
+    Reliable(Recording),
+    Ambiguous(Vec<Recording>),
+    Absent,
+}
+
+#[derive(Deserialize)]
+struct Page {
+    recordings: Vec<Recording>,
+    count: Option<usize>,
+}
+
+impl Page {
+    fn truncated(&self) -> bool {
+        self.count.map_or(self.recordings.len() >= PAGE_SIZE, |n| {
+            n > self.recordings.len()
+        })
+    }
+}
+
+struct Hints<'a> {
+    title: &'a str,
+    artist: Option<&'a str>,
+    album: Option<&'a str>,
+    duration_ms: Option<u64>,
+}
+
+fn retry_delay(response: &Response, attempt: u32) -> Duration {
+    let wait = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|h| h.to_str().ok());
+    if let Some(value) = wait {
+        if let Ok(seconds) = value.parse::<u64>() {
+            return Duration::from_secs(seconds);
+        }
+        if let Ok(date) = chrono::DateTime::parse_from_rfc2822(value) {
+            return (date.to_utc() - chrono::Utc::now())
+                .to_std()
+                .unwrap_or_default();
+        }
+    }
+    Duration::from_secs(1 << attempt)
+}
+
+async fn request(client: &Client, url: &str, query: &[(&str, &str)]) -> Result<Response> {
+    for attempt in 0..3 {
+        // Keep response headers inside the critical section so no other caller
+        // can race past a new provider-wide Retry-After embargo.
+        let mut next = NEXT_REQUEST.lock().await;
+        if let Some(when) = *next {
+            ensure!(
+                when.saturating_duration_since(Instant::now()) <= Duration::from_secs(15),
+                "MusicBrainz requested a longer cooldown; retry later"
+            );
+            tokio::time::sleep_until(when).await;
+        }
+        *next = Some(Instant::now() + Duration::from_secs(1));
+        let response = client
+            .get(url)
+            .query(query)
+            .timeout(Duration::from_secs(12))
+            .send()
+            .await?;
+        if !matches!(
+            response.status(),
+            StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+        ) {
+            return Ok(response);
+        }
+        let delay = retry_delay(&response, attempt).max(Duration::from_secs(1));
+        let now = Instant::now();
+        *next = Some(
+            now.checked_add(delay)
+                .unwrap_or(now + Duration::from_secs(365 * 86400)),
+        );
+        if attempt == 2 || delay > Duration::from_secs(15) {
+            bail!(
+                "MusicBrainz returned {} (retry after {} seconds)",
+                response.status(),
+                delay.as_secs()
+            );
+        }
+    }
+    unreachable!()
+}
+
+pub async fn get_artist(client: &Client, base_url: &str, mbid: &str) -> Result<Response> {
+    let url = format!(
+        "{}/artist/{}",
+        base_url.trim_end_matches('/'),
+        Uuid::parse_str(mbid)?
+    );
+    Ok(
+        request(client, &url, &[("inc", "url-rels"), ("fmt", "json")])
+            .await?
+            .error_for_status()?,
+    )
+}
+
+pub async fn get_recording(client: &Client, base_url: &str, id: Uuid) -> Result<Option<Recording>> {
+    let url = format!("{}/recording/{id}", base_url.trim_end_matches('/'));
+    let response = request(
+        client,
+        &url,
+        &[
+            ("inc", "artist-credits+releases+tags+isrcs"),
+            ("fmt", "json"),
+        ],
+    )
+    .await?;
+    if response.status() == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let response = response.error_for_status()?;
+    let resolved_id = response
+        .url()
+        .path_segments()
+        .and_then(|mut parts| parts.next_back())
+        .and_then(|s| Uuid::parse_str(s).ok());
+    let mut recording: Recording = response.json().await?;
+    ensure!(
+        Some(Uuid::parse_str(&recording.id)?) == resolved_id && !recording.title.trim().is_empty(),
+        "MusicBrainz returned an inconsistent recording identity"
+    );
+    if recording
+        .first_release_date
+        .as_deref()
+        .unwrap_or("")
+        .is_empty()
+    {
+        recording.first_release_date = recording
+            .releases
+            .iter()
+            .filter_map(|r| r.date.as_ref())
+            .filter(|s| !s.is_empty())
+            .min()
+            .cloned();
+    }
+    recording.prefer_album(None);
+    Ok(Some(recording))
+}
+
+fn quoted(field: &str, value: &str) -> String {
+    // Lucene phrase literals escape both backslash and the closing quote.
+    let bounded: String = value.trim().chars().take(256).collect();
+    format!(
+        r#"{field}:"{}""#,
+        bounded.replace('\\', "\\\\").replace('"', "\\\"")
+    )
+}
+
+fn text_queries(hints: &Hints<'_>) -> Vec<String> {
+    let full = quoted("recording", hints.title);
+    let core = quoted("recording", ranking::base_title(hints.title));
+    let mut queries = Vec::new();
+    if let Some(artist) = hints.artist {
+        let artist = quoted("artist", artist);
+        queries.push(format!("{full} AND {artist}"));
+        if core != full {
+            queries.push(format!("{core} AND {artist}"));
+        }
+    } else if core != full {
+        queries.push(full);
+    }
+    if let Some(album) = hints.album {
+        queries.push(format!("{core} AND {}", quoted("release", album)));
+    }
+    if let (None, Some(ms)) = (hints.artist, hints.duration_ms) {
+        queries.push(format!(
+            "{core} AND dur:[{} TO {}]",
+            ms.saturating_sub(7000),
+            ms.saturating_add(7000)
+        ));
+    }
+    queries.push(core);
+    queries
+}
+
+async fn search(client: &Client, base: &str, query: &str) -> Result<Page> {
+    let url = format!("{}/recording", base.trim_end_matches('/'));
+    let limit = PAGE_SIZE.to_string();
+    Ok(request(
+        client,
+        &url,
+        &[("query", query), ("fmt", "json"), ("limit", &limit)],
+    )
+    .await?
+    .error_for_status()?
+    .json()
+    .await?)
+}
+
+async fn details(
+    client: &Client,
+    base: &str,
+    found: Recording,
+    album: Option<&str>,
+    isrc: Option<&str>,
+) -> Result<Option<Recording>> {
+    let Some(mut full) = get_recording(client, base, Uuid::parse_str(&found.id)?).await? else {
+        return Ok(None);
+    };
+    if isrc.is_some_and(|code| {
+        !full
+            .isrcs
+            .iter()
+            .any(|s| isrc_code(s).as_deref() == Some(code))
+    }) {
+        return Ok(None);
+    }
+    full.prefer_album(album);
+    full.score = found.score;
+    if let Some(date) = found.first_release_date.filter(|s| !s.is_empty()) {
+        let first = full.first_release_date.get_or_insert_with(|| date.clone());
+        if date < *first {
+            *first = date;
+        }
+    }
+    Ok(Some(full))
+}
+
+fn isrc_code(raw: &str) -> Option<String> {
+    let code: String = raw
+        .trim()
+        .to_ascii_uppercase()
+        .chars()
+        .filter(|c| *c != '-')
+        .collect();
+    let s = code.as_bytes();
+    (s.len() == 12
+        && s[..2].iter().all(u8::is_ascii_alphabetic)
+        && s[2..5].iter().all(u8::is_ascii_alphanumeric)
+        && s[5..].iter().all(u8::is_ascii_digit))
+    .then_some(code)
+}
+
+pub async fn resolve_recording(
+    client: &Client,
+    base_url: &str,
+    title: &str,
+    artist: Option<&str>,
+    album: Option<&str>,
+    duration_ms: Option<u64>,
+) -> Result<RecordingMatch> {
+    resolve_tagged_recording(
+        client,
+        base_url,
+        None,
+        None,
+        title,
+        artist,
+        album,
+        duration_ms,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn resolve_tagged_recording(
+    client: &Client,
+    base_url: &str,
+    recording_id: Option<Uuid>,
+    isrc: Option<&str>,
+    title: &str,
+    artist: Option<&str>,
+    album: Option<&str>,
+    duration_ms: Option<u64>,
+) -> Result<RecordingMatch> {
+    let hints = Hints {
+        title,
+        artist: artist.filter(|s| !s.trim().is_empty()),
+        album: album.filter(|s| !s.trim().is_empty()),
+        duration_ms: duration_ms.filter(|n| *n > 0),
+    };
+    if let Some(id) = recording_id {
+        if let Some(mut recording) = get_recording(client, base_url, id).await? {
+            recording.prefer_album(hints.album);
+            return Ok(RecordingMatch::Reliable(recording));
+        }
+    }
+    if let Some(code) = isrc.and_then(isrc_code) {
+        let page = search(client, base_url, &quoted("isrc", &code)).await?;
+        let truncated = page.truncated();
+        let mut matches = Vec::new();
+        for r in page.recordings {
+            if !r.isrcs.is_empty() && !r.isrcs.iter().any(|s| isrc_code(s).as_ref() == Some(&code))
+            {
+                continue;
+            }
+            ensure!(
+                Uuid::parse_str(&r.id).is_ok(),
+                "Invalid recording MBID in ISRC response"
+            );
+            if !matches.iter().any(|v: &Recording| v.id == r.id) {
+                matches.push(r);
+            }
+        }
+        if !matches.is_empty() {
+            let unique = matches.len() == 1 && !truncated;
+            let found = if unique {
+                matches.remove(0)
+            } else {
+                match ranking::choose(&hints, &matches) {
+                    RecordingMatch::Reliable(r) if !truncated => r,
+                    RecordingMatch::Ambiguous(r) => return Ok(RecordingMatch::Ambiguous(r)),
+                    _ => {
+                        matches.truncate(5);
+                        return Ok(RecordingMatch::Ambiguous(matches));
+                    }
+                }
+            };
+            if let Some(full) = details(client, base_url, found, hints.album, Some(&code)).await? {
+                return Ok(if unique {
+                    RecordingMatch::Reliable(full)
+                } else {
+                    ranking::choose(&hints, &[full])
+                });
+            }
+        }
+    }
+    if ranking::normalize(title).is_empty() {
+        return Ok(RecordingMatch::Absent);
+    }
+    let mut seen: Vec<Recording> = Vec::new();
+    let mut complete_ids = std::collections::HashSet::new();
+    let mut decision = RecordingMatch::Absent;
+    for query in text_queries(&hints) {
+        let page = search(client, base_url, &query).await?;
+        let truncated = page.truncated();
+        for recording in page.recordings.into_iter().take(PAGE_SIZE) {
+            ensure!(
+                Uuid::parse_str(&recording.id).is_ok(),
+                "Invalid recording MBID in search response"
+            );
+            if !truncated {
+                complete_ids.insert(recording.id.clone());
+            }
+            if let Some(previous) = seen.iter_mut().find(|r| r.id == recording.id) {
+                previous.score = previous.score.max(recording.score);
+            } else {
+                seen.push(recording);
+            }
+        }
+        decision = ranking::choose(&hints, &seen);
+        if let RecordingMatch::Reliable(found) = decision {
+            if !complete_ids.contains(&found.id) {
+                decision = RecordingMatch::Ambiguous(vec![found]);
+            } else if let Some(full) = details(client, base_url, found, hints.album, None).await? {
+                // A stale search hit can refer to a recording whose canonical title,
+                // credits or version have since changed.
+                return Ok(ranking::choose(&hints, &[full]));
+            } else {
+                decision = RecordingMatch::Absent;
+            }
+        }
+    }
+    Ok(decision)
+}
+
+// Preserve the existing compact return type for P2P callers.
 #[derive(Debug, Clone)]
 pub struct MusicBrainzRecording {
     pub id: String,
@@ -30,574 +487,57 @@ pub struct MusicBrainzRecording {
     pub score: u8,
 }
 
-// ── Internal API response types ─────────────────────────────────
-
-#[derive(Deserialize)]
-struct MbSearchResponse {
-    recordings: Vec<MbRecording>,
-}
-
-#[derive(Deserialize)]
-struct MbRecording {
-    id: String,
-    title: String,
-    score: Option<u8>,
-    #[serde(rename = "artist-credit")]
-    artist_credit: Option<Vec<MbArtistCredit>>,
-    releases: Option<Vec<MbRelease>>,
-}
-
-#[derive(Deserialize)]
-struct MbArtistCredit {
-    artist: MbArtist,
-}
-
-#[derive(Deserialize)]
-struct MbArtist {
-    name: String,
-}
-
-#[derive(Deserialize)]
-struct MbRelease {
-    title: String,
-    date: Option<String>,
-}
-
-/// MusicBrainz client for metadata resolution.
 pub struct MusicBrainzClient {
-    http: reqwest::Client,
+    http: Client,
     base_url: String,
 }
 
 impl MusicBrainzClient {
-    /// Create a new MusicBrainz client with the proper User-Agent.
-    ///
-    /// # Panics
-    /// Panics if the HTTP client cannot be built. This is acceptable because
-    /// `reqwest::Client::builder()` with default settings virtually never fails,
-    /// and `new()` returns `Self` (not `Result`), so changing the signature
-    /// would be a breaking API change.
     pub fn new() -> Self {
-        let http = reqwest::Client::builder()
-            .user_agent(MB_USER_AGENT)
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("failed to build HTTP client");
         Self {
-            http,
-            base_url: MB_BASE_URL.to_string(),
+            http: Client::builder()
+                .user_agent(MB_USER_AGENT)
+                .timeout(Duration::from_secs(12))
+                .build()
+                .expect("failed to build MusicBrainz HTTP client"),
+            base_url: std::env::var("MUSICBRAINZ_BASE_URL")
+                .unwrap_or_else(|_| MB_BASE_URL.to_owned()),
         }
     }
 
-    /// Create a client pointing at a custom base URL (for testing).
-    #[cfg(test)]
-    pub(crate) fn with_base_url(base_url: &str) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .expect("failed to build HTTP client");
-        Self {
-            http,
-            base_url: base_url.to_string(),
-        }
-    }
-
-    /// Look up a recording by title and artist name.
-    /// Returns the best match if found with a score >= 80.
     pub async fn lookup_recording(
         &self,
         title: &str,
         artist: &str,
     ) -> Option<MusicBrainzRecording> {
-        // Acquire rate-limit permit
-        let _permit = MB_SEMAPHORE.acquire().await.ok()?;
-
-        let query = format!(
-            "recording:\"{}\" AND artist:\"{}\"",
-            title.replace('"', ""),
-            artist.replace('"', "")
-        );
-
-        let url = format!(
-            "{}/recording?query={}&fmt=json&limit=3",
-            self.base_url,
-            urlencoding::encode(&query)
-        );
-
-        debug!(title = title, artist = artist, "querying MusicBrainz");
-
-        let resp = match self.http.get(&url).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("MusicBrainz request failed: {e}");
-                // Respect rate limit even on failure
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                return None;
-            }
-        };
-
-        // Respect rate limit
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        if !resp.status().is_success() {
-            warn!(status = %resp.status(), "MusicBrainz returned error");
-            return None;
-        }
-
-        let body: MbSearchResponse = match resp.json().await {
-            Ok(b) => b,
-            Err(e) => {
-                warn!("failed to parse MusicBrainz response: {e}");
-                return None;
-            }
-        };
-
-        // Find best match with score >= 80
-        body.recordings
-            .into_iter()
-            .filter(|r| r.score.unwrap_or(0) >= 80)
-            .map(|r| {
-                let artist_name = r
-                    .artist_credit
-                    .as_ref()
-                    .and_then(|ac| ac.first())
-                    .map(|ac| ac.artist.name.clone());
-
-                let (release_title, year) =
-                    r.releases
-                        .as_ref()
-                        .and_then(|rels| rels.first())
-                        .map(|rel| {
-                            let y = rel.date.as_ref().and_then(|d| {
-                                d.split('-').next().and_then(|y| y.parse::<i16>().ok())
-                            });
-                            (Some(rel.title.clone()), y)
-                        })
-                        .unwrap_or((None, None));
-
-                MusicBrainzRecording {
+        match resolve_recording(&self.http, &self.base_url, title, Some(artist), None, None).await {
+            Ok(RecordingMatch::Reliable(r)) => {
+                let credit = r.credited_artist();
+                let rls = r.releases.first();
+                let date = r
+                    .first_release_date
+                    .as_deref()
+                    .or_else(|| rls.and_then(|r| r.date.as_deref()));
+                Some(MusicBrainzRecording {
+                    artist_name: (!credit.is_empty()).then_some(credit),
+                    release_title: rls.map(|r| r.title.clone()),
+                    year: date.and_then(|s| s.split('-').next()?.parse().ok()),
+                    score: r.score,
                     id: r.id,
                     title: r.title,
-                    artist_name,
-                    release_title,
-                    year,
-                    score: r.score.unwrap_or(0),
-                }
-            })
-            .next()
+                })
+            }
+            Err(e) => {
+                tracing::warn!(error=%e, "MusicBrainz lookup unavailable");
+                None
+            }
+            Ok(_) => None,
+        }
     }
 }
 
 impl Default for MusicBrainzClient {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use wiremock::matchers::{method, path_regex};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    #[test]
-    fn test_client_creation() {
-        let client = MusicBrainzClient::new();
-        assert_eq!(client.base_url, MB_BASE_URL);
-        drop(client);
-    }
-
-    #[test]
-    fn test_client_default() {
-        let client = MusicBrainzClient::default();
-        assert_eq!(client.base_url, MB_BASE_URL);
-    }
-
-    #[test]
-    fn test_client_with_base_url() {
-        let client = MusicBrainzClient::with_base_url("http://localhost:9999");
-        assert_eq!(client.base_url, "http://localhost:9999");
-    }
-
-    // ── MusicBrainzRecording fields ──────────────────────────────────
-
-    #[test]
-    fn test_recording_debug_clone() {
-        let rec = MusicBrainzRecording {
-            id: "mb-1".into(),
-            title: "Test".into(),
-            artist_name: Some("Artist".into()),
-            release_title: Some("Album".into()),
-            year: Some(2024),
-            score: 95,
-        };
-        let cloned = rec.clone();
-        assert_eq!(rec.id, cloned.id);
-        assert_eq!(rec.score, cloned.score);
-        let debug = format!("{:?}", rec);
-        assert!(debug.contains("MusicBrainzRecording"));
-    }
-
-    #[test]
-    fn test_recording_all_none_optionals() {
-        let rec = MusicBrainzRecording {
-            id: "mb-2".into(),
-            title: "T".into(),
-            artist_name: None,
-            release_title: None,
-            year: None,
-            score: 80,
-        };
-        assert!(rec.artist_name.is_none());
-        assert!(rec.release_title.is_none());
-        assert!(rec.year.is_none());
-    }
-
-    // ── lookup_recording with mock server ────────────────────────────
-
-    fn mb_response_json(
-        score: u8,
-        date: Option<&str>,
-        has_artist: bool,
-        has_release: bool,
-    ) -> String {
-        let artist_credit = if has_artist {
-            r#"[{"artist": {"name": "Queen"}}]"#
-        } else {
-            "null"
-        };
-
-        let releases = if has_release {
-            let date_field = match date {
-                Some(d) => format!(r#""date": "{d}""#),
-                None => r#""date": null"#.to_string(),
-            };
-            format!(r#"[{{"title": "A Night at the Opera", {date_field}}}]"#)
-        } else {
-            "null".to_string()
-        };
-
-        format!(
-            r#"{{
-                "recordings": [{{
-                    "id": "test-mbid-123",
-                    "title": "Bohemian Rhapsody",
-                    "score": {score},
-                    "artist-credit": {artist_credit},
-                    "releases": {releases}
-                }}]
-            }}"#
-        )
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_success() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path_regex(r"/recording.*"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(mb_response_json(
-                95,
-                Some("1975-10-31"),
-                true,
-                true,
-            )))
-            .mount(&server)
-            .await;
-
-        let client = MusicBrainzClient::with_base_url(&format!("{}/ws/2", server.uri()));
-        let result = client.lookup_recording("Bohemian Rhapsody", "Queen").await;
-
-        let rec = result.expect("should find recording");
-        assert_eq!(rec.id, "test-mbid-123");
-        assert_eq!(rec.title, "Bohemian Rhapsody");
-        assert_eq!(rec.artist_name, Some("Queen".to_string()));
-        assert_eq!(rec.release_title, Some("A Night at the Opera".to_string()));
-        assert_eq!(rec.year, Some(1975));
-        assert!(rec.score >= 80);
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_low_score() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path_regex(r"/recording.*"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(mb_response_json(
-                50,
-                Some("2000"),
-                true,
-                true,
-            )))
-            .mount(&server)
-            .await;
-
-        let client = MusicBrainzClient::with_base_url(&format!("{}/ws/2", server.uri()));
-        let result = client.lookup_recording("Test", "Artist").await;
-        assert!(result.is_none(), "score < 80 should return None");
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_no_artist_credit() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path_regex(r"/recording.*"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(mb_response_json(
-                90,
-                Some("2020"),
-                false,
-                true,
-            )))
-            .mount(&server)
-            .await;
-
-        let client = MusicBrainzClient::with_base_url(&format!("{}/ws/2", server.uri()));
-        let result = client.lookup_recording("Test", "Artist").await;
-        let rec = result.unwrap();
-        assert!(rec.artist_name.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_no_releases() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path_regex(r"/recording.*"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(mb_response_json(85, None, true, false)),
-            )
-            .mount(&server)
-            .await;
-
-        let client = MusicBrainzClient::with_base_url(&format!("{}/ws/2", server.uri()));
-        let result = client.lookup_recording("Test", "Artist").await;
-        let rec = result.unwrap();
-        assert!(rec.release_title.is_none());
-        assert!(rec.year.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_year_only_date() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path_regex(r"/recording.*"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(mb_response_json(
-                90,
-                Some("1999"),
-                true,
-                true,
-            )))
-            .mount(&server)
-            .await;
-
-        let client = MusicBrainzClient::with_base_url(&format!("{}/ws/2", server.uri()));
-        let result = client.lookup_recording("Test", "Artist").await;
-        let rec = result.unwrap();
-        assert_eq!(rec.year, Some(1999));
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_http_error_status() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path_regex(r"/recording.*"))
-            .respond_with(ResponseTemplate::new(503))
-            .mount(&server)
-            .await;
-
-        let client = MusicBrainzClient::with_base_url(&format!("{}/ws/2", server.uri()));
-        let result = client.lookup_recording("Test", "Artist").await;
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_invalid_json_response() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path_regex(r"/recording.*"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("not valid json"))
-            .mount(&server)
-            .await;
-
-        let client = MusicBrainzClient::with_base_url(&format!("{}/ws/2", server.uri()));
-        let result = client.lookup_recording("Test", "Artist").await;
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_empty_recordings() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path_regex(r"/recording.*"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"recordings": []}"#))
-            .mount(&server)
-            .await;
-
-        let client = MusicBrainzClient::with_base_url(&format!("{}/ws/2", server.uri()));
-        let result = client.lookup_recording("Test", "Artist").await;
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_strips_quotes() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path_regex(r"/recording.*"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(mb_response_json(
-                90,
-                Some("2020"),
-                true,
-                true,
-            )))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = MusicBrainzClient::with_base_url(&format!("{}/ws/2", server.uri()));
-        // Quotes in title/artist should be stripped
-        let result = client
-            .lookup_recording(r#"Test "Title""#, r#"Art"ist"#)
-            .await;
-        assert!(result.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_release_no_date() {
-        let server = MockServer::start().await;
-
-        let body = r#"{
-            "recordings": [{
-                "id": "x",
-                "title": "T",
-                "score": 85,
-                "artist-credit": [{"artist": {"name": "A"}}],
-                "releases": [{"title": "Album", "date": null}]
-            }]
-        }"#;
-
-        Mock::given(method("GET"))
-            .and(path_regex(r"/recording.*"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(body))
-            .mount(&server)
-            .await;
-
-        let client = MusicBrainzClient::with_base_url(&format!("{}/ws/2", server.uri()));
-        let result = client.lookup_recording("T", "A").await;
-        let rec = result.unwrap();
-        assert_eq!(rec.release_title, Some("Album".to_string()));
-        assert!(rec.year.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_no_score_field() {
-        let server = MockServer::start().await;
-
-        let body = r#"{
-            "recordings": [{
-                "id": "x",
-                "title": "T",
-                "artist-credit": [{"artist": {"name": "A"}}],
-                "releases": [{"title": "Album", "date": "2020"}]
-            }]
-        }"#;
-
-        Mock::given(method("GET"))
-            .and(path_regex(r"/recording.*"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(body))
-            .mount(&server)
-            .await;
-
-        let client = MusicBrainzClient::with_base_url(&format!("{}/ws/2", server.uri()));
-        let result = client.lookup_recording("T", "A").await;
-        // score defaults to 0, which is < 80 → None
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_multiple_recordings_picks_first_high_score() {
-        let server = MockServer::start().await;
-
-        let body = r#"{
-            "recordings": [
-                {
-                    "id": "low-score",
-                    "title": "Wrong",
-                    "score": 50,
-                    "artist-credit": [{"artist": {"name": "X"}}],
-                    "releases": []
-                },
-                {
-                    "id": "high-score",
-                    "title": "Right",
-                    "score": 95,
-                    "artist-credit": [{"artist": {"name": "Y"}}],
-                    "releases": [{"title": "Album", "date": "2023"}]
-                }
-            ]
-        }"#;
-
-        Mock::given(method("GET"))
-            .and(path_regex(r"/recording.*"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(body))
-            .mount(&server)
-            .await;
-
-        let client = MusicBrainzClient::with_base_url(&format!("{}/ws/2", server.uri()));
-        let result = client.lookup_recording("T", "A").await;
-        let rec = result.unwrap();
-        assert_eq!(rec.id, "high-score");
-        assert_eq!(rec.title, "Right");
-    }
-
-    #[tokio::test]
-    async fn test_lookup_recording_connection_failure() {
-        // Point to a non-existent server
-        let client = MusicBrainzClient::with_base_url("http://127.0.0.1:1");
-        let result = client.lookup_recording("Test", "Artist").await;
-        assert!(result.is_none());
-    }
-
-    // ── Internal deserialization structs ──────────────────────────────
-
-    #[test]
-    fn test_mb_search_response_deserialize() {
-        let json = r#"{"recordings": []}"#;
-        let resp: MbSearchResponse = serde_json::from_str(json).unwrap();
-        assert!(resp.recordings.is_empty());
-    }
-
-    #[test]
-    fn test_mb_recording_deserialize_minimal() {
-        let json = r#"{"id": "abc", "title": "Test"}"#;
-        let rec: MbRecording = serde_json::from_str(json).unwrap();
-        assert_eq!(rec.id, "abc");
-        assert_eq!(rec.title, "Test");
-        assert!(rec.score.is_none());
-        assert!(rec.artist_credit.is_none());
-        assert!(rec.releases.is_none());
-    }
-
-    #[test]
-    fn test_mb_recording_deserialize_full() {
-        let json = r#"{
-            "id": "x",
-            "title": "T",
-            "score": 90,
-            "artist-credit": [{"artist": {"name": "A"}}],
-            "releases": [{"title": "R", "date": "2020-01-15"}]
-        }"#;
-        let rec: MbRecording = serde_json::from_str(json).unwrap();
-        assert_eq!(rec.score, Some(90));
-        let ac = rec.artist_credit.unwrap();
-        assert_eq!(ac[0].artist.name, "A");
-        let rels = rec.releases.unwrap();
-        assert_eq!(rels[0].title, "R");
-        assert_eq!(rels[0].date, Some("2020-01-15".to_string()));
     }
 }

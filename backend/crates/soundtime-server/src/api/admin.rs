@@ -66,6 +66,12 @@ pub async fn update_setting(
     Path(key): Path<String>,
     Json(body): Json<UpdateSettingRequest>,
 ) -> Result<Json<SettingResponse>, (StatusCode, Json<serde_json::Value>)> {
+    if key == super::webradios::SETTING && !matches!(body.value.as_str(), "true" | "false") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"Expected true or false"})),
+        ));
+    }
     let existing = instance_setting::Entity::find()
         .filter(instance_setting::Column::Key.eq(&key))
         .one(&state.db)
@@ -380,8 +386,6 @@ pub async fn nodeinfo(State(state): State<Arc<AppState>>) -> Result<Json<NodeInf
 
     let p2p_node = get_p2p_node(&state);
     let p2p_enabled = p2p_node.is_some();
-    let p2p_node_id = p2p_node.map(|n| n.node_id().to_string());
-
     // Read instance settings
     let settings = instance_setting::Entity::find()
         .all(&state.db)
@@ -401,6 +405,10 @@ pub async fn nodeinfo(State(state): State<Arc<AppState>>) -> Result<Json<NodeInf
         .unwrap_or_default();
 
     let open_registration = crate::auth::registration::from_settings(&settings, total_users);
+    let flag = |key| settings.iter().any(|s| s.key == key && s.value == "true");
+    let p2p_node_id = p2p_node
+        .filter(|_| !flag("instance_private") || flag("listing_public"))
+        .map(|n| n.node_id().to_string());
 
     Ok(Json(NodeInfo {
         name,
@@ -644,12 +652,28 @@ pub async fn unban_user(
 
 // ─── Metadata Enrichment ────────────────────────────────────────────
 
+#[derive(serde::Deserialize)]
+pub struct RecordingChoice {
+    pub recording_id: Option<Uuid>,
+}
+
 /// POST /api/admin/metadata/enrich/:track_id — enrich a single track via MusicBrainz
 pub async fn enrich_track_metadata(
     State(state): State<Arc<AppState>>,
     Path(track_id): Path<Uuid>,
+    Query(choice): Query<RecordingChoice>,
 ) -> Result<Json<metadata_lookup::MetadataResult>, (StatusCode, Json<serde_json::Value>)> {
-    let result = metadata_lookup::enrich_track(&state.db, &*state.storage, track_id).await;
+    let result = if choice.recording_id.is_some() {
+        metadata_lookup::enrich_track_choice(
+            &state.db,
+            &*state.storage,
+            track_id,
+            choice.recording_id,
+        )
+        .await
+    } else {
+        metadata_lookup::enrich_track(&state.db, &*state.storage, track_id).await
+    };
     Ok(Json(result))
 }
 
@@ -670,43 +694,36 @@ pub async fn enrich_all_metadata(
     State(state): State<Arc<AppState>>,
     Extension(tracker): Extension<metadata_lookup::MetadataTaskTrackerHandle>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    // Reject if a task is already running
     {
-        let lock = tracker.lock().await;
+        let mut lock = tracker.lock().await;
         if let Some(metadata_lookup::MetadataTaskStatus::Running { .. }) = &*lock {
             return Err((
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({ "error": "Metadata enrichment is already running" })),
             ));
         }
-    }
-
-    // Mark as running
-    {
-        let mut lock = tracker.lock().await;
         *lock = Some(metadata_lookup::MetadataTaskStatus::Running {
-            progress: metadata_lookup::MetadataTaskProgress {
-                processed: 0,
-                total: 0,
-                enriched: 0,
-                not_found: 0,
-                errors: 0,
-                current_track: None,
-            },
+            progress: metadata_lookup::MetadataTaskProgress::default(),
         });
     }
 
-    let tracker_clone = tracker.clone();
     tokio::spawn(async move {
-        let result = metadata_lookup::enrich_all_tracks_background(
+        let status = match metadata_lookup::enrich_all_tracks_background(
             &state.db,
             &*state.storage,
-            &tracker_clone,
+            &tracker,
         )
-        .await;
-
-        let mut lock = tracker_clone.lock().await;
-        *lock = Some(metadata_lookup::MetadataTaskStatus::Completed { result });
+        .await
+        {
+            Ok(result) => metadata_lookup::MetadataTaskStatus::Completed { result },
+            Err(error) => {
+                tracing::error!(%error, "could not load tracks for metadata enrichment");
+                metadata_lookup::MetadataTaskStatus::Error {
+                    message: "Could not load tracks for metadata enrichment".into(),
+                }
+            }
+        };
+        *tracker.lock().await = Some(status);
     });
 
     Ok(Json(
@@ -745,10 +762,19 @@ pub async fn metadata_task_status(
 /// reviewed the completed or errored task result.
 pub async fn metadata_task_dismiss(
     Extension(tracker): Extension<metadata_lookup::MetadataTaskTrackerHandle>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let mut lock = tracker.lock().await;
+    if matches!(
+        *lock,
+        Some(metadata_lookup::MetadataTaskStatus::Running { .. })
+    ) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "Metadata enrichment is still running" })),
+        ));
+    }
     *lock = None;
-    Json(serde_json::json!({ "status": "dismissed" }))
+    Ok(Json(serde_json::json!({ "status": "dismissed" })))
 }
 
 /// GET /api/admin/metadata/status — metadata enrichment status overview

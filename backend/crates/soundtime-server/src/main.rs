@@ -26,6 +26,7 @@ mod auth;
 mod cluster;
 #[allow(dead_code)] // Public API for future recommendation endpoints (Phase 4.5+)
 mod embeddings;
+mod legacy_singles;
 mod listing_worker;
 pub mod metadata_lookup;
 mod p2p_logs;
@@ -214,7 +215,13 @@ async fn main() {
         if p2p_enabled {
             tracing::info!("starting P2P node (iroh)...");
             let p2p_config = soundtime_p2p::P2pConfig::from_env();
-            match soundtime_p2p::P2pNode::start(p2p_config, db.clone()).await {
+            match soundtime_p2p::P2pNode::start_with_storage(
+                p2p_config,
+                db.clone(),
+                storage.clone(),
+            )
+            .await
+            {
                 Ok(node) => {
                     tracing::info!(node_id = %node.node_id(), "P2P node started");
                     Some(node as Arc<dyn std::any::Any + Send + Sync>)
@@ -404,7 +411,10 @@ async fn main() {
         ));
 
     // Public API routes (no auth required, but gated if instance is private)
+    let directory =
+        Arc::new(api::webradios::Directory::new().expect("build Radio Browser HTTP client"));
     let public_api = Router::new()
+        .merge(api::webradios::routes(directory.clone()))
         .route("/tos", get(api::reports::get_tos))
         .route("/tracks", get(api::tracks::list_tracks))
         .route("/tracks/popular", get(api::tracks::list_popular_tracks))
@@ -431,6 +441,8 @@ async fn main() {
         .route("/users/{id}", get(api::users::get_user_profile))
         .route("/search", get(api::search::search))
         .route("/p2p/search", get(api::p2p::network_search))
+        .route("/p2p/status", get(api::p2p::p2p_status))
+        .route("/p2p/network-graph", get(api::p2p::network_graph))
         .route("/genres", get(api::tracks::list_genres))
         .route(
             "/genres/{genre}/tracks",
@@ -450,9 +462,18 @@ async fn main() {
     let stream_budget = auth::stream_budget::StreamBudget::configured();
     let media_api = Router::new()
         .route(
+            "/webradios/stations/{id}/stream",
+            get(api::webradios::stream_station)
+                .layer(Extension(directory))
+                .layer(axum_middleware::from_fn_with_state(
+                    (state.clone(), stream_budget.clone()),
+                    auth::middleware::require_stream_if_private,
+                )),
+        )
+        .route(
             "/tracks/{id}/stream",
             get(api::audio::stream_track).layer(axum_middleware::from_fn_with_state(
-                (state.clone(), stream_budget),
+                (state.clone(), stream_budget.clone()),
                 auth::middleware::require_stream_if_private,
             )),
         )
@@ -521,6 +542,10 @@ async fn main() {
             axum::routing::delete(api::lastfm::lastfm_disconnect),
         )
         .route("/lastfm/now-playing", post(api::lastfm::lastfm_now_playing))
+        .route(
+            "/webradios/preference",
+            axum::routing::put(api::webradios::preference),
+        )
         .route("/radio/next", post(api::radio::radio_next))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
@@ -538,9 +563,6 @@ async fn main() {
         .merge(protected_api)
         // Public node info endpoint (for listing server)
         .route("/nodeinfo", get(api::admin::nodeinfo))
-        // Public P2P status endpoint
-        .route("/p2p/status", get(api::p2p::p2p_status))
-        .route("/p2p/network-graph", get(api::p2p::network_graph))
         // Public theme routes
         .route("/themes/active", get(api::themes::get_active_theme))
         .route("/themes/active.css", get(api::themes::serve_active_css))
@@ -552,6 +574,7 @@ async fn main() {
             "/admin",
             Router::new()
                 .route("/stats", get(api::admin::get_stats))
+                .route("/p2p/network-graph", get(api::p2p::admin_network_graph))
                 .route("/settings", get(api::admin::get_settings))
                 .route(
                     "/settings/{key}",
@@ -741,7 +764,10 @@ async fn main() {
     {
         let directory = soundtime_p2p::rendezvous::Rendezvous::default();
         let rendezvous = Router::new()
-            .route("/p2p/rendezvous", post(api::p2p::rendezvous))
+            .route(
+                "/p2p/rendezvous",
+                get(api::p2p::sample_rendezvous).post(api::p2p::rendezvous),
+            )
             .layer(axum::Extension(Arc::new(tokio::sync::Mutex::new(
                 directory,
             ))))

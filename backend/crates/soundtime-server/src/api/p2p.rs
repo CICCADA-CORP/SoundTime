@@ -5,7 +5,7 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 use soundtime_db::entities::remote_track;
 use soundtime_db::AppState;
@@ -17,6 +17,17 @@ use soundtime_p2p::{
 use soundtime_p2p::{P2pMessage, P2pNode, PeerInfo};
 use std::sync::Arc;
 use uuid::Uuid;
+
+pub async fn sample_rendezvous(
+    Extension(directory): Extension<Arc<tokio::sync::Mutex<Rendezvous>>>,
+) -> Json<Vec<soundtime_p2p::NodeId>> {
+    Json(
+        directory
+            .lock()
+            .await
+            .sample(chrono::Utc::now().timestamp(), None),
+    )
+}
 
 /// POST /api/p2p/rendezvous on instances that explicitly host a directory.
 pub async fn rendezvous(
@@ -47,6 +58,7 @@ fn get_p2p_node(state: &AppState) -> Option<Arc<P2pNode>> {
 #[derive(Serialize)]
 pub struct P2pStatus {
     pub enabled: bool,
+    pub explicit_catalog: bool,
     pub node_id: Option<String>,
     pub relay_url: Option<String>,
     pub relay_connected: bool,
@@ -85,6 +97,7 @@ pub async fn p2p_status(State(state): State<Arc<AppState>>) -> Json<P2pStatus> {
     let Some(node) = get_p2p_node(&state) else {
         return Json(P2pStatus {
             enabled: false,
+            explicit_catalog: false,
             node_id: None,
             relay_url: None,
             relay_connected: false,
@@ -102,6 +115,7 @@ pub async fn p2p_status(State(state): State<Arc<AppState>>) -> Json<P2pStatus> {
 
     Json(P2pStatus {
         enabled: true,
+        explicit_catalog: node.explicit_catalog(),
         node_id: Some(node.node_id().to_string()),
         relay_url,
         relay_connected,
@@ -145,14 +159,46 @@ pub async fn track_mirrors(
     Ok(Json(MirrorProviders { providers }))
 }
 
-/// GET /api/admin/p2p/peers — list known peers (admin only)
-pub async fn list_peers(State(state): State<Arc<AppState>>) -> Json<Vec<PeerInfo>> {
-    let Some(node) = get_p2p_node(&state) else {
-        return Json(vec![]);
-    };
+#[derive(Serialize)]
+pub struct ManagedPeer {
+    #[serde(flatten)]
+    peer: PeerInfo,
+    /// The subscription control is available on instances using explicit catalogues.
+    catalog_followed: Option<bool>,
+}
 
+/// GET /api/admin/p2p/peers — list known peers and local subscriptions.
+pub async fn list_peers(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<ManagedPeer>>, StatusCode> {
+    use soundtime_db::entities::federation_peer_policy as policy;
+    let Some(node) = get_p2p_node(&state) else {
+        return Ok(Json(vec![]));
+    };
     let peers = node.registry().list_peers().await;
-    Json(peers)
+    let explicit = node.explicit_catalog();
+    let followed: std::collections::HashSet<String> = if explicit && !peers.is_empty() {
+        policy::Entity::find()
+            .filter(policy::Column::IsFollowed.eq(true))
+            .filter(policy::Column::NodeId.is_in(peers.iter().map(|peer| peer.node_id.clone())))
+            .all(&state.db)
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+            .into_iter()
+            .map(|p| p.node_id)
+            .collect()
+    } else {
+        Default::default()
+    };
+    Ok(Json(
+        peers
+            .into_iter()
+            .map(|peer| ManagedPeer {
+                catalog_followed: explicit.then(|| followed.contains(&peer.node_id)),
+                peer,
+            })
+            .collect(),
+    ))
 }
 
 /// POST /api/admin/p2p/peers — add a peer by NodeId (admin only)
@@ -434,7 +480,15 @@ pub struct NetworkGraph {
 
 /// GET /api/p2p/network-graph — P2P network topology for D3 visualization
 pub async fn network_graph(State(state): State<Arc<AppState>>) -> Json<NetworkGraph> {
-    let Some(node) = get_p2p_node(&state) else {
+    graph(&state, false).await
+}
+
+pub async fn admin_network_graph(State(state): State<Arc<AppState>>) -> Json<NetworkGraph> {
+    graph(&state, true).await
+}
+
+async fn graph(state: &AppState, admin: bool) -> Json<NetworkGraph> {
+    let Some(node) = get_p2p_node(state) else {
         return Json(NetworkGraph {
             nodes: vec![],
             links: vec![],
@@ -490,8 +544,11 @@ pub async fn network_graph(State(state): State<Arc<AppState>>) -> Json<NetworkGr
         });
     }
 
-    // Peers from registry
-    let peers = node.registry().list_peers().await;
+    let peers = if admin {
+        node.registry().list_peers().await
+    } else {
+        node.public_peer_sample().await
+    };
     for peer in &peers {
         let short_peer_id = if peer.node_id.len() > 8 {
             &peer.node_id[..8]
@@ -750,6 +807,7 @@ mod tests {
     fn test_serialize_p2p_status_disabled() {
         let status = P2pStatus {
             enabled: false,
+            explicit_catalog: false,
             node_id: None,
             relay_url: None,
             relay_connected: false,
@@ -770,6 +828,7 @@ mod tests {
     fn test_serialize_p2p_status_enabled() {
         let status = P2pStatus {
             enabled: true,
+            explicit_catalog: true,
             node_id: Some("abc123".to_string()),
             relay_url: Some("https://relay.example.com".to_string()),
             relay_connected: true,

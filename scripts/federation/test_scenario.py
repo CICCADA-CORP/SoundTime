@@ -1,9 +1,12 @@
 import io
 import json
+import base64
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock, call, patch
@@ -23,6 +26,25 @@ class Response(io.BytesIO):
 
 
 class FederationScenarioTests(unittest.TestCase):
+    def test_browser_captures_use_the_expected_viewports_and_artifact_paths(self):
+        def frame(width, height):
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+            ihdr = struct.pack(">2I5B", width, height, 8, 0, 0, 0, 0)
+            return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+                    + chunk(b"IDAT", zlib.compress(bytes((width + 1) * height))) + chunk(b"IEND", b""))
+
+        desktop, mobile = frame(1440, 900), frame(390, 844)
+        captures = {"playlist-desktop": base64.b64encode(desktop), "player-mobile": base64.b64encode(mobile)}
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "screenshots"
+            artifacts = scenario.save_browser_screenshots(directory, "play", captures)
+            self.assertEqual((Path(tmp) / artifacts[1]["file"]).read_bytes(), mobile)
+            self.assertEqual((Path(tmp) / artifacts[0]["file"]).read_bytes(), desktop)
+            with self.assertRaisesRegex(scenario.ScenarioError, "viewport"):
+                scenario.save_browser_screenshots(directory, "play", {**captures, "player-mobile": captures["playlist-desktop"]})
+
     def open_fake_browser(self, stack, proc):
         node = scenario.Instance("B", "http://unused")
         node.login_credentials["user"] = {"username": "reader", "password": "fixture"}

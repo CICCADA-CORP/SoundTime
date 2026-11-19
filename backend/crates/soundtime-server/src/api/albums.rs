@@ -88,7 +88,7 @@ pub async fn list_albums(
         .into_iter()
         .collect();
     let artists: std::collections::HashMap<Uuid, String> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -127,7 +127,8 @@ pub async fn get_album(
         .ok_or((StatusCode::NOT_FOUND, "Album not found".to_string()))?;
 
     // Fetch artist name
-    let artist_name = artist::Entity::find_by_id(album_model.artist_id)
+    let artist_name = artist::Entity::credited()
+        .filter(artist::Column::Id.eq(album_model.artist_id))
         .one(&state.db)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
@@ -138,26 +139,17 @@ pub async fn get_album(
         .filter(track::Column::AlbumId.eq(id))
         .order_by_asc(track::Column::DiscNumber)
         .order_by_asc(track::Column::TrackNumber)
+        .find_also_related(artist::Entity)
         .all(&state.db)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    // Build cover_url for the tracks from the album
-    let album_cover = album_model.cover_url.as_ref().map(|url| {
-        if url.starts_with("/api/media/") || url.starts_with("http") {
-            url.clone()
-        } else {
-            format!("/api/media/{url}")
-        }
-    });
-
     let enriched_tracks = tracks
         .into_iter()
-        .map(|t| {
+        .map(|(t, performer)| {
             let mut resp = super::tracks::TrackResponse::playable(t);
-            resp.artist_name = artist_name.clone();
-            resp.album_title = Some(album_model.title.clone());
-            resp.cover_url = album_cover.clone();
+            resp.artist_name = performer.filter(|a| !a.is_placeholder).map(|a| a.name);
+            resp.attach_album(Some(&album_model));
             resp
         })
         .collect();
@@ -199,7 +191,7 @@ pub async fn list_recent_albums(
         .into_iter()
         .collect();
     let artists: std::collections::HashMap<Uuid, String> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await

@@ -14,6 +14,6 @@ FROM (
     ) playable ON true
     ORDER BY candidate.rank DESC,candidate.track_id LIMIT $2 OFFSET $3
 ) page
-JOIN tracks t ON t.id=page.track_id JOIN artists a ON a.id=t.artist_id
+JOIN tracks t ON t.id=page.track_id LEFT JOIN artists a ON a.id=t.artist_id AND NOT a.is_placeholder
 LEFT JOIN albums al ON al.id=t.album_id
 ORDER BY page.rank DESC,t.id

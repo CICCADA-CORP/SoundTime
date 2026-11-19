@@ -75,12 +75,17 @@ impl Rendezvous {
         }
         let seen = self.members.entry(node_id).or_insert(timestamp);
         *seen = (*seen).max(timestamp);
-        Ok(self
-            .members
+        Ok(self.sample(now, Some(node_id)))
+    }
+
+    /// A reader can request a sample without registering or renewing any identity.
+    pub fn sample(&mut self, now: i64, exclude: Option<EndpointId>) -> Vec<EndpointId> {
+        self.members.retain(|_, seen| *seen > now - MAX_AGE);
+        self.members
             .keys()
             .copied()
-            .filter(|id| *id != node_id)
-            .choose_multiple(&mut rand::rng(), MAX_PEERS))
+            .filter(|id| Some(*id) != exclude)
+            .choose_multiple(&mut rand::rng(), MAX_PEERS)
     }
 }
 
@@ -88,11 +93,17 @@ pub(crate) async fn discover(
     client: &reqwest::Client,
     url: &str,
     key: &SecretKey,
+    announce: bool,
 ) -> anyhow::Result<Vec<EndpointId>> {
-    let mut response = client
-        .post(url)
+    let request = if announce {
+        client
+            .post(url)
+            .json(&Registration::new(key, chrono::Utc::now().timestamp()))
+    } else {
+        client.get(url)
+    };
+    let mut response = request
         .timeout(Duration::from_secs(10))
-        .json(&Registration::new(key, chrono::Utc::now().timestamp()))
         .send()
         .await?
         .error_for_status()?;
@@ -117,6 +128,46 @@ pub(crate) async fn discover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn private_discovery_never_registers_even_on_an_old_directory() -> anyhow::Result<()> {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let own = SecretKey::generate();
+        let other = SecretKey::generate().public();
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(vec![
+                other.to_string(),
+                other.to_string(),
+                own.public().to_string(),
+            ]))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::new();
+        assert_eq!(
+            discover(&client, &server.uri(), &own, false).await?,
+            [other]
+        );
+        server.reset().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(405))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert!(discover(&client, &server.uri(), &own, false).await.is_err());
+        assert!(server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.method.as_str() == "GET" && r.body.is_empty()));
+        let mut directory = Rendezvous::default();
+        directory.register(Registration::new(&own, 1), 1).unwrap();
+        assert_eq!(directory.sample(2, None), [own.public()]);
+        assert!(directory.sample(MAX_AGE + 1, None).is_empty());
+        Ok(())
+    }
 
     #[test]
     fn two_nodes_find_each_other_until_registration_expires() {
@@ -192,8 +243,14 @@ mod tests {
             .await;
         let client = reqwest::Client::new();
         let url = format!("{}/api/p2p/rendezvous", server.uri());
-        assert!(discover(&client, &url, &a).await.unwrap().is_empty());
-        assert_eq!(discover(&client, &url, &b).await.unwrap(), vec![a.public()]);
-        assert_eq!(discover(&client, &url, &a).await.unwrap(), vec![b.public()]);
+        assert!(discover(&client, &url, &a, true).await.unwrap().is_empty());
+        assert_eq!(
+            discover(&client, &url, &b, true).await.unwrap(),
+            vec![a.public()]
+        );
+        assert_eq!(
+            discover(&client, &url, &a, true).await.unwrap(),
+            vec![b.public()]
+        );
     }
 }

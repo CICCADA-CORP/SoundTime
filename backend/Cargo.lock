@@ -6122,7 +6122,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "urlencoding",
+ "unicode-normalization",
  "uuid",
  "wiremock",
 ]

@@ -104,8 +104,8 @@ try {
       pending.delete(id);
     }
   }
-  async function evaluate(expression, userGesture = false) {
-    const value = await send("Runtime.evaluate", { expression, returnByValue: true, userGesture });
+  async function evaluate(expression, userGesture = false, awaitPromise = false) {
+    const value = await send("Runtime.evaluate", { expression, returnByValue: true, userGesture, awaitPromise });
     if (value.exceptionDetails) throw new Error(value.exceptionDetails.text);
     return value.result.value;
   }
@@ -117,6 +117,25 @@ try {
     .find(row => row.getAttribute('aria-label') === ${JSON.stringify(title)}
       && row.querySelector('a')?.getAttribute('href') === ${JSON.stringify("/tracks/" + track)})`;
   const button = row + "?.querySelector('button.play-cell')";
+  const playerSelector = '[data-testid="audio-player"]';
+  const seekSelector = 'input[type="range"][aria-label="Playback position"]';
+  const visibleSeek = scope => `Array.from(document.querySelectorAll(${JSON.stringify(scope + " " + seekSelector)}))
+    .find(el => !el.disabled && el.getClientRects().length > 0)`;
+  const expandButton = `document.querySelector(${JSON.stringify(playerSelector + " button.open-player")})`;
+
+  async function viewport(mobile) {
+    const width = mobile ? 390 : 1440;
+    const height = mobile ? 844 : 900;
+    await send("Emulation.setDeviceMetricsOverride", {width, height, mobile, deviceScaleFactor:1});
+    await send("Emulation.setTouchEmulationEnabled", {enabled:mobile});
+    await until("requested viewport", () => evaluate(`innerWidth===${width} && innerHeight===${height}`));
+  }
+  async function screenshot() {
+    await evaluate("document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))",
+      false, true);
+    const {data} = await send("Page.captureScreenshot", {format:"png", fromSurface:true, captureBeyondViewport:false});
+    return data;
+  }
   let activeListener;
   async function asListener(listener) {
     if(activeListener===listener.username) return;
@@ -173,13 +192,20 @@ try {
       "Playlist or metadata operation opened an audio stream");
     assert.ok(!paths.includes("/api/p2p/search"),"Normal search queried the wider network");
   }
-  async function addToPlaylists(listeners) {
+  async function addToPlaylists(listeners, capture) {
     const start=requests.length;
     const added=[];
+    const screenshots = {};
     for (const listener of listeners) {
       const checkpoint=mutations.length;
       await asListener(listener);
       await send("Page.navigate",{url:origin + "/search?q=" + encodeURIComponent(title)});
+      if (capture && !added.length) {
+        await viewport(false);
+        await until("desktop search result", () => evaluate("location.pathname==='/search' && Boolean(" +
+          row + "?.getClientRects().length)"));
+        screenshots["search-desktop"] = await screenshot();
+      }
       await click(row + "?.querySelector('[aria-haspopup=menu]')","indexed remote track");
       await click(byText('[role=menuitem]',"Add to playlist"),"playlist action");
       await click(byText('[role=dialog] button',listener.name),"listener's playlist");
@@ -188,7 +214,7 @@ try {
       added.push(listener.playlist);
     }
     noMedia(start);
-    return {added, stream_requests:0, extended_search_requests:0};
+    return {added, stream_requests:0, extended_search_requests:0, ...(capture ? {screenshots} : {})};
   }
   async function openPlaylist(listener) {
     await asListener(listener);
@@ -254,40 +280,86 @@ try {
     await until("sample player closed", () => evaluate("location.href === 'about:blank'"));
     return observation;
   }
-  async function playback() {
+  async function seekThroughPlayer(scope) {
+    const slider = visibleSeek(scope);
+    await until("visible enabled seek control", () => evaluate("Boolean(" + slider + ")"));
+    const before = await evaluate("window.soundtimeTestAudio.currentTime");
+    const target = Math.ceil(before) + 6;
+    await evaluate(`(() => {
+      const audio = window.soundtimeTestAudio;
+      window.soundtimeTestSeek = null;
+      audio.addEventListener("seeked", () => { window.soundtimeTestSeek = audio.currentTime; }, {once:true});
+      const control = ${slider};
+      control.value = ${target};
+      control.dispatchEvent(new Event("input", {bubbles:true}));
+    })()`, true);
+    await until("media seeked to requested position", () => evaluate(
+      `window.soundtimeTestSeek !== null && Math.abs(window.soundtimeTestSeek - ${target}) < 1`));
+    const after = await until("decoded progress after seek", () => evaluate(
+      `window.soundtimeTestAudio.currentTime >= ${target + 0.5} && window.soundtimeTestAudio.currentTime`));
+    return {before_seek_seconds:before, seek_to_seconds:target, after_seek_seconds:after};
+  }
+  async function openExpandedPlayer() {
+    await click(expandButton, "expand the current track");
+    await until("expanded player for the fixture track", () => evaluate(
+      `Array.from(document.querySelectorAll('[role=dialog] h2')).some(h => h.textContent.trim() === ${JSON.stringify(title)})
+        && Boolean(${visibleSeek("[role=dialog]")})`));
+  }
+  async function playback(capture = false) {
     await send("Page.navigate", { url: origin + "/playlists/" + encodeURIComponent(playlist) });
     await until("the remote track in its playlist", () => evaluate(
       "location.pathname===" + JSON.stringify("/playlists/" + playlist) + " && Boolean(" + button + ")"));
+    if (capture) await viewport(false);
+    const checkpoint = responses.length;
     const started = performance.now();
-    await evaluate(button + ".click()", true);
-    // This slider is updated by timeupdate on the player's own HTMLAudioElement.
-    const slider = 'document.querySelector(\'[data-testid="audio-player"] input[step="any"]\')';
-    const time = () => evaluate("Number(" + slider + "?.value || 0)");
-    await until("first media progress", async () => (await time()) > 0);
+    // Observe the detached HTMLAudioElement actually used by SoundTime.
+    await evaluate(`(() => {
+      const original = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function(...args) {
+        HTMLMediaElement.prototype.play = original;
+        window.soundtimeTestAudio = this;
+        return original.apply(this, args);
+      };
+      (${button}).click();
+    })()`, true);
+    // Keep the first-progress measurement tied to the UI update as well as the
+    // media clock. The collapsed mobile player renders its progress as a CSS bar.
+    const time = () => evaluate(`(() => {
+      const audio = window.soundtimeTestAudio;
+      const bar = document.querySelector(${JSON.stringify(playerSelector)});
+      if (!audio || !bar || !(audio.duration > 0)) return 0;
+      const slider = ${visibleSeek(playerSelector)};
+      const shown = slider ? slider.valueAsNumber : parseFloat(bar.style.getPropertyValue("--progress")) * audio.duration / 100;
+      return Math.min(audio.currentTime, shown);
+    })()`);
+    await until("first decoded and displayed media progress", async () => (await time()) > 0);
     const firstProgressMs = Math.round(performance.now() - started);
-    const beforeSeek = await until("one second of playback", async () => {
-      const seconds = await time();
-      return seconds >= 1 && seconds;
-    });
-    const target = Math.ceil(beforeSeek) + 6;
-    await evaluate("(() => {const s = " + slider + "; s.value = " + target +
-      "; s.dispatchEvent(new Event('input', {bubbles:true}));})()", true);
-    const afterSeek = await until("media progress after seek", async () => {
-      const seconds = await time();
-      return seconds >= target + 0.5 && seconds;
-    });
-    assert.ok(responses.some(r => r.status === 206 || r.status === 200), "Missing successful audio HTTP response");
-    return { first_progress_ms: firstProgressMs,
-      before_seek_seconds: beforeSeek, seek_to_seconds: target, after_seek_seconds: afterSeek,
-      stream_responses: [...responses] };
+    await until("one second of playback", async () => (await time()) >= 1);
+    const compact = await evaluate("Boolean(" + visibleSeek(playerSelector) + ")");
+    if (!compact) await openExpandedPlayer();
+    const seek = await seekThroughPlayer(compact ? playerSelector : "[role=dialog]");
+    const currentResponses = responses.slice(checkpoint);
+    assert.ok(currentResponses.some(r => r.status === 206 || r.status === 200), "Missing successful audio HTTP response");
+    const result = { first_progress_ms:firstProgressMs, ...seek, stream_responses:currentResponses };
+    if (capture) {
+      assert.ok(compact, "Desktop playlist has no visible player timeline");
+      const desktop = await screenshot();
+      await viewport(true);
+      assert.equal(await evaluate("Boolean(" + visibleSeek(playerSelector) + ")"), false,
+        "Mobile mini-player should expose seeking via the expanded player");
+      await openExpandedPlayer();
+      result.mobile_seek = await seekThroughPlayer("[role=dialog]");
+      result.screenshots = {"playlist-desktop":desktop, "player-mobile":await screenshot()};
+    }
+    return result;
   }
 
   if (process.argv.includes("--session")) {
     const commands=createInterface({input:process.stdin,crlfDelay:Infinity});
     for await(const line of commands) {
-      const {phase,listeners}=JSON.parse(line);
+      const {phase,listeners,capture=false}=JSON.parse(line);
       let result;
-      if (phase==="add") result=await addToPlaylists(listeners);
+      if (phase==="add") result=await addToPlaylists(listeners, capture);
       else if (phase==="authenticate") {
         await asListener(listeners[0]);
         result={authenticated:true, attempts:logins.length};
@@ -306,8 +378,9 @@ try {
       }
       else if (phase==="play") {
         await asListener(listeners[0]);
-        result=await playback();
+        result=await playback(capture);
         await send("Page.navigate",{url:"about:blank"});
+        if (capture) await viewport(false);
       } else if (phase==="withdraw") result=await withdrawals(listeners);
       else throw new Error("Unknown browser phase");
       console.log(JSON.stringify(result));

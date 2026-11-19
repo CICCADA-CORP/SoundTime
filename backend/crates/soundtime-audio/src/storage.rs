@@ -35,6 +35,12 @@ pub trait StorageBackend: Send + Sync {
 
     fn full_path(&self, relative_path: &str) -> PathBuf;
 
+    /// A seekable local file for legacy rows with no saved tag identifiers.
+    /// Object stores use identifiers recorded at upload or scan time.
+    fn local_tag_path(&self, _relative_path: &str) -> Option<PathBuf> {
+        None
+    }
+
     /// Available only on a filesystem explicitly configured with immutable originals.
     fn immutable_upload_path(&self, _relative_path: &str) -> Option<PathBuf> {
         None
@@ -122,6 +128,11 @@ impl AudioStorage {
 
 #[async_trait]
 impl StorageBackend for AudioStorage {
+    fn local_tag_path(&self, relative_path: &str) -> Option<PathBuf> {
+        validate_storage_path(relative_path).ok()?;
+        Some(self.full_path(relative_path))
+    }
+
     fn immutable_upload_path(&self, relative_path: &str) -> Option<PathBuf> {
         let enabled = std::env::var("P2P_REFERENCE_IMMUTABLE_UPLOADS").is_ok_and(|v| v == "true");
         (enabled && validate_storage_path(relative_path).is_ok())

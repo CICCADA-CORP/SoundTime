@@ -312,6 +312,29 @@ mod tests {
     }
 
     #[test]
+    fn missing_and_literal_credits_roundtrip_with_the_existing_signed_schema() -> Result<()> {
+        let key = SecretKey::from_bytes(&[17; 32]);
+        for credit in [" ", "Unknown Artist"] {
+            let payload = serde_json::json!({"title":"Credit", "artist_name":credit, "format":"wav",
+                "file_size":31, "content_hash":"d2".repeat(32)});
+            let publication = SignedPublication::sign(
+                &key,
+                Manifest {
+                    origin: key.public(),
+                    publication: Uuid::new_v4(),
+                    revision: 1,
+                    media: media_from_payload(&payload),
+                },
+            )?;
+            let received: SignedPublication =
+                serde_json::from_slice(&serde_json::to_vec(&publication)?)?;
+            received.verify()?;
+            assert_eq!(received.manifest.media.unwrap().artist, credit);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn escaped_multibyte_pages_resume_at_first_omitted_item() -> Result<()> {
         let heavy = "🟩\u{1}".repeat(480);
         let rows: Vec<_> = (0..PAGE_ENTRIES).map(|id| (id, heavy.clone())).collect();

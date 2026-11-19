@@ -57,7 +57,7 @@ pub struct TrackResponse {
     /// Joined album title
     #[serde(skip_serializing_if = "Option::is_none")]
     pub album_title: Option<String>,
-    /// Album cover URL
+    /// Individual artwork or the cover of the associated album
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cover_url: Option<String>,
     /// Highest bitrate available across local + federated sources
@@ -91,14 +91,31 @@ impl From<track::Model> for TrackResponse {
             created_at: t.created_at,
             artist_name: None,
             album_title: None,
-            cover_url: None,
+            cover_url: t.cover_url.map(media_cover_url),
             best_bitrate: None,
             best_source: None,
         }
     }
 }
 
+pub(super) fn media_cover_url(url: String) -> String {
+    if url.starts_with("/api/media/") || url.starts_with("http") {
+        url
+    } else {
+        format!("/api/media/{url}")
+    }
+}
+
 impl TrackResponse {
+    pub(super) fn attach_album(&mut self, album: Option<&album::Model>) {
+        if let Some(album) = album {
+            self.album_title = Some(album.title.clone());
+            if self.cover_url.is_none() {
+                self.cover_url = album.cover_url.clone().map(media_cover_url);
+            }
+        }
+    }
+
     /// For rows selected with the playable catalogue predicate in the same SQL query.
     pub(super) fn playable(track: track::Model) -> Self {
         Self {
@@ -217,7 +234,7 @@ pub async fn list_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -246,27 +263,10 @@ pub async fn list_tracks(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
+            let album = t.album_id.and_then(|id| albums.get(&id));
             let mut resp = TrackResponse::playable(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -324,7 +324,7 @@ pub async fn my_uploads(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -353,27 +353,10 @@ pub async fn my_uploads(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
+            let album = t.album_id.and_then(|id| albums.get(&id));
             let mut resp = TrackResponse::from(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -402,7 +385,8 @@ pub async fn get_track(
     let mut resp = TrackResponse::from(track_model.clone());
 
     // Fetch artist name
-    if let Ok(Some(a)) = artist::Entity::find_by_id(track_model.artist_id)
+    if let Ok(Some(a)) = artist::Entity::credited()
+        .filter(artist::Column::Id.eq(track_model.artist_id))
         .one(&state.db)
         .await
     {
@@ -412,14 +396,7 @@ pub async fn get_track(
     // Fetch album title & cover
     if let Some(album_id) = track_model.album_id {
         if let Ok(Some(a)) = album::Entity::find_by_id(album_id).one(&state.db).await {
-            resp.album_title = Some(a.title);
-            resp.cover_url = a.cover_url.map(|url| {
-                if url.starts_with("/api/media/") || url.starts_with("http") {
-                    url
-                } else {
-                    format!("/api/media/{url}")
-                }
-            });
+            resp.attach_album(Some(&a));
         }
     }
 
@@ -493,7 +470,7 @@ pub struct TrackCreditsResponse {
     pub created_at: chrono::DateTime<chrono::FixedOffset>,
     // Artist info
     pub artist_id: Uuid,
-    pub artist_name: String,
+    pub artist_name: Option<String>,
     pub artist_bio: Option<String>,
     pub artist_image: Option<String>,
     pub artist_musicbrainz_id: Option<String>,
@@ -522,11 +499,11 @@ pub async fn get_track_credits(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
         .ok_or((StatusCode::NOT_FOUND, "Track not found".to_string()))?;
 
-    let artist_model = artist::Entity::find_by_id(track_model.artist_id)
+    let artist_model = artist::Entity::credited()
+        .filter(artist::Column::Id.eq(track_model.artist_id))
         .one(&state.db)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
-        .ok_or((StatusCode::NOT_FOUND, "Artist not found".to_string()))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     let album_model = if let Some(album_id) = track_model.album_id {
         album::Entity::find_by_id(album_id)
@@ -552,14 +529,17 @@ pub async fn get_track_credits(
         play_count: track_model.play_count,
         uploaded_by: track_model.uploaded_by,
         created_at: track_model.created_at,
-        artist_id: artist_model.id,
-        artist_name: artist_model.name,
-        artist_bio: artist_model.bio,
-        artist_image: artist_model.image_url,
-        artist_musicbrainz_id: artist_model.musicbrainz_id,
+        artist_id: track_model.artist_id,
+        artist_name: artist_model.as_ref().map(|a| a.name.clone()),
+        artist_bio: artist_model.as_ref().and_then(|a| a.bio.clone()),
+        artist_image: artist_model.as_ref().and_then(|a| a.image_url.clone()),
+        artist_musicbrainz_id: artist_model.and_then(|a| a.musicbrainz_id),
         album_id: album_model.as_ref().map(|a| a.id),
         album_title: album_model.as_ref().map(|a| a.title.clone()),
-        album_cover_url: album_model.as_ref().and_then(|a| a.cover_url.clone()),
+        album_cover_url: track_model
+            .cover_url
+            .or_else(|| album_model.as_ref().and_then(|a| a.cover_url.clone()))
+            .map(media_cover_url),
         album_genre: album_model.as_ref().and_then(|a| a.genre.clone()),
         album_year: album_model.as_ref().and_then(|a| a.year),
         album_musicbrainz_id: album_model.as_ref().and_then(|a| a.musicbrainz_id.clone()),
@@ -718,7 +698,7 @@ pub async fn list_popular_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -747,27 +727,10 @@ pub async fn list_popular_tracks(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
+            let album = t.album_id.and_then(|id| albums.get(&id));
             let mut resp = TrackResponse::playable(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -867,7 +830,7 @@ pub async fn list_trending_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -898,27 +861,10 @@ pub async fn list_trending_tracks(
         .filter_map(|id| {
             let t = tracks_map.get(id)?;
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
+            let album = t.album_id.and_then(|id| albums.get(&id));
             let mut resp = TrackResponse::playable(t.clone());
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             Some(resp)
         })
         .collect();
@@ -971,7 +917,7 @@ pub async fn list_random_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -1000,27 +946,10 @@ pub async fn list_random_tracks(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
+            let album = t.album_id.and_then(|id| albums.get(&id));
             let mut resp = TrackResponse::playable(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -1071,7 +1000,7 @@ pub async fn list_recently_added_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -1100,27 +1029,10 @@ pub async fn list_recently_added_tracks(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
+            let album = t.album_id.and_then(|id| albums.get(&id));
             let mut resp = TrackResponse::playable(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -1209,7 +1121,7 @@ pub async fn list_genre_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -1238,27 +1150,10 @@ pub async fn list_genre_tracks(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
+            let album = t.album_id.and_then(|id| albums.get(&id));
             let mut resp = TrackResponse::playable(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -1283,6 +1178,7 @@ mod tests {
             title: "Test Track".into(),
             artist_id: Uuid::new_v4(),
             album_id: Some(Uuid::new_v4()),
+            cover_url: None,
             track_number: Some(1),
             disc_number: Some(1),
             duration_secs: 240.5,
@@ -1314,6 +1210,20 @@ mod tests {
         assert!(resp.artist_name.is_none());
         assert!(resp.album_title.is_none());
         assert!(resp.cover_url.is_none());
+    }
+
+    #[test]
+    fn albumless_track_keeps_its_own_artwork_in_collections() {
+        let mut track = make_track_model();
+        track.album_id = None;
+        track.cover_url = Some("singles/track-42.jpg".into());
+
+        let mut response = TrackResponse::playable(track);
+        response.attach_album(None);
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["cover_url"], "/api/media/singles/track-42.jpg");
+        assert!(json["album_id"].is_null());
+        assert!(json.get("album_title").is_none());
     }
 
     #[test]

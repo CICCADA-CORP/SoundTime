@@ -113,6 +113,9 @@ pub async fn try_start(tracker: &TaskTrackerHandle) -> bool {
 
 pub fn spawn(state: Arc<AppState>, tracker: TaskTrackerHandle) {
     tokio::spawn(async move {
+        if let Err(error) = crate::legacy_singles::reconcile(&state).await {
+            tracing::warn!(%error, "could not reconcile legacy singles on startup");
+        }
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(DAILY_INTERVAL_SECS)).await;
             if !try_start(&tracker).await {
@@ -273,7 +276,10 @@ async fn restored_sha256(
         return Err("contents differ from the missing original".into());
     }
     let mut sha = Sha256::new();
-    let mut blob = row.file_hash.is_none().then(soundtime_p2p::BlobHasher::new);
+    let mut blob = row
+        .content_hash
+        .is_some()
+        .then(soundtime_p2p::BlobHasher::new);
     if size > 0 {
         let mut stream = file.range(0, size).await.map_err(|e| e.to_string())?;
         while let Some(bytes) = stream.next_chunk().await.map_err(|e| e.to_string())? {
@@ -284,13 +290,17 @@ async fn restored_sha256(
         }
     }
     let sha = format!("{:x}", sha.finalize());
-    let valid = match (row.file_hash.as_ref(), blob, row.content_hash.as_ref()) {
-        (Some(expected), _, _) => expected.eq_ignore_ascii_case(&sha),
-        (None, Some(blob), Some(expected)) => {
-            expected.eq_ignore_ascii_case(blob.finalize().to_hex().as_str())
-        }
-        _ => false,
-    };
+    let valid = row
+        .file_hash
+        .as_ref()
+        .is_none_or(|s| s.eq_ignore_ascii_case(&sha))
+        && row
+            .content_hash
+            .as_ref()
+            .zip(blob)
+            .is_none_or(|(expected, actual)| {
+                expected.eq_ignore_ascii_case(actual.finalize().to_hex().as_str())
+            });
     if valid {
         Ok(sha)
     } else {
@@ -429,7 +439,16 @@ pub async fn run_sync(
                 continue;
             }
             // Index existing files before checking new ones for moves/copies.
-            match state.storage.hash_file(&row.file_path).await {
+            let hash = if row.content_hash.is_some() {
+                restored_sha256(state.storage.as_ref(), row).await
+            } else {
+                state
+                    .storage
+                    .hash_file(&row.file_path)
+                    .await
+                    .map_err(|e| e.to_string())
+            };
+            match hash {
                 Ok(hash) => {
                     track::Entity::update_many()
                         .col_expr(
@@ -522,6 +541,18 @@ pub async fn run_sync(
         tx.commit().await.map_err(|e| e.to_string())?;
     }
     report.empty_sources.sort();
+    if let Some(node) = state
+        .p2p
+        .as_deref()
+        .and_then(|p| p.downcast_ref::<soundtime_p2p::P2pNode>())
+    {
+        node.wake_original_index();
+    }
+    if let Err(error) = crate::legacy_singles::reconcile(state).await {
+        report
+            .errors
+            .push(format!("Legacy album associations: {error}"));
+    }
     Ok(report)
 }
 
@@ -662,19 +693,14 @@ async fn sync_file(
     {
         return Ok(SyncOutcome::Present);
     }
-    if let Some(row) =
+    if let Some(existing) =
         crate::storage_catalog::existing_hash(&tx, &hash, state.storage.as_ref(), None).await?
     {
-        if state
-            .storage
-            .file_exists(&row.file_path)
-            .await
-            .map_err(|e| e.to_string())?
-        {
+        if existing.present {
             tx.commit().await.map_err(|e| e.to_string())?;
             return Ok(SyncOutcome::Present);
         }
-        return relink_track(tx, row, path, hash).await;
+        return relink_track(tx, existing.track, path, hash).await;
     }
     let excluded: bool = tx.query_one(sea_orm::Statement::from_sql_and_values(sea_orm::DbBackend::Postgres,
         "SELECT EXISTS(SELECT FROM tracks t JOIN track_publications p ON p.track_id=t.id WHERE p.state='withdrawn' \
@@ -724,8 +750,17 @@ async fn sync_file(
             }
         }
     }
-    import_file(state, &tx, path, hash, meta, waveform).await?;
+    let id = import_file(state, &tx, path, hash, meta, waveform).await?;
     tx.commit().await.map_err(|e| e.to_string())?;
+    if let Some(node) = state
+        .p2p
+        .as_deref()
+        .and_then(|p| p.downcast_ref::<soundtime_p2p::P2pNode>())
+    {
+        if let Err(error) = node.index_analyzed_original(id, path, source).await {
+            tracing::warn!(%id, %error, "local import completed; original proof indexing deferred");
+        }
+    }
     Ok(SyncOutcome::Imported)
 }
 
@@ -783,130 +818,20 @@ async fn import_file(
         }
     };
 
-    let artist_name = meta
-        .artist
-        .clone()
-        .unwrap_or_else(|| "Unknown Artist".to_string());
+    let artist_name = crate::storage_catalog::releases::tag_value(None, meta.artist.as_deref());
 
-    // Find or create artist
-    let artist_id = {
-        use sea_orm::QueryFilter;
-        let existing = soundtime_db::entities::artist::Entity::find()
-            .filter(soundtime_db::entities::artist::Column::Name.eq(&artist_name))
-            .one(tx)
-            .await
-            .map_err(|e| format!("DB: {e}"))?;
-
-        if let Some(a) = existing {
-            a.id
-        } else {
-            let a = soundtime_db::entities::artist::ActiveModel {
-                id: Set(Uuid::new_v4()),
-                name: Set(artist_name.clone()),
-                bio: Set(None),
-                image_url: Set(None),
-                musicbrainz_id: Set(None),
-                created_at: Set(chrono::Utc::now().into()),
-            };
-            a.insert(tx)
-                .await
-                .map_err(|e| format!("Insert artist: {e}"))?
-                .id
-        }
-    };
-
-    // Resolve album artist: prefer album_artist tag, fall back to track artist
-    let album_artist_name = meta
-        .album_artist
-        .clone()
-        .unwrap_or_else(|| artist_name.clone());
-
-    let album_artist_id = if album_artist_name == artist_name {
-        artist_id
-    } else {
-        use sea_orm::QueryFilter;
-        let existing = soundtime_db::entities::artist::Entity::find()
-            .filter(soundtime_db::entities::artist::Column::Name.eq(&album_artist_name))
-            .one(tx)
-            .await
-            .map_err(|e| format!("DB: {e}"))?;
-
-        if let Some(a) = existing {
-            a.id
-        } else {
-            let a = soundtime_db::entities::artist::ActiveModel {
-                id: Set(Uuid::new_v4()),
-                name: Set(album_artist_name.clone()),
-                bio: Set(None),
-                image_url: Set(None),
-                musicbrainz_id: Set(None),
-                created_at: Set(chrono::Utc::now().into()),
-            };
-            a.insert(tx)
-                .await
-                .map_err(|e| format!("Insert album artist: {e}"))?
-                .id
-        }
-    };
-
-    // Find or create album
-    let album_title = meta.album.clone().unwrap_or_else(|| "Singles".to_string());
-    let album = {
-        let existing = soundtime_db::entities::album::Entity::find()
-            .filter(soundtime_db::entities::album::Column::Title.eq(&album_title))
-            .filter(soundtime_db::entities::album::Column::ArtistId.eq(album_artist_id))
-            .one(tx)
-            .await
-            .map_err(|e| format!("DB: {e}"))?;
-
-        if let Some(a) = existing {
-            a
-        } else {
-            let new_album = soundtime_db::entities::album::ActiveModel {
-                id: Set(Uuid::new_v4()),
-                title: Set(album_title.clone()),
-                artist_id: Set(album_artist_id),
-                release_date: Set(None),
-                cover_url: Set(None),
-                musicbrainz_id: Set(None),
-                genre: Set(meta
-                    .genre
-                    .as_deref()
-                    .map(normalize_genre)
-                    .filter(|g| !g.is_empty())),
-                year: Set(meta.year.map(|y| y as i16)),
-                created_at: Set(chrono::Utc::now().into()),
-            };
-            new_album
-                .insert(tx)
-                .await
-                .map_err(|e| format!("Insert album: {e}"))?
-        }
-    };
-    let album_id = album.id;
-    if let (None, Some(cover_data)) = (&album.cover_url, &meta.cover_art) {
-        // The first track scanned for an album may have no embedded artwork.
-        match state
-            .storage
-            .store_cover(
-                uploaded_by.unwrap_or(album_id),
-                Some(&album_title),
-                cover_data,
-            )
-            .await
-        {
-            Ok(cover_path) => {
-                let mut update: soundtime_db::entities::album::ActiveModel = album.into();
-                update.cover_url = Set(Some(format!("/api/media/{cover_path}")));
-                if let Err(e) = update.update(tx).await {
-                    tracing::warn!(%album_id, error = %e, "failed to update album cover URL during scan");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(%album_id, error = %e, "failed to store album cover during scan")
-            }
-        }
-    }
+    let track_id = Uuid::new_v4();
+    let album_title = crate::storage_catalog::releases::tag_value(None, meta.album.as_deref());
+    let release = crate::storage_catalog::releases::resolve(
+        tx,
+        state.storage.as_ref(),
+        track_id,
+        artist_name,
+        album_title,
+        &meta,
+    )
+    .await
+    .map_err(|error| format!("Resolve release: {error}"))?;
 
     let title = meta.title.clone().unwrap_or_else(|| {
         std::path::Path::new(relative_path)
@@ -916,12 +841,12 @@ async fn import_file(
             .to_string()
     });
 
-    let track_id = Uuid::new_v4();
     let new_track = track::ActiveModel {
         id: Set(track_id),
         title: Set(title),
-        album_id: Set(Some(album_id)),
-        artist_id: Set(artist_id),
+        album_id: Set(release.album_id),
+        artist_id: Set(release.artist_id),
+        cover_url: Set(release.track_cover_url),
         track_number: Set(meta.track_number.map(|n| n as i16)),
         disc_number: Set(meta.disc_number.map(|n| n as i16)),
         duration_secs: Set(meta.duration_secs as f32),
@@ -950,6 +875,9 @@ async fn import_file(
         .await
         .map_err(|e| format!("Insert track: {e}"))?;
 
+    crate::metadata_lookup::hints::save(tx, track_id, &meta.recording_tags)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(track_id)
 }
 
@@ -999,6 +927,7 @@ mod tests {
             "CREATE TEMP TABLE track_publications(track_id uuid PRIMARY KEY, state text NOT NULL);
             CREATE TEMP TABLE federation_missing_sources(track_id uuid PRIMARY KEY);
             CREATE TEMP TABLE federation_withdrawn_fingerprints(track_id uuid PRIMARY KEY,expected_sha256 text);
+            CREATE TEMP TABLE legacy_single_albums(album_id uuid PRIMARY KEY);
             CREATE TEMP TABLE federation_managed_originals(file_path text PRIMARY KEY,sha256 text NOT NULL)",
         )
         .await
@@ -1046,9 +975,17 @@ mod tests {
         let mut wav = b"RIFF\x24\x01\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x00\x01\x00\x00".to_vec();
         wav.extend(0..=255);
         fs::write(dir.path().join("one.wav"), &wav).unwrap();
+        crate::storage_catalog::releases::tests::check_imports(
+            &state,
+            soundtime_audio::extract_metadata_from_file(&dir.path().join("one.wav")).unwrap(),
+        )
+        .await;
         let first = run_sync(&state, None, &[]).await.unwrap();
         assert_eq!(first.imported, 1, "{:?}", first.errors);
         let first = track::Entity::find().one(&state.db).await.unwrap().unwrap();
+
+        assert_eq!(first.album_id, None);
+        assert_eq!(album::Entity::find().count(&state.db).await.unwrap(), 0);
 
         // Postgres SUM(bigint) returns numeric. Exercise the storage status route with actual decoding.
         let stats = crate::api::admin::storage_status(axum::extract::State(state.clone()))

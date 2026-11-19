@@ -3,7 +3,9 @@ INSERT INTO users (id, username, email, password_hash) VALUES
     ('10000000-0000-4000-8000-000000000001', 'owner', 'owner@fixture.invalid', 'no-login'),
     ('10000000-0000-4000-8000-000000000002', 'listener', 'listener@fixture.invalid', 'no-login');
 INSERT INTO artists (id, name) VALUES
-    ('20000000-0000-4000-8000-000000000001', 'Historical Artist');
+    ('20000000-0000-4000-8000-000000000001', 'Historical Artist'),
+    ('20000000-0000-4000-8000-000000000002', 'Unknown Artist'),
+    ('20000000-0000-4000-8000-000000000003', '  ');
 
 INSERT INTO tracks (id, title, artist_id, file_path, file_size, duration_secs, format, uploaded_by) VALUES
     ('30000000-0000-4000-8000-000000000001', 'Scanned without uploader', '20000000-0000-4000-8000-000000000001',

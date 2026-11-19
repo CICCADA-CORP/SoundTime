@@ -1,6 +1,6 @@
 -- Announce only a publication this node can actually supply.
 SELECT v.content_hash AS hash, c.node_id AS authority_node, p.origin_publication_id AS publication_id,
-       p.revision, t.title, a.name AS artist_name, al.title AS album_title,
+       p.revision, t.title, CASE WHEN a.is_placeholder THEN '' ELSE a.name END AS artist_name, al.title AS album_title,
        t.duration_secs, t.format, t.genre, t.year, t.bitrate, t.musicbrainz_id,
        ts_rank(s.document, to_tsquery('english',$1)) AS rank
 FROM federation_search_input s JOIN tracks t ON t.id=s.track_id

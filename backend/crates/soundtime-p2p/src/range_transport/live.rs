@@ -344,7 +344,7 @@ impl P2pNode {
                 }
             }
         } else {
-            let encoded = match self.encode_range(req).await {
+            let encoded = match self.encode_range(id, req).await {
                 Ok(encoded) => encoded,
                 Err(_) => return Ok(SourceRead::Unavailable),
             };
@@ -416,9 +416,14 @@ impl P2pNode {
         Ok(())
     }
 
-    async fn encode_range(&self, req: &WindowRequest) -> Result<Vec<u8>> {
+    async fn encode_range(&self, id: Uuid, req: &WindowRequest) -> Result<Vec<u8>> {
         if let Some(bytes) = self.blob_cache.encode(req).await? {
             return Ok(bytes);
+        }
+        if req.origin == self.node_id() {
+            if let Some(bytes) = self.encode_original(id, req).await? {
+                return Ok(bytes);
+            }
         }
         range_transport::encode_window(&self.blob_store, req.clone()).await
     }
@@ -458,7 +463,7 @@ impl P2pNode {
                 result = track.during(async {
                     ensure!(!crate::peer_policy::get(&self.db,&peer.to_string()).await?.banned, "peer banned");
                     ensure!(self.allows_range_export(peer,id,i64::try_from(req.revision)?,req.origin).await?, "publication export denied");
-                    let bytes = self.encode_range(&req).await?;
+                    let bytes = self.encode_range(id, &req).await?;
                     self.local_publication(&req).await?;
                     ensure!(self.allows_range_export(peer,id,i64::try_from(req.revision)?,req.origin).await?, "publication export revoked");
                     self.ranges.upload.admit(peer, bytes.len()).await?;

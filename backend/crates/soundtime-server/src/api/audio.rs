@@ -11,7 +11,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use soundtime_audio::extract_metadata_from_file;
 use soundtime_audio::metadata::normalize_genre;
-use soundtime_db::entities::{album, artist, track};
+use soundtime_db::entities::{album, track};
 use soundtime_db::media_access::{self, PlaybackState, ReadGuard};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
@@ -19,6 +19,7 @@ use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::auth::middleware::AuthUser;
+use crate::storage_catalog::releases;
 use soundtime_db::AppState;
 
 /// Extract p2p node from type-erased state
@@ -731,8 +732,8 @@ async fn find_uploaded_file(
     tx: &sea_orm::DatabaseTransaction,
     owner: Uuid,
     hash: &str,
-    size: i64,
-) -> Result<Option<track::Model>, UploadError> {
+    data: &[u8],
+) -> Result<Option<crate::storage_catalog::ExistingOriginal>, UploadError> {
     if let Some(row) =
         crate::storage_catalog::existing_hash(tx, hash, state.storage.as_ref(), Some(owner))
             .await
@@ -744,31 +745,53 @@ async fn find_uploaded_file(
         .filter(crate::storage_catalog::reusable_track())
         .filter(track::Column::UploadedBy.eq(owner))
         .filter(track::Column::FileHash.is_null())
-        .filter(track::Column::FileSize.eq(size))
+        .filter(track::Column::FileSize.eq(data.len() as i64))
         .filter(track::Column::FilePath.not_like("p2p://%"))
+        .filter(sea_orm::sea_query::Expr::cust("content_hash IS NOT NULL OR NOT EXISTS (SELECT FROM federation_missing_sources m WHERE m.track_id=tracks.id)"))
         .all(tx)
         .await
         .map_err(upload_error)?;
+    let blob = candidates
+        .iter()
+        .any(|row| row.content_hash.is_some())
+        .then(|| soundtime_p2p::BlobHash::new(data).to_string());
     for row in candidates {
-        if !state
+        let known_blob = row.content_hash.is_some();
+        if known_blob && row.content_hash != blob {
+            continue;
+        }
+        let present = state
             .storage
             .file_exists(&row.file_path)
             .await
-            .map_err(upload_error)?
-        {
-            continue;
-        }
-        let actual_hash = state
-            .storage
-            .hash_file(&row.file_path)
-            .await
             .map_err(upload_error)?;
-        let matches = actual_hash == hash;
-        let mut update: track::ActiveModel = row.into();
-        update.file_hash = Set(Some(actual_hash));
-        let updated = update.update(tx).await.map_err(upload_error)?;
-        if matches {
-            return Ok(Some(updated));
+        if present
+            && state
+                .storage
+                .hash_file(&row.file_path)
+                .await
+                .map_err(upload_error)?
+                == hash
+        {
+            let mut update: track::ActiveModel = row.into();
+            update.file_hash = Set(Some(hash.to_owned()));
+            let updated = update.update(tx).await.map_err(upload_error)?;
+            crate::storage_catalog::source_restored(tx, updated.id)
+                .await
+                .map_err(upload_error)?;
+            return Ok(Some(crate::storage_catalog::ExistingOriginal {
+                track: updated,
+                present: true,
+            }));
+        }
+        if known_blob {
+            crate::storage_catalog::mark_replaced(tx, row.id, &row.file_path)
+                .await
+                .map_err(upload_error)?;
+            return Ok(Some(crate::storage_catalog::ExistingOriginal {
+                track: row,
+                present: false,
+            }));
         }
     }
     Ok(None)
@@ -822,34 +845,31 @@ async fn process_single_upload(
             "Failed to extract audio metadata".into(),
         )
     })?;
+    let album_title = releases::tag_value(tags.album.as_deref(), audio_meta.album.as_deref());
     let hash = format!("{:x}", Sha256::digest(&data));
     let waveform = soundtime_audio::generate_waveform(&full_path, 200).ok();
 
     let tx = crate::storage_catalog::begin_write(&state.db)
         .await
         .map_err(upload_error)?;
-    let existing = find_uploaded_file(state, &tx, user_id, &hash, data.len() as i64).await?;
-    if let Some(original) = existing {
-        if state
-            .storage
-            .file_exists(&original.file_path)
-            .await
-            .map_err(upload_error)?
-        {
+    let existing = find_uploaded_file(state, &tx, user_id, &hash, &data).await?;
+    if let Some(existing) = existing {
+        let original = existing.track;
+        if existing.present {
             tx.commit().await.map_err(upload_error)?;
             return Err((
                 StatusCode::CONFLICT,
                 "This audio file is already in the library".into(),
             ));
         }
+        if let (Some("Singles"), Some(album_id)) = (album_title, original.album_id) {
+            releases::confirm_named_singles(&tx, album_id)
+                .await
+                .map_err(upload_error)?;
+        }
         let path = state
             .storage
-            .store_file(
-                user_id,
-                tags.album.as_deref(),
-                &stored_name.to_string_lossy(),
-                &data,
-            )
+            .store_file(user_id, album_title, &stored_name.to_string_lossy(), &data)
             .await
             .map_err(upload_error)?;
         if let Err(e) = crate::storage_catalog::record_managed(&tx, &path, &hash).await {
@@ -865,122 +885,38 @@ async fn process_single_upload(
         };
         let mut update: track::ActiveModel = original.into();
         update.file_path = Set(path.clone());
+        update.file_hash = Set(Some(hash.clone()));
         if let Err(e) = update.update(&tx).await {
             if let Err(cleanup) = state.storage.delete_file(&path).await {
                 tracing::warn!(%path, %cleanup, "could not remove rejected upload");
             }
             return Err(upload_error(e));
         }
+        crate::metadata_lookup::hints::save(&tx, response.id, &audio_meta.recording_tags)
+            .await
+            .map_err(upload_error)?;
         crate::storage_catalog::source_restored(&tx, response.id)
             .await
             .map_err(upload_error)?;
         tx.commit().await.map_err(upload_error)?;
+        if let Some(node) = get_p2p_node(state) {
+            node.wake_original_index();
+        }
         return Ok(response);
     }
-    let artist_name = tags
-        .artist
-        .or(audio_meta.artist.clone())
-        .unwrap_or_else(|| "Unknown Artist".to_string());
+    let artist_name = releases::tag_value(tags.artist.as_deref(), audio_meta.artist.as_deref());
 
-    let existing_artist = artist::Entity::find()
-        .filter(artist::Column::Name.eq(&artist_name))
-        .one(&tx)
-        .await
-        .map_err(upload_error)?;
-
-    let artist_id = if let Some(a) = existing_artist {
-        a.id
-    } else {
-        let new_artist = artist::ActiveModel {
-            id: Set(Uuid::new_v4()),
-            name: Set(artist_name.clone()),
-            bio: Set(None),
-            image_url: Set(None),
-            musicbrainz_id: Set(None),
-            created_at: Set(chrono::Utc::now().into()),
-        };
-        new_artist.insert(&tx).await.map_err(upload_error)?.id
-    };
-
-    // Resolve album artist: prefer album_artist tag, fall back to track artist
-    let album_artist_name = audio_meta
-        .album_artist
-        .clone()
-        .unwrap_or_else(|| artist_name.clone());
-
-    let album_artist_id = if album_artist_name == artist_name {
-        artist_id
-    } else {
-        let existing = artist::Entity::find()
-            .filter(artist::Column::Name.eq(&album_artist_name))
-            .one(&tx)
-            .await
-            .map_err(upload_error)?;
-        if let Some(a) = existing {
-            a.id
-        } else {
-            let new_artist = artist::ActiveModel {
-                id: Set(Uuid::new_v4()),
-                name: Set(album_artist_name.clone()),
-                bio: Set(None),
-                image_url: Set(None),
-                musicbrainz_id: Set(None),
-                created_at: Set(chrono::Utc::now().into()),
-            };
-            new_artist.insert(&tx).await.map_err(upload_error)?.id
-        }
-    };
-
-    let album_title = tags
-        .album
-        .clone()
-        .or(audio_meta.album.clone())
-        .unwrap_or_else(|| "Singles".to_string());
-
-    let existing_album = album::Entity::find()
-        .filter(album::Column::Title.eq(&album_title))
-        .filter(album::Column::ArtistId.eq(album_artist_id))
-        .one(&tx)
-        .await
-        .map_err(upload_error)?;
-
-    let album_id = if let Some(a) = existing_album {
-        a.id
-    } else {
-        let new_album = album::ActiveModel {
-            id: Set(Uuid::new_v4()),
-            title: Set(album_title.clone()),
-            artist_id: Set(album_artist_id),
-            release_date: Set(None),
-            cover_url: Set(None),
-            musicbrainz_id: Set(None),
-            genre: Set(audio_meta
-                .genre
-                .as_deref()
-                .map(normalize_genre)
-                .filter(|g| !g.is_empty())),
-            year: Set(audio_meta.year.map(|y| y as i16)),
-            created_at: Set(chrono::Utc::now().into()),
-        };
-        let result = new_album.insert(&tx).await.map_err(upload_error)?;
-
-        // Store cover art if present in metadata
-        if let Some(cover_data) = &audio_meta.cover_art {
-            if let Ok(cover_path) = state
-                .storage
-                .store_cover(user_id, Some(&album_title), cover_data)
-                .await
-            {
-                let mut update: album::ActiveModel = result.clone().into();
-                update.cover_url = Set(Some(format!("/api/media/{cover_path}")));
-                if let Err(e) = update.update(&tx).await {
-                    tracing::warn!(error = %e, "failed to update album cover URL");
-                }
-            }
-        }
-
-        result.id
-    };
+    let track_id = Uuid::new_v4();
+    let release = releases::resolve(
+        &tx,
+        state.storage.as_ref(),
+        track_id,
+        artist_name,
+        album_title,
+        &audio_meta,
+    )
+    .await
+    .map_err(upload_error)?;
 
     let track_title = tags.title.or(audio_meta.title.clone()).unwrap_or_else(|| {
         std::path::Path::new(filename)
@@ -999,12 +935,7 @@ async fn process_single_upload(
         None => {
             let path = state
                 .storage
-                .store_file(
-                    user_id,
-                    tags.album.as_deref(),
-                    &stored_name.to_string_lossy(),
-                    &data,
-                )
+                .store_file(user_id, album_title, &stored_name.to_string_lossy(), &data)
                 .await
                 .map_err(upload_error)?;
             if let Err(e) = crate::storage_catalog::record_managed(&tx, &path, &hash).await {
@@ -1014,12 +945,12 @@ async fn process_single_upload(
             path
         }
     };
-    let track_id = Uuid::new_v4();
     let new_track = track::ActiveModel {
         id: Set(track_id),
         title: Set(track_title.clone()),
-        album_id: Set(Some(album_id)),
-        artist_id: Set(artist_id),
+        album_id: Set(release.album_id),
+        artist_id: Set(release.artist_id),
+        cover_url: Set(release.track_cover_url),
         track_number: Set(audio_meta.track_number.map(|n| n as i16)),
         disc_number: Set(audio_meta.disc_number.map(|n| n as i16)),
         duration_secs: Set(audio_meta.duration_secs as f32),
@@ -1043,7 +974,12 @@ async fn process_single_upload(
         created_at: Set(chrono::Utc::now().into()),
     };
 
-    if let Err(e) = new_track.insert(&tx).await {
+    let persisted = async {
+        new_track.insert(&tx).await?;
+        crate::metadata_lookup::hints::save(&tx, track_id, &audio_meta.recording_tags).await
+    }
+    .await;
+    if let Err(e) = persisted {
         if created {
             if let Err(cleanup) = state.storage.delete_file(&relative_path).await {
                 tracing::warn!(%relative_path, %cleanup, "could not remove rejected upload");
@@ -1053,11 +989,12 @@ async fn process_single_upload(
     }
     tx.commit().await.map_err(upload_error)?;
 
-    // Publish track to P2P blob store (best-effort)
+    // Register the stored original for federated playback.
     publish_track_to_p2p(
         state,
         track_id,
         (
+            relative_path.as_str(),
             bytes::Bytes::from(data),
             state
                 .storage
@@ -1065,8 +1002,8 @@ async fn process_single_upload(
                 .filter(|_| created),
         ),
         &track_title,
-        &artist_name,
-        &album_title,
+        artist_name.unwrap_or_default(),
+        album_title,
         &audio_meta,
     )
     .await;
@@ -1076,8 +1013,10 @@ async fn process_single_upload(
         let payload = soundtime_plugin::TrackAddedPayload {
             track_id: track_id.to_string(),
             title: track_title.clone(),
-            artist: artist_name.clone(),
-            album: Some(album_title.clone()),
+            artist: artist_name
+                .unwrap_or(soundtime_db::entities::artist::UNATTRIBUTED_NAME)
+                .to_owned(),
+            album: album_title.map(str::to_owned),
         };
         let payload_val = serde_json::to_value(&payload).unwrap_or_default();
         let registry = registry.clone();
@@ -1118,6 +1057,7 @@ pub(crate) async fn check_duplicate_uploads(state: &AppState, user_id: Uuid, wav
         .await
         .unwrap()
         .unwrap();
+    assert!(row.album_id.is_none());
     let path = row.file_path.clone();
     let mut legacy: track::ActiveModel = row.into();
     legacy.file_hash = Set(None);
@@ -1147,6 +1087,34 @@ pub(crate) async fn check_duplicate_uploads(state: &AppState, user_id: Uuid, wav
         state.storage.read_file(&restored.file_path).await.unwrap(),
         wav
     );
+    let mut replaced = wav.clone();
+    *replaced.last_mut().unwrap() ^= 1;
+    tokio::fs::write(state.storage.full_path(&restored.file_path), &replaced)
+        .await
+        .unwrap();
+    assert_eq!(
+        upload(state, user_id, "restored-after-replacement.wav", &wav)
+            .await
+            .unwrap()
+            .id,
+        id
+    );
+    let checked = track::Entity::find_by_id(id)
+        .one(&state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(checked.file_path, restored.file_path);
+    assert_eq!(checked.file_hash.as_deref(), restored.file_hash.as_deref());
+    assert_eq!(
+        state.storage.read_file(&restored.file_path).await.unwrap(),
+        replaced
+    );
+    assert_eq!(
+        state.storage.read_file(&checked.file_path).await.unwrap(),
+        wav
+    );
+    state.storage.delete_file(&checked.file_path).await.unwrap();
     state
         .storage
         .delete_file(&restored.file_path)
@@ -1160,7 +1128,7 @@ pub(crate) async fn check_duplicate_uploads(state: &AppState, user_id: Uuid, wav
 
 // ─── P2P publication helper ─────────────────────────────────────────
 
-/// Publish a newly uploaded track to the P2P blob store and broadcast
+/// Publish the stored original and broadcast
 /// an announcement to all connected peers.
 ///
 /// This is best-effort: failures are logged but do not prevent the upload
@@ -1168,10 +1136,10 @@ pub(crate) async fn check_duplicate_uploads(state: &AppState, user_id: Uuid, wav
 async fn publish_track_to_p2p(
     state: &AppState,
     track_id: Uuid,
-    original: (bytes::Bytes, Option<std::path::PathBuf>),
+    (path, bytes, immutable): (&str, bytes::Bytes, Option<std::path::PathBuf>),
     track_title: &str,
     artist_name: &str,
-    album_title: &str,
+    album_title: Option<&str>,
     audio_meta: &soundtime_audio::AudioMetadata,
 ) {
     let p2p = match get_p2p_node(state) {
@@ -1179,19 +1147,12 @@ async fn publish_track_to_p2p(
         None => return,
     };
 
-    match p2p.publish_original(original.0, original.1).await {
+    match p2p
+        .publish_stored_track(track_id, path, bytes, immutable)
+        .await
+    {
         Ok(hash) => {
-            tracing::info!(%track_id, %hash, "track published to P2P blob store");
-            // Update the content_hash in the DB
-            let update = track::ActiveModel {
-                id: Set(track_id),
-                content_hash: Set(Some(hash.to_string())),
-                ..Default::default()
-            };
-            if let Err(e) = update.update(&state.db).await {
-                tracing::warn!(%track_id, "failed to save content_hash: {e}");
-            }
-
+            tracing::info!(%track_id, %hash, "original ready for federated playback");
             // Publish cover art to P2P blob store if available
             let cover_hash = if let Some(cover_data) = &audio_meta.cover_art {
                 match p2p
@@ -1213,8 +1174,10 @@ async fn publish_track_to_p2p(
                 hash: hash.to_string(),
                 title: track_title.to_string(),
                 artist_name: artist_name.to_string(),
-                album_artist_name: audio_meta.album_artist.clone(),
-                album_title: Some(album_title.to_string()),
+                album_artist_name: album_title
+                    .and(audio_meta.album_artist.as_deref())
+                    .map(str::to_owned),
+                album_title: album_title.map(str::to_owned),
                 duration_secs: audio_meta.duration_secs as f32,
                 format: audio_meta.format.clone(),
                 file_size: audio_meta.file_size as i64,
@@ -1357,7 +1320,7 @@ pub async fn upload_album_cover(
     // Store the cover
     let cover_path = state
         .storage
-        .store_cover(user_id, Some(&album_record.title), &data)
+        .store_cover(album_id, Some("album"), &data)
         .await
         .map_err(|e| {
             (

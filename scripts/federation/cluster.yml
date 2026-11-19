@@ -2,6 +2,10 @@ services:
   backend-a:
     environment:
       SOUNDTIME_ROLE: worker
+  backend-b:
+    environment:
+      # Leave real verified windows in flight when the policy request commits.
+      P2P_UPLOAD_BYTES_PER_SECOND: "524288"
   catalog-http:
     image: soundtime-federation-backend:${COMPOSE_PROJECT_NAME}
     pull_policy: never
@@ -39,6 +43,7 @@ services:
       peers: {}
       ingress: {}
   proxy-a:
+    scale: 2
     depends_on: [backend-a, frontend-a, catalog-http]
     volumes:
       - ../../docker/catalog-upstreams.conf:/etc/nginx/conf.d/catalog-upstreams.conf:ro

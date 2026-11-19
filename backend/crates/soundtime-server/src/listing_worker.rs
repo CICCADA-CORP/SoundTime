@@ -251,6 +251,24 @@ pub fn spawn(state: Arc<AppState>) {
             }
         };
 
+        let node = state
+            .p2p
+            .as_ref()
+            .and_then(|p| p.clone().downcast::<soundtime_p2p::P2pNode>().ok());
+        if let Some(node) = node.filter(|n| n.listing_discovery_enabled()) {
+            let state = state.clone();
+            let client = client.clone();
+            tokio::spawn(async move {
+                loop {
+                    let listing = get_listing_url(&state).await;
+                    if let Err(error) = node.discover_listing(&client, &listing).await {
+                        tracing::warn!(%error, "could not discover peers from the SoundTime listing");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS))
+                        .await;
+                }
+            });
+        }
         let mut was_enabled = false;
 
         loop {

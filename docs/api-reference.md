@@ -24,7 +24,7 @@ Tokens are obtained via the [login](#post-apiauthlogin) or [refresh](#post-apiau
 |-----------|----------|-------|
 | Access token | 15 minutes | `Authorization: Bearer` header |
 | Refresh token | 7 days | POST body to `/api/auth/refresh` |
-| Media cookie | Up to 10 minutes | Native browser requests for track streams and artwork |
+| Media cookie | Up to 10 minutes | Native browser requests for track streams, radio relays and artwork |
 
 ### Visibility Modes
 
@@ -34,6 +34,21 @@ Some endpoints are conditionally authenticated based on instance settings:
 - **Private instance** — all content endpoints require a valid JWT.
 
 ---
+
+## Webradios
+
+The **Webradios** navigation entry opens `/webradios`. Each instance queries the external directory on demand and keeps bounded, short-lived pages in memory. Station listings and live broadcasts are separate from SoundTime tracks, storage quotas and federation. [Radio Browser API](https://docs.radio-browser.info/)
+
+| Endpoint | Result |
+| --- | --- |
+| `GET /api/webradios/status` | Returns `instance_enabled`, `user_enabled` and their conjunction `enabled`. Both settings default to true. |
+| `GET /api/webradios/stations` | Accepts optional `name`, `tag`, `offset` and `limit` (1–60, default 30). Returns `stations` and a nullable `next_offset`. Each station includes its UUID, name, icon when available, description or broadcast details, tags, country, language, codec, bitrate and HLS flag. |
+| `POST /api/webradios/stations/{id}/play` | Resolves the selected station, reports the click to Radio Browser and returns `url`, `hls` and an optional `relay_url`. |
+| `GET /api/webradios/stations/{id}/stream` | Relays compatible continuous HTTP audio by station UUID. SoundTime applies its streaming limits and checks the access setting during playback. |
+| `PUT /api/webradios/preference` | Saves `{"enabled":false}` or `{"enabled":true}` for the signed-in listener. Guests can change their preference in the browser. |
+| `PUT /api/admin/settings/webradios_enabled` | An administrator supplies `{"value":"false"}` or `{"value":"true"}` for the whole instance. |
+
+Directory and playback endpoints follow instance privacy. A disabled directory returns HTTP 403 for list and play requests, including known station UUIDs. HTTPS broadcasters serve listeners directly and receive the listener’s IP. An HTTP-only continuous audio station can use the same-origin relay when the site uses HTTPS. An HTTP-only HLS playlist may require an external player. Broadcasters control availability, codec support and cross-origin access to HLS segments.
 
 ## Health Check
 
@@ -127,13 +142,13 @@ Exchange a valid refresh token for a new token pair.
 
 ### `POST /api/auth/media-session`
 
-Exchange a Bearer access token for media access on the same origin. A successful response contains `expires_in` in seconds and sets two HttpOnly, SameSite=Strict cookies named `soundtime_media`, scoped to `/api/tracks/` and `/api/media/`. HTTPS requests receive Secure cookies. The stream and artwork handlers accept the media credential for GET and HEAD.
+Exchange a Bearer access token for media access on the same origin. A successful response contains `expires_in` in seconds and sets HttpOnly, SameSite=Strict cookies named `soundtime_media`, scoped to `/api/tracks/`, `/api/media/` and `/api/webradios/stations/`. HTTPS requests receive Secure cookies. The stream and artwork handlers accept the media credential for GET and HEAD.
 
 The grant expires within 600 seconds and by the end of the access token's lifetime. When the access token has 45 seconds or less remaining, the exchange returns `401`. Refresh the access token and repeat the exchange before resuming playback.
 
 ### `DELETE /api/auth/media-session`
 
-Expire both browser cookies on logout. The server returns `204 No Content`, including when the access token has expired.
+Expire the scoped media cookies on logout. The server returns `204 No Content`, including when the access token has expired.
 
 ### `GET /api/auth/me`
 
@@ -307,7 +322,7 @@ Get a single track's full metadata.
 
 ### `GET /api/tracks/{id}/credits`
 
-Get track credits and contributors.
+Get track credits and contributors. An uncredited track has a null `artist_name`. Clients can use the track ID to open and play it.
 
 **Auth**: Conditional
 
@@ -406,13 +421,13 @@ Upload a cover image for an album. Maximum body size: **500 MB**.
 
 ### `GET /api/artists`
 
-List all artists with pagination.
+List credited artists with pagination. The total, page count and search results exclude the placeholder used internally for uncredited tracks.
 
 **Auth**: Conditional
 
 ### `GET /api/artists/{id}`
 
-Get a single artist with their albums and tracks.
+Get a single artist with their albums and tracks. A request for the internal placeholder returns HTTP 404.
 
 **Auth**: Conditional
 
@@ -826,11 +841,11 @@ Get metadata enrichment status (MusicBrainz integration).
 
 #### `POST /api/admin/metadata/enrich/{track_id}`
 
-Enrich a single track's metadata from MusicBrainz.
+Look up a local recording using its embedded recording MBID, ISRC, or title and performer. Album, duration, credits and version distinguish candidates. A confident result updates the existing track. An ambiguous result returns up to five candidates with recording ID, performer, album, duration and disambiguation when available. Confirm a candidate with `?recording_id={mbid}` on the same endpoint. A failed lookup leaves the existing metadata and playlist references intact. [MusicBrainz search fields](https://musicbrainz.org/doc/MusicBrainz_API/Search)
 
 #### `POST /api/admin/metadata/enrich-all`
 
-Enrich metadata for all tracks.
+Run a bounded, paginated pass over eligible local tracks missing a recording ID. Tracks imported after the run starts are eligible on the next run. Progress distinguishes enrichment, ambiguous results, misses and errors. The server spaces requests to the same MusicBrainz provider. [MusicBrainz rate limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting)
 
 ### Editorial Playlists
 

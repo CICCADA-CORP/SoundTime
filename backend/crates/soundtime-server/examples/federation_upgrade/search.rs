@@ -280,6 +280,8 @@ pub async fn check(db: &DatabaseConnection) -> Result<()> {
             .ok_or("missing durable observation")?;
         assert_eq!(row.try_get::<bool>("", "is_online")?, expected);
     }
+    tx.execute_unprepared(include_str!("credit_checks.sql"))
+        .await?;
     tx.rollback().await?;
     Ok(())
 }

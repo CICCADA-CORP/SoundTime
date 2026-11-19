@@ -2,7 +2,7 @@ FROM node:24-trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends chromium ca-certificates fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/soundtime-browser
-COPY browser-playback.mjs load-client.mjs load-audio.mjs ./
+COPY browser-playback.mjs browser-webradios.mjs load-client.mjs load-audio.mjs ./
 ENV CHROME_BIN=/usr/bin/chromium SOUNDTIME_CONTAINER_BROWSER=true
 USER node
 ENTRYPOINT ["node", "/opt/soundtime-browser/browser-playback.mjs"]

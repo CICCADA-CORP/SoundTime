@@ -1,0 +1,32 @@
+services:
+  # A advertises on LAN and hosts a rendezvous, without registering itself.
+  backend-a:
+    environment:
+      P2P_LOCAL_ADVERTISE: "true"
+      P2P_RENDEZVOUS_SERVER: "true"
+  # B is a private LAN listener. It never transmits a signed directory registration.
+  backend-b:
+    environment:
+      P2P_LOCAL_DISCOVERY: "true"
+      P2P_LOCAL_ADVERTISE: "false"
+      P2P_RENDEZVOUS_URL: http://listing/api/p2p/rendezvous
+      P2P_RENDEZVOUS_ANNOUNCE: "false"
+  # C resolves known IDs over LAN without consuming passive discovery events. A
+  # can only be learned from the local copy of the public directory response.
+  backend-c:
+    depends_on:
+      db-c: {condition: service_healthy}
+      listing: {condition: service_started}
+    environment:
+      P2P_LOCAL_DISCOVERY: "false"
+      P2P_LOCAL_ADVERTISE: "true"
+      P2P_LISTING_DISCOVERY: "true"
+      LISTING_URL: http://listing
+      P2P_RENDEZVOUS_URL: http://listing/api/p2p/rendezvous
+      P2P_RENDEZVOUS_ANNOUNCE: "true"
+  listing:
+    image: nginx:alpine
+    networks: [peers]
+    volumes:
+      - ./discovery-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    tmpfs: [/usr/share/nginx/html]

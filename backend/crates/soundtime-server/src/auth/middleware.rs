@@ -16,6 +16,9 @@ use soundtime_db::AppState;
 #[derive(Clone, Debug)]
 pub struct AuthUser(pub Claims);
 
+#[derive(Clone, Copy)]
+pub struct MediaListener(pub uuid::Uuid);
+
 /// Middleware: require valid access token
 pub async fn require_auth(
     State(state): State<Arc<AppState>>,
@@ -180,6 +183,9 @@ async fn private_access(
     budget: Option<&Arc<super::stream_budget::StreamBudget>>,
 ) -> Response {
     let account = authenticated_account(&mut request, &state.jwt_secret, media);
+    if let Some(id) = account.filter(|_| media) {
+        request.extensions_mut().insert(MediaListener(id));
+    }
     if account.is_some() && !media {
         return next.run(request).await;
     }
@@ -390,7 +396,14 @@ mod tests {
 
     #[tokio::test]
     async fn authenticated_metadata_needs_no_visibility_query() {
-        let state = test_state(); // no database connection
+        // A closed real pool returns a database error on a visibility lookup.
+        // SeaORM's Disconnected sentinel panics when a query asks for the backend.
+        let mut options = sea_orm::ConnectOptions::new("postgres://unused@127.0.0.1:1/unused");
+        options.min_connections(0).connect_lazy(true);
+        let db = sea_orm::Database::connect(options).await.unwrap();
+        db.close_by_ref().await.unwrap();
+        let mut state = test_state();
+        Arc::get_mut(&mut state).unwrap().db = db;
         let uid = uuid::Uuid::new_v4();
         let pair = generate_token_pair(uid, "listener", "user", &state.jwt_secret).unwrap();
         let app = Router::new()

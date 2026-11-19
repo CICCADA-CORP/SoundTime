@@ -85,8 +85,9 @@ Sign in, open **Upload**, and add an audio file. Open **Tracks** and press **Pla
 
 - **Import a collection.** Upload MP3, FLAC, Ogg, WAV, AAC, Opus, M4A or AIFF files. SoundTime converts AIFF uploads to FLAC. On Linux, you can also mount an existing SMB or NFS library read-only and import its files from the administration panel. [Network library setup](docs/deployment.md#read-only-smb-and-nfs-music-libraries)
 - **Choose what plays next.** Search for a track, album or artist, build a playlist, or start a radio station from a track, artist or genre. The player keeps the queue available as you browse and supports seeking, shuffle, repeat and lock-screen controls on compatible browsers.
+- **Listen to live broadcasts.** Open **Webradios** below **Radio** to browse Radio Browser by station name or genre and listen live. The directory is enabled by default. Listeners can turn it off in their preferences, and administrators can disable it for the whole instance. [Radio Browser](https://www.radio-browser.info/)
 - **Keep a personal collection.** Save favorites, revisit listening history and make playlists public or private. Explore brings together recent releases, trending tracks and genres from the catalog.
-- **Fill in missing metadata.** Administrators can look up a track on MusicBrainz or run a batch for tracks missing a recording ID. Each run checks its starting list once and reports matches, empty results and provider errors separately.
+- **Fill in missing metadata.** Administrators can look up a track on MusicBrainz or run a batch for tracks missing a recording ID. SoundTime checks embedded recording IDs and ISRCs, then compares titles, artists, releases, versions and durations. Ambiguous matches can be reviewed and confirmed individually.
 
 ## Operating an instance
 

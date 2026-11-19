@@ -41,11 +41,16 @@ use crate::track_health::{spawn_health_monitor, PeerTrackInfo, TrackFetcher, Tra
 #[path = "range_transport/live.rs"]
 mod ranges;
 
+#[path = "originals.rs"]
+mod originals;
+
 #[path = "legacy_audio.rs"]
 mod legacy_audio;
 
 #[path = "presence.rs"]
 mod presence;
+#[path = "discovery_sources.rs"]
+mod sources;
 
 pub const SOUNDTIME_ALPN: &[u8] = b"soundtime/p2p/1";
 #[path = "inventory/live.rs"]
@@ -279,6 +284,9 @@ pub struct P2pConfig {
     pub relay_only: bool,
     /// Whether to enable local network (mDNS) discovery
     pub enable_local_discovery: bool,
+    pub local_advertise: bool,
+    pub listing_discovery: bool,
+    pub rendezvous_announce: bool,
     /// Whether to publish and resolve known EndpointIds on the Mainline DHT
     pub enable_dht_discovery: bool,
     /// Opt-in HTTP endpoint where participating nodes exchange EndpointIds
@@ -307,6 +315,9 @@ impl Default for P2pConfig {
             relay_url: None,
             relay_only: false,
             enable_local_discovery: true,
+            local_advertise: true,
+            listing_discovery: true,
+            rendezvous_announce: true,
             enable_dht_discovery: true,
             rendezvous_url: None,
             seed_peers: Vec::new(),
@@ -335,6 +346,14 @@ impl P2pConfig {
         let enable_local_discovery = std::env::var("P2P_LOCAL_DISCOVERY")
             .unwrap_or_else(|_| "true".to_string())
             .eq_ignore_ascii_case("true");
+        let explicit_catalog =
+            std::env::var("P2P_EXPLICIT_CATALOG").is_ok_and(|v| v.eq_ignore_ascii_case("true"));
+        let flag = |name, fallback| {
+            std::env::var(name)
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map_or(fallback, |s| s.eq_ignore_ascii_case("true"))
+        };
 
         let enable_public_discovery = std::env::var("P2P_PUBLIC_DISCOVERY")
             .unwrap_or_else(|_| "true".to_owned())
@@ -371,8 +390,13 @@ impl P2pConfig {
                 .is_ok_and(|v| v.eq_ignore_ascii_case("true")),
             share_cached: std::env::var("P2P_SHARE_CACHED")
                 .is_ok_and(|v| v.eq_ignore_ascii_case("true")),
-            explicit_catalog: std::env::var("P2P_EXPLICIT_CATALOG")
-                .is_ok_and(|v| v.eq_ignore_ascii_case("true")),
+            explicit_catalog,
+            local_advertise: flag(
+                "P2P_LOCAL_ADVERTISE",
+                enable_local_discovery && !explicit_catalog,
+            ),
+            rendezvous_announce: flag("P2P_RENDEZVOUS_ANNOUNCE", !explicit_catalog),
+            listing_discovery: flag("P2P_LISTING_DISCOVERY", enable_public_discovery),
             share_identity: std::env::var("P2P_SHARE_IDENTITY")
                 .is_ok_and(|v| v.eq_ignore_ascii_case("true")),
             enable_public_discovery,
@@ -428,6 +452,8 @@ pub struct P2pNode {
     endpoint: Endpoint,
     /// Content-addressed blob store (filesystem-backed)
     blob_store: FsStore,
+    original_storage: Arc<dyn soundtime_audio::StorageBackend>,
+    original_index_wake: tokio::sync::Notify,
     /// Database handle for peer blocking checks
     db: DatabaseConnection,
     /// Registry of known peers (in-memory)
@@ -456,6 +482,7 @@ pub struct P2pNode {
     manual_relay: Option<iroh::RelayUrl>,
     catalogs: catalogs::Catalogs,
     pex_workers: Arc<tokio::sync::Semaphore>,
+    candidate_probes: std::sync::Mutex<sources::ProbeBudget>,
     subscribers: tokio::sync::RwLock<std::collections::HashSet<EndpointId>>,
     audio_bytes_sent: AtomicU64,
     audio_bytes_received: AtomicU64,
@@ -549,6 +576,17 @@ async fn write_blob_payload(
 impl P2pNode {
     /// Start a new P2P node with the given config and database.
     pub async fn start(config: P2pConfig, db: DatabaseConnection) -> Result<Arc<Self>, P2pError> {
+        let storage = Arc::new(soundtime_audio::AudioStorage::new(
+            config.audio_storage_path.clone(),
+        ));
+        Self::start_with_storage(config, db, storage).await
+    }
+
+    pub async fn start_with_storage(
+        config: P2pConfig,
+        db: DatabaseConnection,
+        original_storage: Arc<dyn soundtime_audio::StorageBackend>,
+    ) -> Result<Arc<Self>, P2pError> {
         // Ensure blobs directory exists
         tokio::fs::create_dir_all(&config.blobs_dir)
             .await
@@ -626,14 +664,6 @@ impl P2pNode {
             builder = builder.clear_ip_transports();
         }
 
-        // Optionally enable local network discovery (mDNS)
-        if config.enable_local_discovery {
-            info!("enabling local network discovery (mDNS)");
-            builder = builder
-                .address_lookup(iroh_mdns_address_lookup::MdnsAddressLookupBuilder::default());
-            tracing::info!("mDNS address lookup configured");
-        }
-
         // Optionally enable DHT (BitTorrent Mainline) discovery
         if config.enable_public_discovery && config.enable_dht_discovery {
             info!("enabling DHT (BitTorrent Mainline) discovery");
@@ -657,6 +687,25 @@ impl P2pNode {
             .bind()
             .await
             .map_err(|e| P2pError::Endpoint(e.to_string()))?;
+        let mdns =
+            if !config.relay_only && (config.enable_local_discovery || config.local_advertise) {
+                let mdns = iroh_mdns_address_lookup::MdnsAddressLookup::builder()
+                    .advertise(config.local_advertise)
+                    .build(endpoint.id())
+                    .map_err(|e| P2pError::Endpoint(e.to_string()))?;
+                let events = if config.explicit_catalog && config.enable_local_discovery {
+                    Some(mdns.subscribe().await)
+                } else {
+                    None
+                };
+                endpoint
+                    .address_lookup()
+                    .map_err(|e| P2pError::Endpoint(e.to_string()))?
+                    .add(mdns);
+                events
+            } else {
+                None
+            };
 
         // Wait for relay connection (up to 15 seconds)
         // With discovery services registered, the endpoint will automatically
@@ -701,8 +750,7 @@ impl P2pNode {
 
         let (maximum, min_free) =
             crate::blob_cache::budget_from_env().map_err(|e| P2pError::BlobStore(e.to_string()))?;
-        let legacy = crate::blob_cache::legacy_charge(&blob_store, &config.blobs_dir, &db)
-            .await
+        let legacy = crate::blob_cache::legacy_charge(&config.blobs_dir)
             .map_err(|e| P2pError::BlobStore(e.to_string()))?;
         let cache_dir = config.blobs_dir.join("cache-v2");
         let blob_cache = tokio::task::spawn_blocking(move || {
@@ -747,6 +795,8 @@ impl P2pNode {
             ranges: ranges::RangeTransfers::new(endpoint.clone()),
             endpoint,
             blob_store,
+            original_storage,
+            original_index_wake: Default::default(),
             db,
             registry,
             search_index,
@@ -762,6 +812,7 @@ impl P2pNode {
             manual_addresses,
             manual_relay,
             pex_workers: Arc::new(tokio::sync::Semaphore::new(2)),
+            candidate_probes: Default::default(),
             subscribers: Default::default(),
             audio_bytes_sent: AtomicU64::new(0),
             audio_bytes_received: AtomicU64::new(0),
@@ -813,16 +864,7 @@ impl P2pNode {
             });
         }
 
-        // Backfill content_hash for tracks imported before P2P was enabled.
-        // This ensures all local tracks are available for catalog sync.
-        {
-            let node_clone = Arc::clone(&node);
-            tokio::spawn(async move {
-                // Small delay to let the published_hashes pre-population finish first
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                node_clone.backfill_content_hashes().await;
-            });
-        }
+        node.start_original_index();
 
         // Spawn the connection accept loop
         let node_clone = Arc::clone(&node);
@@ -830,6 +872,9 @@ impl P2pNode {
             node_clone.accept_loop().await;
         });
 
+        if let Some(mdns) = mdns {
+            node.discover_lan(mdns);
+        }
         if let Some(url) = node._config.rendezvous_url.clone() {
             let node = Arc::clone(&node);
             let mut shutdown = node.shutdown_tx.subscribe();
@@ -841,7 +886,7 @@ impl P2pNode {
                     loop {
                         interval.tick().await;
                         if let Err(e) = node.refresh_rendezvous(&client, &url).await {
-                            warn!("rendezvous registration failed; retrying in five minutes: {e}");
+                            warn!("rendezvous request failed; retrying in five minutes: {e}");
                         }
                     }
                 };
@@ -1163,14 +1208,10 @@ impl P2pNode {
         {
             return Ok(data);
         }
-        let data = self
-            .blob_store
-            .blobs()
-            .get_bytes(hash)
-            .await
-            .map_err(|e| P2pError::BlobStore(e.to_string()))?;
-
-        Ok(data)
+        match self.blob_store.blobs().get_bytes(hash).await {
+            Ok(data) => Ok(data),
+            Err(_) => self.original_blob(hash).await,
+        }
     }
 
     pub fn cache_on_play(&self) -> bool {
@@ -1406,28 +1447,12 @@ impl P2pNode {
     }
 
     async fn verify_pex_candidates(&self, peers: Vec<String>) {
-        let mut seen = std::collections::HashSet::new();
-        for raw in peers.into_iter().take(PEX_LIMIT) {
-            let Ok(id) = raw.parse::<EndpointId>() else {
-                continue;
-            };
-            if id == self.node_id()
-                || !seen.insert(id)
-                || self.registry.get_peer(&raw).await.is_some()
-            {
-                continue;
-            }
-            let Ok(policy) = crate::peer_policy::get(&self.db, &raw).await else {
-                continue;
-            };
-            if policy.banned {
-                continue;
-            }
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.ping_peer(EndpointAddr::new(id)),
-            )
-            .await;
+        for id in peers
+            .into_iter()
+            .take(PEX_LIMIT)
+            .filter_map(|raw| raw.parse().ok())
+        {
+            self.verify_candidate(id).await;
         }
     }
 
@@ -1444,30 +1469,35 @@ impl P2pNode {
         let started = chrono::Utc::now();
         let source = peer_addr.id.to_string();
         let access = soundtime_db::media_access::ReadGuard::peer(&source);
-        let result = match tokio::time::timeout(
-            std::time::Duration::from_secs(12),
-            access.during(self.probe_presence(peer_addr)),
-        )
-        .await
-        {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(P2pError::PeerPolicyChanged(source.clone())),
-            Err(_) => Err(P2pError::Connection("peer presence timed out".into())),
-        };
-        match &result {
-            Ok(P2pMessage::Pong {
+        let probe = async {
+            let reply = self.probe_presence(peer_addr).await?;
+            if let P2pMessage::Pong {
                 node_id,
                 track_count,
                 version,
-            }) if node_id == &source => {
-                registry
-                    .upsert_peer_versioned(&source, None, *track_count, version.clone())
-                    .await;
+            } = &reply
+            {
+                if node_id == &source {
+                    registry
+                        .upsert_peer_versioned(&source, None, *track_count, version.clone())
+                        .await;
+                }
             }
-            Err(P2pError::Connection(_) | P2pError::Endpoint(_) | P2pError::Io(_)) => {
-                registry.failed_since(&source, started, false).await;
-            }
-            _ => {}
+            Ok(reply)
+        };
+        let result =
+            match tokio::time::timeout(std::time::Duration::from_secs(12), access.during(probe))
+                .await
+            {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => Err(P2pError::PeerPolicyChanged(source.clone())),
+                Err(_) => Err(P2pError::Connection("peer presence timed out".into())),
+            };
+        if matches!(
+            &result,
+            Err(P2pError::Connection(_) | P2pError::Endpoint(_) | P2pError::Io(_))
+        ) {
+            registry.failed_since(&source, started, false).await;
         }
         result
     }
@@ -1545,8 +1575,20 @@ impl P2pNode {
         client: &reqwest::Client,
         url: &str,
     ) -> anyhow::Result<()> {
-        let peers = crate::rendezvous::discover(client, url, self.endpoint.secret_key()).await?;
+        let peers = crate::rendezvous::discover(
+            client,
+            url,
+            self.endpoint.secret_key(),
+            self._config.rendezvous_announce,
+        )
+        .await?;
         for id in peers {
+            if self.explicit_catalog() {
+                if self.verify_candidate(id).await {
+                    self.resume_subscription(id).await?;
+                }
+                continue;
+            }
             let peer_id = id.to_string();
             if self
                 .registry
@@ -1565,14 +1607,10 @@ impl P2pNode {
                 continue;
             };
             info!(peer = %peer_id, "discovered SoundTime peer via rendezvous");
-            if !self.explicit_catalog() {
-                let node = Arc::clone(self);
-                tokio::spawn(async move {
-                    node.announce_all_tracks_to_peer(id).await;
-                });
-            } else {
-                self.resume_subscription(id).await?;
-            }
+            let node = Arc::clone(self);
+            tokio::spawn(async move {
+                node.announce_all_tracks_to_peer(id).await;
+            });
         }
         Ok(())
     }
@@ -1784,97 +1822,6 @@ impl P2pNode {
         }
     }
 
-    /// Backfill `content_hash` for local tracks that were imported before P2P was enabled.
-    /// Reads each file, publishes it to the blob store (BLAKE3), and updates the DB.
-    /// Runs on startup to ensure all local tracks are available for P2P catalog sync.
-    async fn backfill_content_hashes(&self) {
-        let page_size = 100u64;
-        let total = match track::Entity::find()
-            .filter(track::Column::ContentHash.is_null())
-            .filter(track::Column::FilePath.not_like("p2p://%"))
-            .count(&self.db)
-            .await
-        {
-            Ok(0) => {
-                debug!("all local tracks already have content hashes");
-                return;
-            }
-            Ok(c) => c,
-            Err(e) => {
-                warn!("failed to count tracks for content hash backfill: {e}");
-                return;
-            }
-        };
-
-        info!(total, "starting content hash backfill for local tracks");
-
-        let num_pages = total.div_ceil(page_size);
-        let mut backfilled = 0u64;
-        let mut skipped = 0u64;
-
-        for page_num in 0..num_pages {
-            let tracks = match track::Entity::find()
-                .filter(track::Column::ContentHash.is_null())
-                .filter(track::Column::FilePath.not_like("p2p://%"))
-                .paginate(&self.db, page_size)
-                .fetch_page(page_num)
-                .await
-            {
-                Ok(t) => t,
-                Err(e) => {
-                    warn!(
-                        page = page_num,
-                        "failed to fetch tracks page for backfill: {e}"
-                    );
-                    continue;
-                }
-            };
-
-            for t in &tracks {
-                let file_path = self.audio_storage_path.join(&t.file_path);
-                let data = match tokio::fs::read(&file_path).await {
-                    Ok(d) => d,
-                    Err(e) => {
-                        warn!(
-                            track_id = %t.id,
-                            path = %file_path.display(),
-                            "skipping backfill — file not readable: {e}"
-                        );
-                        skipped += 1;
-                        continue;
-                    }
-                };
-
-                match self.publish_track(Bytes::from(data)).await {
-                    Ok(hash) => {
-                        let update = track::ActiveModel {
-                            id: Set(t.id),
-                            content_hash: Set(Some(hash.to_string())),
-                            ..Default::default()
-                        };
-                        if let Err(e) = update.update(&self.db).await {
-                            warn!(track_id = %t.id, "failed to save content_hash during backfill: {e}");
-                            skipped += 1;
-                            continue;
-                        }
-                        backfilled += 1;
-                    }
-                    Err(e) => {
-                        warn!(track_id = %t.id, "failed to publish track during backfill: {e}");
-                        skipped += 1;
-                    }
-                }
-            }
-
-            info!(
-                processed = backfilled + skipped,
-                total, backfilled, skipped, "content hash backfill progress"
-            );
-        }
-
-        info!(backfilled, skipped, total, "content hash backfill complete");
-    }
-
     /// Announce all locally-uploaded tracks to a specific peer using paginated queries.
     /// Called when a new peer connects to sync existing catalogs.
     /// Sends one CatalogSync message per page (500 tracks) to avoid loading all
@@ -1952,7 +1899,7 @@ impl P2pNode {
                 .collect();
 
             let artist_map: HashMap<Uuid, String> = if !artist_ids.is_empty() {
-                artist::Entity::find()
+                artist::Entity::credited()
                     .filter(artist::Column::Id.is_in(artist_ids))
                     .all(&self.db)
                     .await
@@ -1990,10 +1937,7 @@ impl P2pNode {
                     None => continue,
                 };
 
-                let artist_name = artist_map
-                    .get(&t.artist_id)
-                    .cloned()
-                    .unwrap_or_else(|| "Unknown".to_string());
+                let artist_name = artist_map.get(&t.artist_id).cloned().unwrap_or_default();
 
                 let (album_title, cover_hash) = match t.album_id {
                     Some(aid) => {
@@ -2622,7 +2566,7 @@ impl P2pNode {
                 .collect();
 
             let artist_map: HashMap<Uuid, String> = if !artist_ids.is_empty() {
-                artist::Entity::find()
+                artist::Entity::credited()
                     .filter(artist::Column::Id.is_in(artist_ids))
                     .all(&self.db)
                     .await
@@ -2658,10 +2602,7 @@ impl P2pNode {
                     None => continue,
                 };
 
-                let artist_name = artist_map
-                    .get(&t.artist_id)
-                    .cloned()
-                    .unwrap_or_else(|| "Unknown".to_string());
+                let artist_name = artist_map.get(&t.artist_id).cloned().unwrap_or_default();
 
                 let (album_title, cover_hash) = match t.album_id {
                     Some(aid) => match album_map.get(&aid) {
@@ -2904,7 +2845,7 @@ impl P2pNode {
     /// Internal: process a single track announcement — de-duplicate, auto-fetch blob,
     /// create artist/album/track/remote_track records in the local database.
     /// Used by both AnnounceTrack (single) and CatalogSync (batch) handlers.
-    async fn process_track_announcement(&self, ann: TrackAnnouncement, peer_id: &str) {
+    async fn process_track_announcement(&self, mut ann: TrackAnnouncement, peer_id: &str) {
         info!(
             hash = %ann.hash,
             title = %ann.title,
@@ -2932,8 +2873,16 @@ impl P2pNode {
         debug!(hash = %ann.hash, %peer_id, "track metadata stored, blob will be fetched on demand");
 
         // Create artist (find or create)
+        let missing_credit = ann.artist_name.trim().is_empty();
+        let credit_name = if missing_credit {
+            ann.artist_name.clear();
+            artist::UNATTRIBUTED_NAME
+        } else {
+            &ann.artist_name
+        };
         let artist_id = match artist::Entity::find()
-            .filter(artist::Column::Name.eq(&ann.artist_name))
+            .filter(artist::Column::Name.eq(credit_name))
+            .filter(artist::Column::IsPlaceholder.eq(missing_credit))
             .one(&self.db)
             .await
         {
@@ -2942,7 +2891,8 @@ impl P2pNode {
                 let new_id = Uuid::new_v4();
                 let new_artist = artist::ActiveModel {
                     id: Set(new_id),
-                    name: Set(ann.artist_name.clone()),
+                    name: Set(credit_name.to_owned()),
+                    is_placeholder: Set(missing_credit),
                     musicbrainz_id: Set(None),
                     bio: Set(None),
                     image_url: Set(None),
@@ -2951,7 +2901,8 @@ impl P2pNode {
                 if let Err(e) = new_artist.insert(&self.db).await {
                     warn!(artist = %ann.artist_name, "failed to create artist: {e}");
                     match artist::Entity::find()
-                        .filter(artist::Column::Name.eq(&ann.artist_name))
+                        .filter(artist::Column::Name.eq(credit_name))
+                        .filter(artist::Column::IsPlaceholder.eq(missing_credit))
                         .one(&self.db)
                         .await
                     {
@@ -2968,12 +2919,13 @@ impl P2pNode {
         let album_artist_name = ann
             .album_artist_name
             .clone()
+            .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| ann.artist_name.clone());
 
         let album_artist_id = if album_artist_name == ann.artist_name {
             artist_id
         } else {
-            let existing = artist::Entity::find()
+            let existing = artist::Entity::credited()
                 .filter(artist::Column::Name.eq(&album_artist_name))
                 .one(&self.db)
                 .await;
@@ -2984,6 +2936,7 @@ impl P2pNode {
                     let new_artist = artist::ActiveModel {
                         id: Set(new_id),
                         name: Set(album_artist_name.clone()),
+                        is_placeholder: Set(false),
                         musicbrainz_id: Set(None),
                         bio: Set(None),
                         image_url: Set(None),
@@ -2991,7 +2944,7 @@ impl P2pNode {
                     };
                     if let Err(e) = new_artist.insert(&self.db).await {
                         warn!(artist = %album_artist_name, "failed to create album artist: {e}");
-                        match artist::Entity::find()
+                        match artist::Entity::credited()
                             .filter(artist::Column::Name.eq(&album_artist_name))
                             .one(&self.db)
                             .await
@@ -3055,6 +3008,7 @@ impl P2pNode {
             title: Set(ann.title.clone()),
             artist_id: Set(artist_id),
             album_id: Set(album_id),
+            cover_url: Set(None),
             track_number: Set(ann.track_number),
             disc_number: Set(ann.disc_number),
             duration_secs: Set(ann.duration_secs),

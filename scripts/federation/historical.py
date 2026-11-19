@@ -9,7 +9,8 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 from historical_image import BUILD_MARKER, inspect_c
-from scenario import Instance, ScenarioError, counters, difference, require, wait_for, wav_fixture
+from scenario import (Instance, ScenarioError, counters, difference, inspect_credit_pair,
+                      publish_credit_pair, require, wait_for, wav_fixture)
 
 
 def public_track(node, title):
@@ -80,6 +81,7 @@ def run(args, report):
     require(public_track(b, modern) == modern_id and public_track(c, historic) == old_id,
             "Original public catalogue entries are missing")
 
+    publish_credit_pair(b)
     before = counters([b])
     refused = b.add_peer(c, follow=False)
     require("legacy peer requires explicit follow" in refused["message"],
@@ -103,6 +105,7 @@ def run(args, report):
     c.ping(b)
     from_c = wait_for("historical catalogue on B", lambda: public_track(b, historic))
     from_b = wait_for("current catalogue on C", lambda: public_track(c, modern))
+    report["credit_interop"] = {"B": inspect_credit_pair(b), "C": inspect_credit_pair(c, archived=True)}
     exchanged = difference(before, counters([b]))["B"]
     require(exchanged["catalog_entries"] > 0 and exchanged["sent"] == exchanged["received"] == 0,
             "Expected metadata-only interchange on the modern participant")

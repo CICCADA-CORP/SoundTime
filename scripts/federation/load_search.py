@@ -10,6 +10,23 @@ from scenario import require
 
 QUERIES = Path(__file__).resolve().parents[2] / "backend/crates/soundtime-server/src/api/search"
 
+def lookup(category):
+    query = (QUERIES / (category + ".sql")).read_text()
+    if category == "ranked_page":
+        prefix = (QUERIES / "rank_prefix.sql").read_text()
+        names = (QUERIES / "name_matches.sql").read_text()
+        # psql captures the actual transaction snapshot and ranked UUIDs. The
+        # 65th element only signals that a deeper match exists in the HTTP path.
+        setup = f"PREPARE corpus(text,bigint) AS {prefix};\nEXECUTE corpus(:'term',65)\n\\gset corpus_\n"
+        return (setup, "text,text,jsonb,bigint,bigint,bool,bool",
+                ":'term',:'corpus_snapshot',(:'corpus_ids'::jsonb - 64),10,0,true,true",
+                "WITH names AS MATERIALIZED (" + names + ")," + query)
+    if category == "rank_prefix":
+        return "", "text,bigint", ":'term',65", query
+    if category == "name_matches":
+        return "", "text", ":'term'", query
+    return "", "text,bigint,bigint,bool,bool", ":'term',10,0,true,true", query
+
 
 def wait_for_index(compose, project, observation, timeout):
     start = time.monotonic()
@@ -34,17 +51,17 @@ def explain(compose, project, report_path):
     # Check both selectivities and both prepared plan modes for ranked titles.
     # Sample the two skipped availability queries once to diagnose the old path.
     for term in ("Quartz0001:*", "Melody00:*"):
-        lookups = [("tracks", "generic"), ("tracks", "custom"), ("name_matches", "generic")]
+        lookups = [("tracks", "generic"), ("tracks", "custom"), ("name_matches", "generic"),
+                   ("rank_prefix", "generic"), ("ranked_page", "generic")]
         if term == "Quartz0001:*":
             lookups.extend([("artists", "generic"), ("albums", "generic")])
         for category, mode in lookups:
-            types, values = ("text", ":'term'") if category == "name_matches" else (
-                "text,bigint,bigint,bool,bool", ":'term',10,0,true,true")
-            query = (QUERIES / (category + ".sql")).read_text()
+            setup, types, values, query = lookup(category)
             script = f"""BEGIN READ ONLY;
                 SET LOCAL statement_timeout = '8s';
                 SET LOCAL lock_timeout = '1s';
                 SET LOCAL plan_cache_mode = force_{mode}_plan;
+                {setup}
                 PREPARE lookup({types}) AS {query};
                 EXPLAIN (ANALYZE, BUFFERS, SETTINGS, FORMAT JSON) EXECUTE lookup({values});
                 ROLLBACK;"""

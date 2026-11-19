@@ -8,6 +8,8 @@ use soundtime_migration::{Migrator, MigratorTrait};
 use std::error::Error;
 use std::fs;
 
+#[path = "federation_upgrade/original_queue.rs"]
+mod original_queue;
 #[path = "federation_upgrade/projections.rs"]
 mod projections;
 #[path = "federation_upgrade/range_providers.rs"]
@@ -66,6 +68,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let tx = db.begin().await?;
     tx.execute_unprepared(LEGACY_SQL).await?;
+    let scanned_hash = soundtime_p2p::BlobHash::new(PRESENT_WAV).to_string();
+    tx.execute(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "UPDATE tracks SET content_hash=$1 WHERE id=$2::text::uuid",
+        [scanned_hash.clone().into(), SCANNED.into()],
+    ))
+    .await?;
     tx.commit().await?;
     let before = snapshot(&db, REFERENCES_SQL).await?;
     for (group, expected) in [
@@ -144,7 +153,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ]);
         let versions = json!([
             [NEW_IMPORT, 1, null, 48, "wav"],
-            [SCANNED, 1, null, 48, "wav"],
+            [SCANNED, 1, scanned_hash, 48, "wav"],
             [AMBIGUOUS, 1, null, 2048, "flac"],
             [MISSING, 1, null, 4096, "flac"],
         ]);
@@ -176,6 +185,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         previous_projection = Some(projection);
     }
+    original_queue::check(&db).await?;
     projections::check(&db, &writer).await?;
     search::check(&db).await?;
     Ok(())

@@ -1,6 +1,7 @@
 """Exercise three fresh SoundTime instances through their public and admin HTTP APIs."""
 
 import argparse
+import base64
 from contextlib import ExitStack, suppress
 from datetime import datetime, timezone
 import hashlib
@@ -11,6 +12,7 @@ from pathlib import Path
 import re
 import secrets
 import select
+import stat
 import subprocess
 import sys
 import tempfile
@@ -126,11 +128,12 @@ class Instance:
         expected = "Catalogue followed" if followed else "Catalogue unfollowed"
         require(result["message"] == expected, f"{self.name}: {result['message']}")
 
-    def upload(self, title, pcm, extension="wav", mime="audio/wav", *, token=None):
+    def upload(self, title, pcm, extension="wav", mime="audio/wav", *, token=None, artist="SoundTime fixture"):
         boundary = secrets.token_hex(24)
         fields = [
             f'--{boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n{title}\r\n'.encode(),
-            f'--{boundary}\r\nContent-Disposition: form-data; name="artist"\r\n\r\nSoundTime fixture\r\n'.encode(),
+            (f'--{boundary}\r\nContent-Disposition: form-data; name="artist"\r\n\r\n{artist}\r\n'.encode()
+             if artist is not None else b""),
             (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{title}.{extension}"'
              f'\r\nContent-Type: {mime}\r\n\r\n').encode(),
             pcm, f"\r\n--{boundary}--\r\n".encode(),
@@ -171,6 +174,72 @@ def wav_fixture(frames, seed):
         writer.setparams((1, 1, 16000, 0, "NONE", "not compressed"))
         writer.writeframes((period * ((frames + 255) // 256))[:frames])
     return out.getvalue()
+
+
+def reader_volume(signatures):
+    """Inspect the disposable reader's media volume without opening its identity key."""
+    project = os.getenv("SOUNDTIME_TEST_COMPOSE_PROJECT", "")
+    if re.fullmatch(r"st-fed-[0-9a-f]{16}", project):
+        cmd = ["docker", "compose", "--env-file", "/dev/null", "-p", project,
+               "-f", str(Path(__file__).with_name("compose.yml")), "exec", "-T",
+               "--workdir", "/data", "backend-b"]
+        cwd = None
+        listing = subprocess.check_output(cmd + ["find", ".", "-printf", r"%y %s %P\0"], timeout=20)
+        entries = [record.decode().split(" ", 2) for record in listing.split(b"\0") if record]
+    else:
+        root = os.getenv("SOUNDTIME_TEST_READER_VOLUME_B")
+        require(os.getenv("SOUNDTIME_TEST_FAULT_DRIVER") and root,
+                "Native acceptance needs SOUNDTIME_TEST_READER_VOLUME_B for B's disposable data root")
+        cwd, cmd = Path(root).resolve(strict=True), []
+        entries = []
+        for path in cwd.rglob("*"):
+            info = path.lstat()
+            kind = "d" if stat.S_ISDIR(info.st_mode) else "f" if stat.S_ISREG(info.st_mode) else "other"
+            entries.append((kind, info.st_size, str(path.relative_to(cwd))))
+
+    files, partials = {}, []
+    for kind, size, name in entries:
+        require(kind in ("f", "d") and "\n" not in name, "Unexpected entry on disposable reader volume")
+        path = Path(name)
+        if (any(p.startswith((".part-", ".evict-")) for p in path.parts)
+                or name.startswith("p2p-blobs/temp/") or path.suffix in (".sizes4", ".bitfield")
+                or (name.startswith("p2p-blobs/cache-v2/") and path.name != ".owner")):
+            partials.append(name)
+        if kind == "f":
+            files[name] = int(size)
+    db, owner, key = "p2p-blobs/blobs.db", "p2p-blobs/cache-v2/.owner", "secret_key"
+    require(db in files and owner in files and files.get(key, 0) > 0, "Incomplete reader volume")
+    data, metadata, proofs = {}, {}, {}
+    for name, size in sorted(files.items()):
+        if name in (db, owner, key, "p2p-blobs/.soundtime-blobs-0.105"):
+            metadata[name] = size
+        elif name.endswith(".obao4") or Path(name).name == "proof":
+            proofs[name] = size
+        else:
+            data[name] = size
+
+    # Small blobs can live inline in redb. Inspect the actual bytes of every regular
+    # file except the identity key, including the database and any proof sidecars.
+    # Each fixture repeats its own 256-byte period throughout the WAV payload.
+    require(signatures and all(s and b"\n" not in s for s in signatures), "Invalid fixture PCM signatures")
+    scan = subprocess.run(cmd + ["env", "LC_ALL=C", "grep", "-Fl", "-f", "-", "--",
+                                 *sorted(n for n in files if n != key)],
+                          cwd=cwd, input=b"\n".join(signatures) + b"\n", capture_output=True, timeout=20)
+    require(scan.returncode in (0, 1), f"Reader volume scan failed: {scan.stderr.decode(errors='replace')}")
+    return {"data_files": data, "metadata_files": metadata, "proof_files": proofs,
+            "partial_paths": sorted(partials), "remote_pcm_files": scan.stdout.decode().splitlines()}
+
+
+def observe_zero_cache(reader, signatures, observations, phase):
+    observation = observations[phase] = reader_volume(signatures)
+    usage = reader.call("/admin/storage/status")["cache"]
+    observation["quota"] = {k: usage[k] for k in ("maximum_bytes", "reserved_bytes", "pinned_bytes", "evictable_bytes")}
+    require(all(v == 0 for v in observation["quota"].values()), f"B has a nonzero cache budget or allocation at {phase}")
+    require(not observation["partial_paths"] and not observation["remote_pcm_files"],
+            f"B has a partial file or persisted remote fixture audio at {phase}")
+    baseline = observations["before_remote_play"]["data_files"]
+    require(any(n.startswith("music/") for n in baseline), "B's local originals are absent from the volume")
+    require(observation["data_files"] == baseline, f"B's media files changed at {phase}")
 
 
 def wait_for(label, probe, timeout=40):
@@ -219,6 +288,24 @@ def quiet_catalogue(nodes, before, measurements, key):
     measurements[key] = {"observation_s": window, "p2p": delta}
     require(all(row["catalog_entries"] == 0 for row in delta.values()) and no_audio(delta),
             f"Unexpected catalogue or audio in {key}: {delta}")
+
+
+def publish_credit_pair(node):
+    node.upload("Uncreditedinterchange", wav_fixture(24000, 23), artist=None)
+    node.upload("Namedinterchange", wav_fixture(25000, 29), artist="Unknown Artist")
+
+
+def inspect_credit_pair(node, archived=False):
+    entries = []
+    for title in ("Uncreditedinterchange", "Namedinterchange"):
+        track_id = wait_for(f"{node.name} received {title}", lambda: node.search(title))
+        entries.append(node.call("/tracks/" + track_id, token=""))
+    missing, credited = entries
+    allowed = (None, "") if archived else (None,)
+    require(missing.get("artist_name") in allowed and credited.get("artist_name") == "Unknown Artist"
+            and missing["artist_id"] != credited["artist_id"],
+            f"{node.name} did not preserve an absent credit and its named homonym")
+    return {"uncredited": missing["id"], "credited": credited["id"]}
 
 
 def discover_and_subscribe(nodes, mode, report, main_title, cancel_title):
@@ -304,7 +391,7 @@ def fetch_range(node, track_id, audio, start, length):
     return length
 
 
-def proxy_range_contract(node, track_id, audio):
+def proxy_range_contract(node, track_id, audio, observe_open=None):
     path = f"/tracks/{track_id}/stream"
     size = len(audio)
     for value, start in (("bytes=-1537", size - 1537), (f"bytes={size-811}-", size-811)):
@@ -313,7 +400,11 @@ def proxy_range_contract(node, track_id, audio):
                     "Missing proxy range support")
             require(response.headers.get("Content-Range") == f"bytes {start}-{size-1}/{size}" and
                     response.headers.get("Content-Length") == str(size-start), "Incorrect proxy range headers")
-            require(response.read() == audio[start:], "Incorrect authenticated suffix")
+            first = response.read(1)
+            require(first == audio[start:start + 1], "Incorrect first byte of authenticated suffix")
+            if observe_open and value.startswith("bytes=-"):
+                observe_open()
+            require(first + response.read() == audio[start:], "Incorrect authenticated suffix")
     try:
         with node.open(path, headers={"Range": f"bytes={size}-"}):
             raise ScenarioError("Out-of-bounds proxy request succeeded")
@@ -334,19 +425,67 @@ def probe_stream(node, track_id, audio):
             return exc.code
 
 
-def browser_command(node, playlist, track, title):
+def chromium_command(node, script, *args):
     mode = os.getenv("FEDERATION_BROWSER", "native")
     if mode == "native":
-        return ["node", str(Path(__file__).with_name("browser-playback.mjs")),
-                node.url, playlist, track, title, "--session"]
+        return ["node", str(Path(__file__).with_name(script)), node.url, *args]
     project = os.getenv("SOUNDTIME_TEST_COMPOSE_PROJECT", "")
     require(mode == "container" and re.fullmatch(r"st-fed-[0-9a-f]{16}", project)
             and node.name in {"A", "B", "C"}, "Container browser needs this disposable Compose project")
     return ["docker", "compose", "--env-file", "/dev/null", "--project-name", project,
             "--file", str(Path(__file__).with_name("compose.yml")),
             "--file", str(Path(__file__).with_name("browser.yml")),
-            "run", "--no-deps", "--rm", "-T", "browser",
-            "http://proxy-" + node.name.lower(), playlist, track, title, "--session"]
+            "run", "--no-deps", "--rm", "-T", "--entrypoint", "node", "browser",
+            "/opt/soundtime-browser/" + script, "http://proxy-" + node.name.lower(), *args]
+
+
+def browser_command(node, playlist, track, title):
+    return chromium_command(node, "browser-playback.mjs", playlist, track, title, "--session")
+
+
+def write_screenshot(path, encoded, dimensions):
+    png = base64.b64decode(encoded, validate=True)
+    actual = (int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big"))
+    require(png.startswith(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR") and actual == dimensions,
+            f"Invalid PNG or viewport for {path.name}")
+    path.write_bytes(png)
+
+
+def webradio_browser(node, directory):
+    command = chromium_command(node, "browser-webradios.mjs", "--pipe")
+    # The setup admin's tokens never appear in arguments, artifacts or logs.
+    credentials = {"access_token": node.token, "refresh_token": node.refresh_token}
+    folder = directory / "screenshots"
+    folder.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=directory, prefix="radio-browser-") as profile_dir:
+        proc = subprocess.run(command, input=json.dumps(credentials), capture_output=True, text=True,
+                              timeout=210, env={**os.environ, "TMPDIR": profile_dir})
+    require(proc.stdout.strip(), f"Webradio browser did not produce evidence: {proc.stderr[-900:]}")
+    evidence = json.loads(proc.stdout)
+    result = evidence["report"]
+    expected = {"webradios-desktop.png": (1366, 900), "webradios-mobile.png": (390, 844),
+                "webradios-live.png": (1366, 900), "webradios-disabled.png": (1366, 900)}
+    for name, image in evidence["screenshots"].items():
+        require(name in expected, "Unexpected webradio screenshot")
+        write_screenshot(folder / name, image, expected[name])
+    (directory / "webradios-browser.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    require(proc.returncode == 0, f"Webradio browser failed: {result.get('error', proc.stderr[-800:])}")
+    require(result.get("settings_restored") and set(evidence["screenshots"]) == set(expected),
+            "Incomplete webradio browser evidence")
+    return result
+
+
+def save_browser_screenshots(directory, phase, images):
+    expected = {"add": {"search-desktop": (1440, 900)},
+                "play": {"playlist-desktop": (1440, 900), "player-mobile": (390, 844)}}[phase]
+    require(isinstance(images, dict) and images.keys() == expected.keys(), f"Missing browser captures during {phase}")
+    directory.mkdir(parents=True, exist_ok=True)
+    artifacts = []
+    for name, (width, height) in expected.items():
+        dest = directory / (name + ".png")
+        write_screenshot(dest, images[name], (width, height))
+        artifacts.append({"file": f"{directory.name}/{dest.name}", "width": width, "height": height})
+    return artifacts
 
 
 class BrowserSession:
@@ -362,10 +501,11 @@ class BrowserSession:
         )
         stack.push(self._exit)
 
-    def phase(self, name):
+    def phase(self, name, screenshot_dir=None):
         require(self.proc is not None, f"Browser session already closed during {name}")
         try:
-            self.proc.stdin.write(json.dumps({"phase": name, "listeners": self.listeners}) + "\n")
+            self.proc.stdin.write(json.dumps({"phase": name, "listeners": self.listeners,
+                                               "capture": screenshot_dir is not None}) + "\n")
             self.proc.stdin.flush()
         except BrokenPipeError as error:
             raise self.failure(name, "input pipe closed") from error
@@ -376,6 +516,8 @@ class BrowserSession:
             raise self.failure(name, "output pipe closed")
         result = json.loads(line)
         require(isinstance(result, dict) and result, f"Empty browser measurement during {name}")
+        if screenshot_dir is not None:
+            result["screenshots"] = save_browser_screenshots(screenshot_dir, name, result.pop("screenshots", None))
         return result
 
     def failure(self, name, reason):
@@ -569,7 +711,10 @@ def _exercise(args, report, stack):
     tracks["origin_A"] = a.upload(main_title, main_audio)
     tracks["cancel_C"] = c.upload(cancel_title, cancel_audio)
     if pilot:
-        tracks["cancel_A"] = a.upload("CancelatA", wav_fixture(8 * 1024 * 1024, 17))
+        cancel_a_audio = wav_fixture(8 * 1024 * 1024, 17)
+        tracks["cancel_A"] = a.upload("CancelatA", cancel_a_audio)
+    if args.mode == "compatibility":
+        publish_credit_pair(b)
     anchors = [b.upload("Firstlocal", wav_fixture(16000, 3)),
                b.upload("Lastlocal", wav_fixture(16000, 5))]
     tracks["anchors_B"] = anchors
@@ -581,6 +726,7 @@ def _exercise(args, report, stack):
     start = counters(nodes)
     discover_and_subscribe(nodes, args.mode, report, main_title, cancel_title)
     if args.mode == "compatibility":
+        measurements["credit_interop"] = {n.name: inspect_credit_pair(n) for n in (a, b, c)}
         return
     tracks["from_A_on_B"] = wait_for("A's publication in B's local index", lambda: b.search(main_title))
     # Establish B's reference to A before introducing another possible provider.
@@ -594,8 +740,9 @@ def _exercise(args, report, stack):
     playlists = [b.playlist(user, f"Listener {i}", initial_order) for i, user in enumerate(listeners, 1)]
     require(len(set(playlists)) == 2, "Two separate playlists are required")
     browser = BrowserSession(stack, b, tracks["from_A_on_B"], main_title, playlists, listeners)
+    screenshot_dir = args.report.parent / "screenshots" if args.mode == "acceptance" else None
     if pilot:
-        measurements["browser_playlist_additions"] = browser.phase("add")
+        measurements["browser_playlist_additions"] = browser.phase("add", screenshot_dir)
         require(measurements["browser_playlist_additions"]["added"] == playlists,
                 "The browser did not add both listeners' memberships")
         for pid, (_, token) in zip(playlists, listeners):
@@ -611,6 +758,13 @@ def _exercise(args, report, stack):
     for _, token in listeners:
         b.call("/favorites/" + tracks["from_A_on_B"], method="POST", token=token)
         b.call("/tracks/" + tracks["from_A_on_B"], token=token)
+    if pilot:
+        observations = measurements["zero_cache_reader_volume"] = {}
+        signatures = []
+        for audio in (main_audio, cancel_audio, cancel_a_audio):
+            with wave.open(io.BytesIO(audio)) as fixture:
+                signatures.append(fixture.readframes(128))
+        observe_zero_cache(b, signatures, observations, "before_remote_play")
     before_range = counters(nodes)
     measurements["search_and_playlist"] = difference(after_sync, before_range)
     check(report, "metadata_and_search_transfer_zero_audio",
@@ -636,7 +790,8 @@ def _exercise(args, report, stack):
     if pilot:
         require(remote["B"]["verified_windows"] == 1 and remote["B"]["proof_bytes"] > 0 and
                 remote["B"]["received"] == delivered, "Seek did not use one verified Bao window")
-        proxy_range_contract(b, tracks["from_A_on_B"], main_audio)
+        proxy_range_contract(b, tracks["from_A_on_B"], main_audio,
+                             lambda: observe_zero_cache(b, signatures, observations, "with_range_reader_open"))
         try:
             with b.open("/admin/cache/tracks/" + tracks["from_A_on_B"] + "/pin", method="PUT"):
                 raise ScenarioError("Zero quota admitted a pin")
@@ -644,7 +799,7 @@ def _exercise(args, report, stack):
             with exc:
                 require(exc.code == 507, f"Zero quota pin returned HTTP {exc.code}")
         cancel_id = wait_for("v2 cancellation fixture on B", lambda: b.search("CancelatA"))
-        cancel_audio = wav_fixture(8 * 1024 * 1024, 17)
+        cancel_audio = cancel_a_audio
     before_cancel = counters(nodes)
     # A second cold file makes cancellation measurable independently of the first range.
     started = time.monotonic()
@@ -669,6 +824,11 @@ def _exercise(args, report, stack):
     if pilot:
         require(0 < cancel["B"]["verified_windows"] and cancel["B"]["received"] < len(cancel_audio),
                 "Cancelling the browser-side connection fetched the entire cold publication")
+        observe_zero_cache(b, signatures, observations, "after_reader_close")
+        observations["transport"] = {"range_audio_bytes_received": remote["B"]["received"],
+                                     "range_proof_bytes_received": remote["B"]["proof_bytes"],
+                                     "cancel_audio_bytes_received": cancel["B"]["received"],
+                                     "cancel_proof_bytes_received": cancel["B"]["proof_bytes"]}
 
     # C receives and verifies a full copy of A before creating its own independent
     # publication. This transfer is explicit and outside B's cold-read measurements.
@@ -697,7 +857,17 @@ def _exercise(args, report, stack):
     if pilot:
         origin_failure_cycle(nodes, tracks, main_audio, playlists, measurements)
         check(report, "ban_outage_and_authenticated_recovery", True, milestone=11)
-    measurements["browser_playback"] = browser.phase("play")
+        before_browser = counters([b])
+    measurements["browser_playback"] = browser.phase("play", screenshot_dir)
+    if pilot:
+        # The play phase has decoded, sought and navigated away from the media page.
+        played = difference(before_browser, counters([b]))["B"]
+        require(played["received"] > 0 and played["verified_windows"] > 0,
+                "Chromium playback did not receive verified remote audio on B")
+        observations["transport"].update(browser_audio_bytes_received=played["received"],
+                                         browser_proof_bytes_received=played["proof_bytes"])
+        observe_zero_cache(b, signatures, observations, "after_browser_player_close")
+        check(report, "zero_cache_stream_leaves_no_remote_audio_or_partial_files", True, milestone=11)
     for _, token in listeners:
         b.call("/history", method="POST", token=token,
                body={"track_id": tracks["from_A_on_B"], "duration_listened": 4})
@@ -744,6 +914,9 @@ def _exercise(args, report, stack):
         withdraw_creator(a, b, listeners[0], tracks["cancel_A"], anchors[0],
                          report.setdefault("creator_account_withdrawal", {}))
         check(report, "creator_account_withdrawal_survives_both_restarts", True, milestone=3)
+        browser.close()
+        measurements["webradios_browser"] = webradio_browser(b, args.report.parent)
+        check(report, "webradios_browser_and_permissions", True)
 
 
 def main():

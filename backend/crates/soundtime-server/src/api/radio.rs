@@ -98,7 +98,7 @@ async fn enrich_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(db)
             .await
@@ -127,27 +127,10 @@ async fn enrich_tracks(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
+            let album = t.album_id.and_then(|id| albums.get(&id));
             let mut resp = super::tracks::TrackResponse::playable(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -283,6 +266,16 @@ async fn seed_artist(
     let phase1_quota = (count as f64 * 0.6).ceil() as usize;
     let phase2_quota = (count as f64 * 0.4).ceil() as usize;
 
+    if artist::Entity::credited()
+        .filter(artist::Column::Id.eq(seed_id))
+        .one(db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
+        .is_none()
+    {
+        return Err((StatusCode::NOT_FOUND, "Seed artist not found".to_string()));
+    }
+
     // Get artist's tracks to determine genres
     let artist_tracks = track::Entity::find()
         .filter(super::tracks::playable_filter(state))
@@ -290,17 +283,6 @@ async fn seed_artist(
         .all(db)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
-
-    if artist_tracks.is_empty() {
-        // Check if artist exists
-        let artist_exists = artist::Entity::find_by_id(seed_id)
-            .one(db)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
-        if artist_exists.is_none() {
-            return Err((StatusCode::NOT_FOUND, "Seed artist not found".to_string()));
-        }
-    }
 
     let genres: Vec<String> = artist_tracks
         .iter()

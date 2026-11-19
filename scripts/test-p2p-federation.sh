@@ -3,7 +3,7 @@ set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 
 usage() {
-    echo "Usage: scripts/test-p2p-federation.sh baseline|compatibility|historical|acceptance|shaped|relay|retention|cluster|load-smoke|load-full|rust-tests"
+    echo "Usage: scripts/test-p2p-federation.sh baseline|compatibility|historical|discovery|acceptance|shaped|relay|retention|cluster|load-smoke|load-full|rust-tests"
     echo "Set FEDERATION_BROWSER=container to run Chromium inside this disposable project."
     echo "Load profiles use the same location for the HTTP generator; override with SOUNDTIME_LOAD_GENERATOR=native or container."
     echo "Set FEDERATION_ARTIFACT_DIR to choose where each run stores its report and logs."
@@ -13,7 +13,7 @@ if [[ $# == 1 && $1 == --help ]]; then
     usage
     exit 0
 fi
-if [[ $# != 1 ]] || [[ $1 != baseline && $1 != compatibility && $1 != historical && $1 != acceptance && $1 != shaped && $1 != relay && $1 != retention && $1 != cluster && $1 != load-smoke && $1 != load-full && $1 != rust-tests ]]; then
+if [[ $# != 1 ]] || [[ $1 != baseline && $1 != compatibility && $1 != historical && $1 != discovery && $1 != acceptance && $1 != shaped && $1 != relay && $1 != retention && $1 != cluster && $1 != load-smoke && $1 != load-full && $1 != rust-tests ]]; then
     usage >&2
     exit 2
 fi
@@ -39,6 +39,9 @@ if [[ $mode == acceptance || $mode == shaped || $mode == relay || $mode == reten
 fi
 if [[ $mode == retention ]]; then
     export FEDERATION_CACHE_SIZE=256MB FEDERATION_RETAIN_B=true
+fi
+if [[ $mode == discovery ]]; then
+    export FEDERATION_EXPLICIT_C=true
 fi
 if [[ $mode == load-* ]]; then
     export SOUNDTIME_LOAD_GENERATOR=${SOUNDTIME_LOAD_GENERATOR:-$FEDERATION_BROWSER}
@@ -80,6 +83,8 @@ elif [[ $mode == shaped ]]; then
     compose+=(--file "$root/scripts/federation/shaped.yml")
 elif [[ $mode == historical ]]; then
     compose+=(--file "$root/scripts/federation/historical.yml")
+elif [[ $mode == discovery ]]; then
+    compose+=(--file "$root/scripts/federation/discovery.yml")
 elif [[ $mode == retention ]]; then
     compose+=(--file "$root/scripts/federation/retention.yml")
     export SOUNDTIME_TEST_RETENTION=1
@@ -188,8 +193,14 @@ if [[ $mode == rust-tests ]]; then
     stage=rust-and-postgres
     "${compose[@]}" exec -T db-a createdb -U soundtime --template soundtime_federation_history soundtime_federation_rust
     tests=(cargo test --offline --locked --release --workspace --features soundtime-server/redis --lib --bins --tests --no-fail-fast)
-    "${compose[@]}" run --rm -T --no-deps rust-tests "${tests[@]}" -- --test-threads=1 2>&1 | tee "$run_dir/rust-tests.log"
-    "${compose[@]}" run --rm -T --no-deps rust-tests "${tests[@]}" -- --ignored --test-threads=1 2>&1 | tee "$run_dir/postgres-tests.log"
+    unit_status=0
+    postgres_status=0
+    "${compose[@]}" run --rm -T --no-deps rust-tests "${tests[@]}" -- --test-threads=1 2>&1 | tee "$run_dir/rust-tests.log" || unit_status=$?
+    "${compose[@]}" run --rm -T --no-deps rust-tests "${tests[@]}" -- --ignored --test-threads=1 2>&1 | tee "$run_dir/postgres-tests.log" || postgres_status=$?
+    if (( unit_status || postgres_status )); then
+        echo "Rust checks exited with unit=$unit_status postgres=$postgres_status" >&2
+        exit 1
+    fi
     stage=complete
     exit 0
 fi
@@ -223,6 +234,7 @@ if [[ $mode == historical ]]; then
     export SOUNDTIME_HISTORICAL_C
 fi
 if [[ $mode == shaped ]]; then scenario=scripts/federation/shaped.py; fi
+if [[ $mode == discovery ]]; then scenario=scripts/federation/discovery.py; fi
 if [[ $mode == retention ]]; then scenario=scripts/federation/retention.py; fi
 if [[ $mode == load-* ]]; then scenario=scripts/federation/load.py; fi
 if [[ $mode == cluster ]]; then scenario=scripts/federation/cluster.py; fi

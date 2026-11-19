@@ -1,7 +1,9 @@
 //! Coordinate writes to the same music catalog across uploads, scans and server processes.
+pub(crate) mod releases;
+
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr,
-    EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, EntityTrait,
+    QueryFilter, QueryOrder, TransactionTrait,
 };
 use soundtime_db::entities::track;
 use uuid::Uuid;
@@ -68,6 +70,20 @@ pub async fn begin_write(db: &DatabaseConnection) -> Result<DatabaseTransaction,
     Ok(txn)
 }
 
+pub struct ExistingOriginal {
+    pub track: track::Model,
+    pub present: bool,
+}
+
+pub async fn mark_replaced(db: &impl ConnectionTrait, id: Uuid, path: &str) -> Result<(), DbErr> {
+    db.execute(sea_orm::Statement::from_sql_and_values(sea_orm::DbBackend::Postgres,
+        "INSERT INTO federation_missing_sources(track_id)
+         SELECT id FROM tracks t WHERE t.id=$1 AND t.file_path=$2
+           AND NOT EXISTS(SELECT FROM track_publications p WHERE p.track_id=t.id AND p.state='withdrawn')
+         ON CONFLICT DO NOTHING",[id.into(),path.into()])).await?;
+    Ok(())
+}
+
 /// Find the canonical copy while holding the catalog write lock. A file at an
 /// indexed path may have been replaced outside SoundTime since the last scan.
 pub async fn existing_hash(
@@ -75,7 +91,7 @@ pub async fn existing_hash(
     hash: &str,
     storage: &dyn soundtime_audio::StorageBackend,
     owner: Option<Uuid>,
-) -> Result<Option<track::Model>, String> {
+) -> Result<Option<ExistingOriginal>, String> {
     let mut query = track::Entity::find()
         .filter(reusable_track())
         .filter(track::Column::FileHash.eq(hash))
@@ -96,7 +112,10 @@ pub async fn existing_hash(
             .await
             .map_err(|e| e.to_string())?
         {
-            missing.get_or_insert(row);
+            missing.get_or_insert(ExistingOriginal {
+                track: row,
+                present: false,
+            });
             continue;
         }
         let actual = storage
@@ -107,12 +126,18 @@ pub async fn existing_hash(
             source_restored(db, row.id)
                 .await
                 .map_err(|e| e.to_string())?;
-            return Ok(Some(row));
+            return Ok(Some(ExistingOriginal {
+                track: row,
+                present: true,
+            }));
         }
-        let mut update: track::ActiveModel = row.into();
-        update.file_hash = Set(Some(actual));
-        update.content_hash = Set(None);
-        update.update(db).await.map_err(|e| e.to_string())?;
+        mark_replaced(db, row.id, &row.file_path)
+            .await
+            .map_err(|e| e.to_string())?;
+        missing.get_or_insert(ExistingOriginal {
+            track: row,
+            present: false,
+        });
     }
     Ok(missing)
 }

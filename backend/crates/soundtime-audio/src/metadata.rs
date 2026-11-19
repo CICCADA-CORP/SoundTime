@@ -17,6 +17,8 @@ pub enum MetadataError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioMetadata {
+    #[serde(default)]
+    pub recording_tags: crate::recording_tags::RecordingTags,
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
@@ -137,6 +139,7 @@ pub fn extract_metadata_from_file(path: &Path) -> Result<AudioMetadata, Metadata
     .to_string();
 
     Ok(AudioMetadata {
+        recording_tags: crate::recording_tags::RecordingTags::from_file(&tagged_file),
         title,
         artist,
         album,
@@ -234,6 +237,7 @@ mod tests {
     #[test]
     fn test_audio_metadata_serialization() {
         let meta = AudioMetadata {
+            recording_tags: Default::default(),
             title: Some("Test Song".into()),
             artist: Some("Test Artist".into()),
             album: Some("Test Album".into()),

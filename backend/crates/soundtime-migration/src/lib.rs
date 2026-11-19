@@ -44,7 +44,13 @@ mod m20240101_000041_peer_observations;
 
 mod m20240101_000042_federation_workers;
 mod m20240101_000043_pending_backfill;
+mod m20240101_000044_track_cover;
+mod m20240101_000045_artist_placeholder;
 mod m20261119_000001_federation_source_updates;
+mod m20261119_000002_original_proofs;
+mod m20261119_000003_search_rank_generation;
+mod m20261119_000004_catalog_credits;
+mod m20261119_000006_recording_tags;
 
 pub struct Migrator;
 
@@ -110,7 +116,13 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000041_peer_observations::Migration),
             Box::new(m20240101_000042_federation_workers::Migration),
             Box::new(m20240101_000043_pending_backfill::Migration),
+            Box::new(m20240101_000044_track_cover::Migration),
+            Box::new(m20240101_000045_artist_placeholder::Migration),
             Box::new(m20261119_000001_federation_source_updates::Migration),
+            Box::new(m20261119_000002_original_proofs::Migration),
+            Box::new(m20261119_000003_search_rank_generation::Migration),
+            Box::new(m20261119_000004_catalog_credits::Migration),
+            Box::new(m20261119_000006_recording_tags::Migration),
         ]
     }
 }

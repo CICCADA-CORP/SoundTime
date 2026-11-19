@@ -20,6 +20,7 @@ pub mod stats;
 pub mod themes;
 pub mod tracks;
 pub mod users;
+pub mod webradios;
 
 use soundtime_db::AppState;
 use std::sync::Arc;

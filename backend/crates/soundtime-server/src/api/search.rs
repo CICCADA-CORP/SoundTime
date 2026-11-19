@@ -19,6 +19,8 @@ use uuid::Uuid;
 use soundtime_db::entities::{album, artist, track};
 use soundtime_db::AppState;
 
+mod ranking;
+
 #[derive(Debug, Deserialize)]
 pub struct SearchParams {
     pub q: String,
@@ -170,9 +172,13 @@ pub async fn network_results(
             .get(ordinal as usize)
             .ok_or_else(|| database_error(DbErr::Custom("invalid search result index".into())))?;
         let track = track_id.map(|_| track_hit(&row)).transpose()?;
+        let mut item = item.clone();
+        if item.artist_name.trim().is_empty() {
+            item.artist_name.clear();
+        }
         hits.push(RemoteSearchHit {
             track,
-            item: item.clone(),
+            item,
             track_id,
         });
     }
@@ -193,13 +199,9 @@ fn track_hit(
     let cover: Option<String> = row
         .try_get("", "result_cover_url")
         .map_err(database_error)?;
-    hit.cover_url = cover.map(|url| {
-        if url.starts_with("/api/media/") || url.starts_with("http") {
-            url
-        } else {
-            format!("/api/media/{url}")
-        }
-    });
+    hit.cover_url = hit
+        .cover_url
+        .or_else(|| cover.map(super::tracks::media_cover_url));
     Ok(hit)
 }
 
@@ -247,25 +249,32 @@ pub async fn search(
         )
     };
 
-    for row in state
-        .db
-        .query_all(statement(include_str!("search/tracks.sql")))
+    let (rows, names) = if let Some(page) =
+        ranking::page(&state, &terms, limit, offset, [strict, p2p_enabled])
+            .await
+            .map_err(database_error)?
+    {
+        page
+    } else {
+        let rows = state
+            .db
+            .query_all(statement(include_str!("search/tracks.sql")))
+            .await
+            .map_err(database_error)?;
+        let names = NameMatches::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            include_str!("search/name_matches.sql"),
+            [terms.as_str().into()],
+        ))
+        .one(&state.db)
         .await
         .map_err(database_error)?
-    {
+        .ok_or_else(|| database_error(DbErr::Custom("missing search name matches".into())))?;
+        (rows, names)
+    };
+    for row in rows {
         result.tracks.push(track_hit(&row)?);
     }
-    // Avoid planning the availability joins for categories with no matching names.
-    // Every candidate still goes through the full availability query below.
-    let names = NameMatches::find_by_statement(Statement::from_sql_and_values(
-        DbBackend::Postgres,
-        include_str!("search/name_matches.sql"),
-        [terms.as_str().into()],
-    ))
-    .one(&state.db)
-    .await
-    .map_err(database_error)?
-    .ok_or_else(|| database_error(DbErr::Custom("missing search name matches".into())))?;
     if names.albums || names.artists {
         // These availability joins can trigger seconds of LLVM compilation per
         // execution. Keep the setting local to the matching category queries.

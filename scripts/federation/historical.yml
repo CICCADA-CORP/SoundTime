@@ -5,6 +5,7 @@ services:
   backend-b:
     environment:
       P2P_LOCAL_DISCOVERY: "true"
+      P2P_LOCAL_ADVERTISE: "true"
     dns: [127.0.0.1]
   backend-c:
     image: soundtime-federation-historical:${COMPOSE_PROJECT_NAME}

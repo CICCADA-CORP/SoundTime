@@ -26,5 +26,5 @@ WHERE NOT EXISTS(SELECT FROM federation_content_blocks b WHERE b.content_hash=in
 SELECT resolved.ordinal, resolved.track_id, t.*, a.name AS result_artist_name,
        al.title AS result_album_title, al.cover_url AS result_cover_url
 FROM resolved LEFT JOIN tracks t ON t.id=resolved.track_id
-LEFT JOIN artists a ON a.id=t.artist_id LEFT JOIN albums al ON al.id=t.album_id
+LEFT JOIN artists a ON a.id=t.artist_id AND NOT a.is_placeholder LEFT JOIN albums al ON al.id=t.album_id
 ORDER BY resolved.ordinal

@@ -30,7 +30,7 @@ pub async fn stats_overview(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    let total_artists = artist::Entity::find()
+    let total_artists = artist::Entity::credited()
         .count(&state.db)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;

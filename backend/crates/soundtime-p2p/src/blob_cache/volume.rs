@@ -17,7 +17,7 @@ use iroh_blobs::{
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io,
     path::{Path, PathBuf},
@@ -621,54 +621,15 @@ impl CacheWriter {
     }
 }
 
-pub async fn legacy_charge(
-    store: &iroh_blobs::store::fs::FsStore,
-    root: &Path,
-    db: &impl sea_orm::ConnectionTrait,
-) -> Result<u64> {
-    let rows=db.query_all(sea_orm::Statement::from_string(sea_orm::DbBackend::Postgres,
-       "SELECT DISTINCT lower(t.content_hash) AS hash FROM tracks t LEFT JOIN track_publications p ON p.track_id=t.id
-        WHERE t.content_hash IS NOT NULL AND t.file_path<>'' AND t.file_path !~ '^[a-zA-Z][a-zA-Z0-9+.-]*:'
-        AND p.state IS DISTINCT FROM 'withdrawn'")).await?;
-    let local: HashSet<String> = rows
-        .into_iter()
-        .map(|row| row.try_get("", "hash"))
-        .collect::<Result<_, _>>()?;
-
-    use futures_util::StreamExt;
-    let mut tags = Box::pin(store.tags().list().await?);
-    let mut originals = HashSet::new();
-    while let Some(tag) = tags.next().await {
-        let tag = tag?;
-        if local.contains(&tag.hash.to_string())
-            && tag.name.as_ref() == format!("published-{}", tag.hash).as_bytes()
-        {
-            originals.insert(tag.hash);
-        }
-    }
-    // The store's DB can contain inline payloads and unexplained old rows.
-    // Charge its allocated pages and unknown external files; keep all existing tags intact.
+/// Count every physical allocation in the legacy store. A published tag can
+/// point to a full copy of a mutable or S3 original. Tags protect originals
+/// from eviction, but do not exempt these duplicate bytes from the budget.
+pub fn legacy_charge(root: &Path) -> Result<u64> {
     let mut total = 0u64;
     for name in ["blobs.db", "temp", "data"] {
         let path = root.join(name);
-        if !path.try_exists()? {
-            continue;
-        }
-        if name != "data" {
+        if path.try_exists()? {
             total = total.saturating_add(footprint(&path)?);
-            continue;
-        }
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let protected = entry
-                .file_name()
-                .to_str()
-                .and_then(|n| n.split('.').next())
-                .and_then(|h| h.parse::<Hash>().ok())
-                .is_some_and(|h| originals.contains(&h));
-            if !protected {
-                total = total.saturating_add(footprint(&entry.path())?);
-            }
         }
     }
     Ok(total)
@@ -754,6 +715,56 @@ mod tests {
         drop(cache);
         let cache = CacheVolume::open(root, 128 * 1024, u64::MAX, 0)?;
         assert!(cache.reserve(hash, 8)?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reopen_recovers_commit_and_eviction_rename_boundaries() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().join("cache");
+        let (_, block) = capacity(tmp.path())?;
+        let size = 128 * 1024;
+        let limit = 4 * (size + 16 * block);
+        let cache = CacheVolume::open(root.clone(), limit, 0, 0)?;
+        let payloads = [1, 2, 3, 4].map(|byte| vec![byte; size as usize]);
+        let [staged, published, evicting, unlinking] = payloads.each_ref().map(|p| Hash::new(p));
+        for (i, payload) in payloads.iter().enumerate() {
+            let mut writer = cache.reserve(Hash::new(payload), size)?.unwrap();
+            writer.append(payload).await?;
+            writer.commit(i < 2).await?;
+        }
+        drop(cache);
+
+        // Reproduce the durable directory states on either side of the atomic
+        // commit rename. Both contain verified data, a complete proof and a pin.
+        let stage = root.join(format!(".part-{staged}"));
+        fs::rename(root.join(staged.to_string()), &stage)?;
+        let published_bytes = footprint(&root.join(published.to_string()))?;
+        assert!(stage.join("pin").is_file() && stage.join("proof").metadata()?.len() > 0);
+        // One eviction stopped after the rename, the other during recursive unlink.
+        let evict = root.join(format!(".evict-{evicting}"));
+        let unlink = root.join(format!(".evict-{unlinking}"));
+        fs::rename(root.join(evicting.to_string()), &evict)?;
+        fs::rename(root.join(unlinking.to_string()), &unlink)?;
+        fs::remove_file(unlink.join("data"))?;
+
+        for _ in 0..2 {
+            let reopened = CacheVolume::open(root.clone(), limit, 0, 0)?;
+            assert_eq!(reopened.pinned(), vec![published]);
+            assert_eq!(
+                reopened.read(published).await?.unwrap().as_ref(),
+                payloads[1]
+            );
+            let usage = reopened.usage()?;
+            assert_eq!(usage.pinned_bytes, published_bytes);
+            assert_eq!(usage.evictable_bytes, 0);
+            assert_eq!(usage.reserved_bytes, 0);
+            for hash in [staged, evicting, unlinking] {
+                assert!(!reopened.contains(hash));
+                assert!(reopened.read_guard(hash).is_none());
+            }
+            assert!(!stage.try_exists()? && !evict.try_exists()? && !unlink.try_exists()?);
+        }
         Ok(())
     }
 }

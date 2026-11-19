@@ -68,7 +68,7 @@ fn cookie_headers(request: &HeaderMap, token: &str, lifetime: i64) -> HeaderMap 
     let flag = if secure { "; Secure" } else { "" };
     let mut headers = HeaderMap::new();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    for path in ["/api/tracks/", "/api/media/"] {
+    for path in ["/api/tracks/", "/api/media/", "/api/webradios/stations/"] {
         let cookie = format!(
             "{COOKIE}={token}; Path={path}; Max-Age={lifetime}; HttpOnly; SameSite=Strict{flag}"
         );
@@ -80,7 +80,7 @@ fn cookie_headers(request: &HeaderMap, token: &str, lifetime: i64) -> HeaderMap 
     headers
 }
 
-/// The route requires a valid access Bearer before issuing either cookie.
+/// The route requires a valid access Bearer before issuing scoped media cookies.
 pub async fn establish(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<AuthUser>,
@@ -157,9 +157,10 @@ mod tests {
                 .iter()
                 .map(|h| h.to_str().unwrap())
                 .collect();
-            assert_eq!(values.len(), 2);
+            assert_eq!(values.len(), 3);
             assert!(values[0].contains("Path=/api/tracks/"));
             assert!(values[1].contains("Path=/api/media/"));
+            assert!(values[2].contains("Path=/api/webradios/stations/"));
             assert!(values.iter().all(|v| v.contains(&format!(
                 "Max-Age={lifetime}; HttpOnly; SameSite=Strict; Secure"
             ))));

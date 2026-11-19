@@ -336,7 +336,7 @@ pub async fn list_recent_history(
         .collect();
 
     let artists: HashMap<Uuid, soundtime_db::entities::artist::Model> = if !artist_ids.is_empty() {
-        soundtime_db::entities::artist::Entity::find()
+        soundtime_db::entities::artist::Entity::credited()
             .filter(soundtime_db::entities::artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -366,27 +366,10 @@ pub async fn list_recent_history(
         .filter_map(|entry| {
             let t = tracks_map.get(&entry.track_id)?;
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
+            let album = t.album_id.and_then(|id| albums.get(&id));
             let mut resp = super::tracks::TrackResponse::from(t.clone());
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
 
             Some(HistoryEntry {
                 id: entry.id,

@@ -1,5 +1,6 @@
 pub mod convert;
 pub mod metadata;
+pub mod recording_tags;
 pub mod storage;
 pub mod waveform;
 
