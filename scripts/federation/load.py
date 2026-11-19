@@ -387,8 +387,9 @@ def main():
         load_public.prepare(compose,seed,sys.argv[2])
         return
     parser = argparse.ArgumentParser()
-    for name in ("a", "b", "c", "report"):
+    for name in ("a", "b", "c"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--mode", choices=["load-smoke", "load-full"], required=True)
     args = parser.parse_args()
     report = {"status": "failed", "mode": args.mode, "utc_start": time.time()}
@@ -399,7 +400,7 @@ def main():
         raise
     finally:
         report["utc_end"] = time.time()
-        Path(args.report).write_text(json.dumps(report, indent=2) + "\n")
+        args.report.write_text(json.dumps(report, indent=2) + "\n")
 
 
 if __name__ == "__main__":
