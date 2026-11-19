@@ -223,7 +223,7 @@ pub async fn setup_admin(
         Json(AuthResponse {
             user: UserResponse {
                 id: created.id,
-                instance_id: format!("{}@{}", &created.username, &state.domain),
+                instance_id: format!("{}@{}", created.username, state.domain),
                 username: created.username,
                 email: created.email,
                 display_name: created.display_name,

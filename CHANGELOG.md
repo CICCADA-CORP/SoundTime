@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- Storage sync updates moved tracks in place and reconciles identifiable duplicates from earlier scans. It asks for confirmation before cleaning an empty local, SMB or NFS source.
+- Single and batch uploads detect identical audio files. The storage dashboard counts local media separately from remote tracks.
+- Docker Compose supports read-only SMB and NFS music sources with local writable storage for uploads and cover art.
+- Operators can host and join a rendezvous directory to discover other SoundTime nodes by their signed Iroh identities.
+- Existing P2P installations require a stopped-volume backup before migrating the blob index. The application keeps P2P disabled until the backup is confirmed. [Upgrade and rollback instructions](docs/p2p-networking.md#upgrading-the-p2p-store)
+- The frontend uses SvelteKit 3 and Node.js 24 LTS. The backend build uses Rust 1.97 and enables the Redis integration in the Docker image.
+- The backend image requires a random `JWT_SECRET` of at least 32 bytes. Replacing this secret requires users to sign in again.
+
 ## [2026-03-10]
 
 ### Added

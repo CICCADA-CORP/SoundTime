@@ -23,6 +23,8 @@ pub struct Model {
     #[sea_orm(column_type = "JsonBinary", nullable)]
     pub waveform_data: Option<serde_json::Value>,
     pub uploaded_by: Option<Uuid>,
+    /// SHA-256 of the bytes in storage, used by uploads and library synchronization.
+    pub file_hash: Option<String>,
     /// BLAKE3 content hash from iroh-blobs (set when P2P is enabled)
     pub content_hash: Option<String>,
     #[sea_orm(default_value = "0")]

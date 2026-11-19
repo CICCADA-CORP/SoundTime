@@ -9,6 +9,7 @@ use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, Set};
 use serde::{Deserialize, Serialize};
 use soundtime_db::entities::remote_track;
 use soundtime_db::AppState;
+use soundtime_p2p::rendezvous::{Registration, RegistrationError, Rendezvous};
 use soundtime_p2p::{
     get_library_sync_overview, spawn_library_resync, LibrarySyncOverview, LibrarySyncTaskStatus,
     SyncTaskHandle,
@@ -16,6 +17,22 @@ use soundtime_p2p::{
 use soundtime_p2p::{P2pMessage, P2pNode, PeerInfo};
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// POST /api/p2p/rendezvous on instances that explicitly host a directory.
+pub async fn rendezvous(
+    Extension(directory): Extension<Arc<tokio::sync::Mutex<Rendezvous>>>,
+    Json(registration): Json<Registration>,
+) -> Result<Json<Vec<soundtime_p2p::NodeId>>, StatusCode> {
+    directory
+        .lock()
+        .await
+        .register(registration, chrono::Utc::now().timestamp())
+        .map(Json)
+        .map_err(|err| match err {
+            RegistrationError::Invalid => StatusCode::BAD_REQUEST,
+            RegistrationError::Full => StatusCode::SERVICE_UNAVAILABLE,
+        })
+}
 
 /// Helper: extract `Arc<P2pNode>` from type-erased AppState field.
 fn get_p2p_node(state: &AppState) -> Option<Arc<P2pNode>> {
@@ -37,6 +54,7 @@ pub struct P2pStatus {
     pub peer_count: usize,
     pub online_peer_count: usize,
     pub dht_discovery_enabled: bool,
+    pub rendezvous_configured: bool,
 }
 
 #[derive(Deserialize)]
@@ -64,6 +82,7 @@ pub async fn p2p_status(State(state): State<Arc<AppState>>) -> Json<P2pStatus> {
             peer_count: 0,
             online_peer_count: 0,
             dht_discovery_enabled: false,
+            rendezvous_configured: false,
         });
     };
 
@@ -80,6 +99,7 @@ pub async fn p2p_status(State(state): State<Arc<AppState>>) -> Json<P2pStatus> {
         peer_count: node.registry().peer_count().await,
         online_peer_count: node.registry().online_peers().await.len(),
         dht_discovery_enabled: node.dht_discovery_enabled(),
+        rendezvous_configured: node.rendezvous_configured(),
     })
 }
 
@@ -558,6 +578,7 @@ mod tests {
             peer_count: 0,
             online_peer_count: 0,
             dht_discovery_enabled: false,
+            rendezvous_configured: false,
         };
         let val = serde_json::to_value(&status).unwrap();
         assert_eq!(val["enabled"], false);
@@ -577,6 +598,7 @@ mod tests {
             peer_count: 5,
             online_peer_count: 3,
             dht_discovery_enabled: true,
+            rendezvous_configured: true,
         };
         let val = serde_json::to_value(&status).unwrap();
         assert_eq!(val["enabled"], true);

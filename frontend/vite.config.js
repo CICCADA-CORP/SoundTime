@@ -1,7 +1,10 @@
+import { fileURLToPath } from "node:url";
+import adapter from "@sveltejs/adapter-node";
 import { sveltekit } from "@sveltejs/kit/vite";
 
 const config = {
-  plugins: [sveltekit()],
+  plugins: [sveltekit({ adapter: adapter() })],
+  resolve: { alias: { $lib: fileURLToPath(new URL("./src/lib", import.meta.url)) } },
 
   server: {
     // Proxy /api requests to the backend during local development.

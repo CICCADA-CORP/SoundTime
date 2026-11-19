@@ -24,9 +24,10 @@ Each SoundTime instance runs an **iroh node** that communicates over **QUIC** (U
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
-| Transport | iroh 0.96 (QUIC over UDP) | Encrypted peer-to-peer connections |
-| Content storage | iroh-blobs 0.96 (BLAKE3, FsStore) | Content-addressed audio file storage |
-| Discovery | PkarrPublisher + DnsDiscovery + DHT + optional mDNS | Finding peers on the network |
+| Transport | iroh 1.5 (QUIC over UDP) | Encrypted peer-to-peer connections |
+| Content storage | iroh-blobs 0.105 (BLAKE3, FsStore) | Content-addressed audio file storage |
+| Peer discovery | Opt-in rendezvous, seed peers, peer exchange | Finding SoundTime NodeIds |
+| Address lookup | DNS, Pkarr, optional Mainline DHT and mDNS | Connecting to known NodeIds |
 | Relay | n0.computer production relays | NAT traversal when direct connections fail |
 | Search | Bloom filters (~1.2 MB per peer) | Distributed query routing |
 | Health | TrackHealthManager | Auto-retry, 3-strike dereference, re-referencing |
@@ -92,6 +93,57 @@ When a track is announced (via `AnnounceTrack` or `CatalogSync`), the following 
 }
 ```
 
+## Upgrading the P2P store
+
+This release uses iroh 1.5 and iroh-blobs 0.105. The new backend can read tags, inlined blobs and external audio from the previous 0.96 store. Opening the index changes redb's allocator format. The old backend cannot reopen the upgraded index. SoundTime leaves an existing, unmarked store untouched and serves the application with P2P disabled until the operator confirms a backup. Fresh stores and subsequent restarts require no action.
+
+With the standard Compose deployment, run the following **before replacing the old backend image**, from the directory containing `docker-compose.yml`. Keep the original image on this host and protect the archive, which contains the node's private key. If the private key is configured outside the P2P volume, include that key in your regular backup as well.
+
+```sh
+set -e
+backup=$(mktemp -d "./soundtime-p2p-backup.XXXXXX")
+old_image="soundtime-backend:before-p2p-$(date -u +%Y%m%d%H%M%S)"
+docker tag "$(docker inspect --format '{{.Image}}' "$(docker compose ps -q backend)")" "$old_image"
+echo "$old_image" > "$backup/image"
+docker compose stop backend
+docker compose run --rm --no-deps -T --user 0 --entrypoint tar backend \
+  -C /data/p2p-blobs -cf - . > "$backup/p2p.tar"
+tar -tf "$backup/p2p.tar" > "$backup/files"
+grep -Fx './blobs.db' "$backup/files"
+docker compose run --rm --no-deps -T --user 0 --entrypoint touch backend \
+  /data/p2p-blobs/.soundtime-blobs-0.105
+docker compose pull backend
+docker compose up -d backend
+```
+
+Allow space for the entire store. The archive includes external blob files that garbage collection may subsequently remove. Keep a matching PostgreSQL backup for a whole-application rollback. For a native installation, stop the server, snapshot `P2P_BLOBS_DIR` and its key, then create the same empty marker in the snapshotted source directory before starting the new binary.
+
+To roll back the P2P component to the backup point, restore the archive into a **new empty volume** so the upgraded data is still available. Set `backup` to the directory created above in the same shell. Restore the corresponding application/database version as appropriate.
+
+```sh
+set -e
+docker compose stop backend
+export SOUNDTIME_ROLLBACK_IMAGE="$(cat "$backup/image")"
+export SOUNDTIME_ROLLBACK_VOLUME="$(docker volume create)"
+docker run --rm -i --user 0 --entrypoint tar \
+  -v "$SOUNDTIME_ROLLBACK_VOLUME:/restore" "$SOUNDTIME_ROLLBACK_IMAGE" \
+  -C /restore -xf - < "$backup/p2p.tar"
+cat > "$backup/rollback.yml" <<'YAML'
+services:
+  backend:
+    image: ${SOUNDTIME_ROLLBACK_IMAGE}
+    volumes:
+      - restored_p2p:/data/p2p-blobs
+volumes:
+  restored_p2p:
+    external: true
+    name: ${SOUNDTIME_ROLLBACK_VOLUME}
+YAML
+docker compose -f docker-compose.yml -f "$backup/rollback.yml" up -d --no-deps backend
+```
+
+Use the same override and exported variables for subsequent commands on the rolled-back deployment. The restored volume reflects the snapshot time. Newer blobs remain on the upgraded volume. The SoundTime ALPN stays `soundtime/p2p/1`. Direct QUIC connections were tested with a 0.96 and a 1.5 endpoint in both directions. Operators of relay-dependent nodes should upgrade both participants. Public relay service for the old canary versions ended on September 30, 2026. [Iroh public relay support](https://www.iroh.computer/blog/v1#public-relay-support)
+
 ## Peer Discovery
 
 SoundTime uses multiple discovery mechanisms to find peers:
@@ -104,22 +156,19 @@ The primary discovery method. Your node publishes its NodeId and relay URL to n0
 - Works across NATs via relay servers
 - NodeIds are resolvable globally
 
-### 2. DHT Discovery (Mainline DHT)
+### 2. Resolve NodeIds on the Mainline DHT
 
-Global peer discovery via the [Mainline DHT](https://en.wikipedia.org/wiki/Mainline_DHT) (the same DHT used by BitTorrent). Enabled by default.
+Iroh publishes and resolves addresses for known NodeIds through Pkarr. This includes relay addresses. The Mainline DHT does not provide a directory of SoundTime nodes. Set `P2P_DHT_DISCOVERY=false` and restart the backend to turn off this address lookup.
 
-```env
-P2P_DHT_DISCOVERY=true   # default
-```
+### Discover other SoundTime instances through a rendezvous
 
-Uses iroh's `DhtAddressLookup` (feature flag `address-lookup-pkarr-dht`) to publish and resolve node addresses through the Pkarr protocol on the Mainline DHT. This provides a fully decentralized discovery mechanism that does not depend on n0's DNS infrastructure.
+Two instances can find each other even if both use an iroh relay and neither has a public domain. Their operators must choose the same rendezvous service. Any SoundTime backend can host it. The directory is separate from the public website listing.
 
-- **Enabled by default** — set `P2P_DHT_DISCOVERY=false` to disable
-- Works alongside DNS discovery and relay servers (additive)
-- No additional configuration needed
-- Status visible in the admin P2P dashboard as a read-only indicator
+1. On a SoundTime backend reachable by both participants, set `P2P_RENDEZVOUS_SERVER=true` and recreate the backend with `docker compose up -d backend`. Configure HTTPS on this host. The directory can run with its own P2P node disabled.
+2. On **each** participating instance, set `P2P_ENABLED=true` and `P2P_RENDEZVOUS_URL=https://music.example.org/api/p2p/rendezvous`, replacing the example host with your directory host. Recreate each backend. The participants may keep `SOUNDTIME_DOMAIN=localhost` and leave `P2P_SEED_PEERS` empty.
+3. Check **Admin → P2P → Peers**. Each node registers its signed NodeId at startup and every five minutes. The directory returns up to eight other participating NodeIds. SoundTime verifies a peer over iroh before adding it and synchronizing its catalog.
 
-> **Note**: DHT discovery is a compile-time feature. Changing `P2P_DHT_DISCOVERY` requires a server restart — the iroh Endpoint is immutable once bound.
+The directory can see the request IP and signed NodeId. Registrations stay in memory and expire 15 minutes after their signed timestamp. Keep host clocks synchronized. To stop renewing a registration, clear `P2P_RENDEZVOUS_URL` and recreate the backend. Previously connected peers remain in the peer registry.
 
 ### 3. Local Swarm Discovery (mDNS)
 
@@ -129,7 +178,7 @@ Optional LAN-based discovery for instances on the same network.
 P2P_LOCAL_DISCOVERY=true
 ```
 
-Uses `iroh::discovery::local_swarm_discovery::LocalSwarmDiscovery` to find peers via multicast DNS. Useful for home lab setups where multiple instances run on the same network.
+Uses `iroh_mdns_address_lookup::MdnsAddressLookup` to find peers via multicast DNS. Useful for home lab setups where multiple instances run on the same network.
 
 ### 4. Seed Peers
 
@@ -314,7 +363,9 @@ curl -X POST http://localhost:8080/api/admin/blocked-domains \
 | `P2P_BIND_PORT` | `11204` | Bind port (0 = random) |
 | `P2P_BLOBS_DIR` | `data/p2p/blobs` | iroh-blobs persistent storage path |
 | `P2P_SECRET_KEY_PATH` | `data/p2p/secret_key` | Path to the Ed25519 secret key |
-| `P2P_DHT_DISCOVERY` | `true` | Enable Mainline DHT discovery via Pkarr |
+| `P2P_DHT_DISCOVERY` | `true` | Resolve known NodeIds via Pkarr on the Mainline DHT |
+| `P2P_RENDEZVOUS_URL` | — | Shared endpoint for opt-in discovery of SoundTime NodeIds |
+| `P2P_RENDEZVOUS_SERVER` | `false` | Host the signed, expiring rendezvous directory |
 | `P2P_LOCAL_DISCOVERY` | `true` | Enable mDNS local network discovery |
 | `P2P_SEED_PEERS` | — | Comma-separated NodeIds for auto-connect |
 
@@ -336,7 +387,8 @@ Returns:
   "direct_addresses": 2,
   "peer_count": 3,
   "online_peer_count": 2,
-  "dht_discovery_enabled": true
+  "dht_discovery_enabled": true,
+  "rendezvous_configured": false
 }
 ```
 

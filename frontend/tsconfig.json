@@ -1,10 +1,27 @@
 {
-  "extends": "./.svelte-kit/tsconfig.json",
+  "extends": "$app/tsconfig",
   "compilerOptions": {
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "bundler",
     "strict": true,
-    "skipLibCheck": true
-  }
+    "skipLibCheck": true,
+    "paths": {
+      "$lib/*": [
+        "./src/lib/*"
+      ]
+    },
+    "checkJs": false,
+    "types": [
+      "$app/types",
+      "node",
+      "vitest/globals"
+    ]
+  },
+  "include": [
+    "src",
+    "vite.config.js",
+    "vitest.config.ts",
+    "cypress.config.ts"
+  ]
 }

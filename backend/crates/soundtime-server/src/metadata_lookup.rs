@@ -379,10 +379,8 @@ async fn fetch_artist_bio_image(
                     wikidata_url = r.url.as_ref().and_then(|u| u.resource.clone());
                 }
             }
-            Some("image") => {
-                if image_from_rels.is_none() {
-                    image_from_rels = r.url.as_ref().and_then(|u| u.resource.clone());
-                }
+            Some("image") if image_from_rels.is_none() => {
+                image_from_rels = r.url.as_ref().and_then(|u| u.resource.clone());
             }
             _ => {}
         }

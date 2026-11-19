@@ -1,0 +1,79 @@
+name: Build native container images
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        description: Selected components, architectures and native runners
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: ${{ matrix.component }} (linux/${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    env:
+      PUBLISH_DIGEST: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      DOCKER_BUILD_RECORD_UPLOAD: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set image name
+        id: image
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/soundtime-${COMPONENT}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: env.PUBLISH_DIGEST == 'true'
+        uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v4.4.1
+
+      - name: Generate OCI image labels
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest
+
+      - name: Build native image
+        id: build
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: ./${{ matrix.component }}
+          file: docker/Dockerfile.${{ matrix.component }}
+          platforms: linux/${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ matrix.component == 'backend' && format('SOUNDTIME_BUILD_NUMBER={0}', github.run_number) || '' }}
+          outputs: ${{ env.PUBLISH_DIGEST == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true', steps.image.outputs.name) || 'type=cacheonly' }}
+          cache-from: type=gha,scope=${{ matrix.component }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.component }}-${{ matrix.arch }},mode=max,ignore-error=true
+
+      - name: Record image digest
+        if: env.PUBLISH_DIGEST == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "$DIGEST" > "$RUNNER_TEMP/digest"
+
+      - name: Upload image digest
+        if: env.PUBLISH_DIGEST == 'true'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: image-digest-${{ matrix.component }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digest
+          if-no-files-found: error
+          overwrite: true

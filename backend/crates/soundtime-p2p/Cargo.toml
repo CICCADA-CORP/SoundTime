@@ -5,15 +5,17 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
-iroh = { version = "0.96", features = ["address-lookup-mdns", "address-lookup-pkarr-dht"] }
-iroh-blobs = "0.96"
+iroh = "1.5"
+iroh-blobs = "0.105"
+iroh-mainline-address-lookup = "0.6"
+iroh-mdns-address-lookup = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs"] }
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+sea-orm.workspace = true
 thiserror = "2"
 bytes = "1"
 rand = "0.9"

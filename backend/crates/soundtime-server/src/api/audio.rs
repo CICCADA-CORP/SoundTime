@@ -7,6 +7,7 @@ use axum::{
 };
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use soundtime_audio::extract_metadata_from_file;
 use soundtime_audio::metadata::normalize_genre;
 use soundtime_db::entities::{album, artist, remote_track, track};
@@ -117,308 +118,15 @@ pub async fn upload_track(
         )
     })?;
 
-    // Validate format
-    let ext = std::path::Path::new(&filename)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if !soundtime_audio::metadata::is_supported_format(&ext) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": format!("Unsupported format: {ext}") })),
-        ));
-    }
-
-    // SECURITY: validate audio magic bytes to prevent disguised file uploads
-    if !validate_audio_magic_bytes(&data) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(
-                serde_json::json!({ "error": "File content does not match a recognized audio format" }),
-            ),
-        ));
-    }
-
-    // Store file
-    let album_name = meta_album.as_deref();
-    let relative_path = state
-        .storage
-        .store_file(user_id, album_name, &filename, &data)
+    let tags = UploadTags {
+        title: meta_title,
+        album: meta_album,
+        artist: meta_artist,
+    };
+    process_single_upload(&state, user_id, &filename, data, tags)
         .await
-        .map_err(|e| {
-            tracing::error!("Storage error: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Failed to store file" })),
-            )
-        })?;
-
-    // Extract metadata from stored file
-    let full_path = soundtime_audio::ensure_local_file(state.storage.as_ref(), &relative_path)
-        .await
-        .map_err(|e| {
-            tracing::error!("ensure_local_file error: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Failed to access file locally" })),
-            )
-        })?;
-
-    // Convert AIFF → FLAC if necessary
-    let (full_path, relative_path) = if soundtime_audio::needs_aiff_conversion(&ext) {
-        let flac_path = soundtime_audio::convert_aiff_to_flac(&full_path)
-            .await
-            .map_err(|e| {
-                tracing::error!("AIFF→FLAC conversion error: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": format!("AIFF conversion failed: {e}") })),
-                )
-            })?;
-        // Update relative path: replace .aif/.aiff extension with .flac
-        let new_relative = relative_path
-            .rsplit_once('.')
-            .map(|(base, _)| format!("{base}.flac"))
-            .unwrap_or_else(|| relative_path.clone());
-        (flac_path, new_relative)
-    } else {
-        (full_path, relative_path)
-    };
-
-    let audio_meta = extract_metadata_from_file(&full_path).map_err(|e| {
-        tracing::error!("Metadata extraction error: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Failed to extract metadata" })),
-        )
-    })?;
-
-    // Generate waveform
-    let waveform = soundtime_audio::generate_waveform(&full_path, 200).ok();
-
-    // Resolve or create artist
-    let artist_name = meta_artist
-        .clone()
-        .or(audio_meta.artist.clone())
-        .unwrap_or_else(|| "Unknown Artist".to_string());
-
-    let existing_artist = artist::Entity::find()
-        .filter(artist::Column::Name.eq(&artist_name))
-        .one(&state.db)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("DB error: {e}") })),
-            )
-        })?;
-
-    let artist_id = if let Some(a) = existing_artist {
-        a.id
-    } else {
-        let new_artist = artist::ActiveModel {
-            id: Set(Uuid::new_v4()),
-            name: Set(artist_name.clone()),
-            bio: Set(None),
-            image_url: Set(None),
-            musicbrainz_id: Set(None),
-            created_at: Set(chrono::Utc::now().into()),
-        };
-        let result = new_artist.insert(&state.db).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("DB error: {e}") })),
-            )
-        })?;
-        result.id
-    };
-
-    // Resolve album artist: prefer album_artist tag, fall back to track artist
-    let album_artist_name = audio_meta
-        .album_artist
-        .clone()
-        .or(meta_artist.clone())
-        .or(audio_meta.artist.clone())
-        .unwrap_or_else(|| "Unknown Artist".to_string());
-
-    let album_artist_id = if album_artist_name == artist_name {
-        // Same as track artist — reuse the ID
-        artist_id
-    } else {
-        let existing = artist::Entity::find()
-            .filter(artist::Column::Name.eq(&album_artist_name))
-            .one(&state.db)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": format!("DB error: {e}") })),
-                )
-            })?;
-        if let Some(a) = existing {
-            a.id
-        } else {
-            let new_artist = artist::ActiveModel {
-                id: Set(Uuid::new_v4()),
-                name: Set(album_artist_name.clone()),
-                bio: Set(None),
-                image_url: Set(None),
-                musicbrainz_id: Set(None),
-                created_at: Set(chrono::Utc::now().into()),
-            };
-            new_artist
-                .insert(&state.db)
-                .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({ "error": format!("DB error: {e}") })),
-                    )
-                })?
-                .id
-        }
-    };
-
-    // Resolve or create album
-    let album_title = meta_album
-        .or(audio_meta.album.clone())
-        .unwrap_or_else(|| "Singles".to_string());
-
-    let existing_album = album::Entity::find()
-        .filter(album::Column::Title.eq(&album_title))
-        .filter(album::Column::ArtistId.eq(album_artist_id))
-        .one(&state.db)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("DB error: {e}") })),
-            )
-        })?;
-
-    let album_id = if let Some(a) = existing_album {
-        a.id
-    } else {
-        let new_album = album::ActiveModel {
-            id: Set(Uuid::new_v4()),
-            title: Set(album_title.clone()),
-            artist_id: Set(album_artist_id),
-            release_date: Set(None),
-            cover_url: Set(None),
-            musicbrainz_id: Set(None),
-            genre: Set(audio_meta
-                .genre
-                .as_deref()
-                .map(normalize_genre)
-                .filter(|g| !g.is_empty())),
-            year: Set(audio_meta.year.map(|y| y as i16)),
-            created_at: Set(chrono::Utc::now().into()),
-        };
-        let result = new_album.insert(&state.db).await.map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("DB error: {e}") })),
-            )
-        })?;
-
-        // Store cover art if present
-        if let Some(cover_data) = &audio_meta.cover_art {
-            if let Ok(cover_path) = state
-                .storage
-                .store_cover(user_id, Some(&album_title), cover_data)
-                .await
-            {
-                let mut update: album::ActiveModel = result.clone().into();
-                update.cover_url = Set(Some(format!("/api/media/{cover_path}")));
-                if let Err(e) = update.update(&state.db).await {
-                    tracing::warn!(error = %e, "failed to update album cover URL");
-                }
-            }
-        }
-
-        result.id
-    };
-
-    // Create track
-    let track_title = meta_title.or(audio_meta.title.clone()).unwrap_or_else(|| {
-        std::path::Path::new(&filename)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Unknown")
-            .to_string()
-    });
-
-    let track_id = Uuid::new_v4();
-    let new_track = track::ActiveModel {
-        id: Set(track_id),
-        title: Set(track_title.clone()),
-        album_id: Set(Some(album_id)),
-        artist_id: Set(artist_id),
-        track_number: Set(audio_meta.track_number.map(|n| n as i16)),
-        disc_number: Set(audio_meta.disc_number.map(|n| n as i16)),
-        duration_secs: Set(audio_meta.duration_secs as f32),
-        genre: Set(audio_meta
-            .genre
-            .as_deref()
-            .map(normalize_genre)
-            .filter(|g| !g.is_empty())),
-        year: Set(audio_meta.year.map(|y| y as i16)),
-        musicbrainz_id: Set(None),
-        file_path: Set(relative_path),
-        format: Set(audio_meta.format.clone()),
-        file_size: Set(audio_meta.file_size as i64),
-        bitrate: Set(audio_meta.bitrate.map(|b| b as i32)),
-        sample_rate: Set(audio_meta.sample_rate.map(|s| s as i32)),
-        waveform_data: Set(waveform.map(|w| serde_json::json!(w))),
-        uploaded_by: Set(Some(user_id)),
-        content_hash: Set(None),
-        play_count: Set(0),
-        created_at: Set(chrono::Utc::now().into()),
-    };
-
-    new_track.insert(&state.db).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("DB error: {e}") })),
-        )
-    })?;
-
-    // Publish track to P2P blob store (best-effort)
-    publish_track_to_p2p(
-        &state,
-        track_id,
-        &data,
-        &track_title,
-        &artist_name,
-        &album_title,
-        &audio_meta,
-    )
-    .await;
-
-    // Dispatch plugin event (best-effort)
-    if let Some(registry) = super::get_plugin_registry(&state) {
-        let payload = soundtime_plugin::TrackAddedPayload {
-            track_id: track_id.to_string(),
-            title: track_title.clone(),
-            artist: artist_name.clone(),
-            album: Some(album_title.clone()),
-        };
-        let payload_val = serde_json::to_value(&payload).unwrap_or_default();
-        let registry = registry.clone();
-        tokio::spawn(async move {
-            registry.dispatch("on_track_added", &payload_val).await;
-        });
-    }
-
-    Ok(Json(UploadResponse {
-        id: track_id,
-        title: track_title,
-        duration: audio_meta.duration_secs,
-        format: audio_meta.format,
-        message: "Track uploaded successfully".into(),
-    }))
+        .map(Json)
+        .map_err(|(status, message)| (status, Json(serde_json::json!({ "error": message }))))
 }
 
 /// GET /api/tracks/:id/stream — Stream audio with Range support
@@ -696,30 +404,48 @@ pub async fn serve_media(
         }
     };
 
-    let data = tokio::fs::read(&resolved)
+    let mut file = tokio::fs::File::open(resolved)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
-
-    let content_type = match resolved.extension().and_then(|e| e.to_str()).unwrap_or("") {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        _ => "application/octet-stream",
-    };
-
+    let mut signature = [0u8; 12];
+    file.read_exact(&mut signature)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    // Embedded PNG or WebP art can be stored under the historical cover.jpg name.
+    let content_type = cover_content_type(&signature).ok_or(StatusCode::NOT_FOUND)?;
+    let length = file
+        .metadata()
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?
+        .len();
     let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
     headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(content_type)
-            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
     );
     headers.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=31536000, immutable"),
     );
 
-    Ok((headers, data))
+    let reader = std::io::Cursor::new(signature).chain(file);
+    Ok((headers, Body::from_stream(ReaderStream::new(reader))))
+}
+
+fn cover_content_type(signature: &[u8; 12]) -> Option<&'static str> {
+    if signature.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if signature.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if signature.starts_with(b"RIFF") && &signature[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if signature.starts_with(b"GIF87a") || signature.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else {
+        None
+    }
 }
 
 /// SECURITY: Resolve a media file path, ensuring it stays within the base directory.
@@ -733,7 +459,10 @@ fn try_resolve_media(
     if !canonical.starts_with(&base_canonical) {
         return None; // path traversal attempt
     }
-    if !canonical.is_file() {
+    let extension = canonical.extension()?.to_str()?.to_ascii_lowercase();
+    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif")
+        || !canonical.is_file()
+    {
         return None;
     }
     Some(canonical)
@@ -804,7 +533,7 @@ pub async fn upload_tracks_batch(
     let mut success_count = 0usize;
 
     for (filename, data) in files {
-        match process_single_upload(&state, user_id, &filename, &data).await {
+        match process_single_upload(&state, user_id, &filename, data, UploadTags::default()).await {
             Ok(resp) => {
                 success_count += 1;
                 results.push(BatchUploadItem {
@@ -819,7 +548,7 @@ pub async fn upload_tracks_batch(
                     filename,
                     success: false,
                     track: None,
-                    error: Some(e),
+                    error: Some(e.1),
                 });
             }
         }
@@ -833,13 +562,76 @@ pub async fn upload_tracks_batch(
     }))
 }
 
-/// Shared logic for processing a single file upload (used by both single and batch).
+#[derive(Default)]
+struct UploadTags {
+    title: Option<String>,
+    album: Option<String>,
+    artist: Option<String>,
+}
+
+type UploadError = (StatusCode, String);
+
+fn upload_error(err: impl std::fmt::Display) -> UploadError {
+    tracing::error!(error = %err, "upload failed");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Could not save this track".into(),
+    )
+}
+
+// Migrations cannot read media on local volumes or S3. Index legacy candidates
+// on demand so an upgrade does not require a full scan before accepting uploads.
+async fn find_uploaded_file(
+    state: &AppState,
+    tx: &sea_orm::DatabaseTransaction,
+    hash: &str,
+    size: i64,
+) -> Result<Option<track::Model>, UploadError> {
+    if let Some(row) = crate::storage_catalog::existing_hash(tx, hash, state.storage.as_ref())
+        .await
+        .map_err(upload_error)?
+    {
+        return Ok(Some(row));
+    }
+    let candidates = track::Entity::find()
+        .filter(track::Column::FileHash.is_null())
+        .filter(track::Column::FileSize.eq(size))
+        .filter(track::Column::FilePath.not_like("p2p://%"))
+        .all(tx)
+        .await
+        .map_err(upload_error)?;
+    for row in candidates {
+        if !state
+            .storage
+            .file_exists(&row.file_path)
+            .await
+            .map_err(upload_error)?
+        {
+            continue;
+        }
+        let actual_hash = state
+            .storage
+            .hash_file(&row.file_path)
+            .await
+            .map_err(upload_error)?;
+        let matches = actual_hash == hash;
+        let mut update: track::ActiveModel = row.into();
+        update.file_hash = Set(Some(actual_hash));
+        let updated = update.update(tx).await.map_err(upload_error)?;
+        if matches {
+            return Ok(Some(updated));
+        }
+    }
+    Ok(None)
+}
+
 async fn process_single_upload(
     state: &AppState,
     user_id: Uuid,
     filename: &str,
-    data: &[u8],
-) -> Result<UploadResponse, String> {
+    mut data: Vec<u8>,
+    tags: UploadTags,
+) -> Result<UploadResponse, UploadError> {
     let ext = std::path::Path::new(filename)
         .extension()
         .and_then(|e| e.to_str())
@@ -847,53 +639,98 @@ async fn process_single_upload(
         .to_lowercase();
 
     if !soundtime_audio::metadata::is_supported_format(&ext) {
-        return Err(format!("Unsupported format: {ext}"));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Unsupported format: {ext}"),
+        ));
     }
 
     // SECURITY: validate audio magic bytes
-    if !validate_audio_magic_bytes(data) {
-        return Err("File content does not match a recognized audio format".to_string());
+    if !validate_audio_magic_bytes(&data) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "File content does not match a recognized audio format".into(),
+        ));
     }
 
-    let relative_path = state
-        .storage
-        .store_file(user_id, None, filename, data)
+    // Prepare outside the library so scans cannot import a partial or invalid upload.
+    let staging = tempfile::tempdir().map_err(upload_error)?;
+    let mut full_path = staging.path().join(format!("audio.{ext}"));
+    tokio::fs::write(&full_path, &data)
         .await
-        .map_err(|e| format!("Storage error: {e}"))?;
-
-    let full_path = soundtime_audio::ensure_local_file(state.storage.as_ref(), &relative_path)
-        .await
-        .map_err(|e| format!("Local file: {e}"))?;
-
-    // Convert AIFF → FLAC if necessary
-    let (full_path, relative_path) = if soundtime_audio::needs_aiff_conversion(&ext) {
-        let flac_path = soundtime_audio::convert_aiff_to_flac(&full_path)
+        .map_err(upload_error)?;
+    let mut stored_name = std::path::PathBuf::from(filename);
+    if soundtime_audio::needs_aiff_conversion(&ext) {
+        full_path = soundtime_audio::convert_aiff_to_flac(&full_path)
             .await
-            .map_err(|e| format!("AIFF→FLAC conversion: {e}"))?;
-        let new_relative = relative_path
-            .rsplit_once('.')
-            .map(|(base, _)| format!("{base}.flac"))
-            .unwrap_or_else(|| relative_path.clone());
-        (flac_path, new_relative)
-    } else {
-        (full_path, relative_path)
-    };
-
-    let audio_meta =
-        extract_metadata_from_file(&full_path).map_err(|e| format!("Metadata: {e}"))?;
-
+            .map_err(upload_error)?;
+        data = tokio::fs::read(&full_path).await.map_err(upload_error)?;
+        stored_name.set_extension("flac");
+    }
+    let audio_meta = extract_metadata_from_file(&full_path).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "Failed to extract audio metadata".into(),
+        )
+    })?;
+    let hash = format!("{:x}", Sha256::digest(&data));
     let waveform = soundtime_audio::generate_waveform(&full_path, 200).ok();
 
-    let artist_name = audio_meta
+    let tx = crate::storage_catalog::begin_write(&state.db)
+        .await
+        .map_err(upload_error)?;
+    let existing = find_uploaded_file(state, &tx, &hash, data.len() as i64).await?;
+    if let Some(original) = existing {
+        if state
+            .storage
+            .file_exists(&original.file_path)
+            .await
+            .map_err(upload_error)?
+        {
+            tx.commit().await.map_err(upload_error)?;
+            return Err((
+                StatusCode::CONFLICT,
+                "This audio file is already in the library".into(),
+            ));
+        }
+        let path = state
+            .storage
+            .store_file(
+                user_id,
+                tags.album.as_deref(),
+                &stored_name.to_string_lossy(),
+                &data,
+            )
+            .await
+            .map_err(upload_error)?;
+        let response = UploadResponse {
+            id: original.id,
+            title: original.title.clone(),
+            duration: original.duration_secs as f64,
+            format: original.format.clone(),
+            message: "Missing track restored".into(),
+        };
+        let mut update: track::ActiveModel = original.into();
+        update.file_path = Set(path.clone());
+        if let Err(e) = update.update(&tx).await {
+            if let Err(cleanup) = state.storage.delete_file(&path).await {
+                tracing::warn!(%path, %cleanup, "could not remove rejected upload");
+            }
+            return Err(upload_error(e));
+        }
+        tx.commit().await.map_err(upload_error)?;
+        return Ok(response);
+    }
+    let artist_name = tags
         .artist
-        .clone()
+        .or(audio_meta.artist.clone())
         .unwrap_or_else(|| "Unknown Artist".to_string());
 
     let existing_artist = artist::Entity::find()
         .filter(artist::Column::Name.eq(&artist_name))
-        .one(&state.db)
+        .one(&tx)
         .await
-        .map_err(|e| format!("DB: {e}"))?;
+        .map_err(upload_error)?;
 
     let artist_id = if let Some(a) = existing_artist {
         a.id
@@ -906,11 +743,7 @@ async fn process_single_upload(
             musicbrainz_id: Set(None),
             created_at: Set(chrono::Utc::now().into()),
         };
-        new_artist
-            .insert(&state.db)
-            .await
-            .map_err(|e| format!("DB: {e}"))?
-            .id
+        new_artist.insert(&tx).await.map_err(upload_error)?.id
     };
 
     // Resolve album artist: prefer album_artist tag, fall back to track artist
@@ -924,9 +757,9 @@ async fn process_single_upload(
     } else {
         let existing = artist::Entity::find()
             .filter(artist::Column::Name.eq(&album_artist_name))
-            .one(&state.db)
+            .one(&tx)
             .await
-            .map_err(|e| format!("DB: {e}"))?;
+            .map_err(upload_error)?;
         if let Some(a) = existing {
             a.id
         } else {
@@ -938,25 +771,22 @@ async fn process_single_upload(
                 musicbrainz_id: Set(None),
                 created_at: Set(chrono::Utc::now().into()),
             };
-            new_artist
-                .insert(&state.db)
-                .await
-                .map_err(|e| format!("DB: {e}"))?
-                .id
+            new_artist.insert(&tx).await.map_err(upload_error)?.id
         }
     };
 
-    let album_title = audio_meta
+    let album_title = tags
         .album
         .clone()
+        .or(audio_meta.album.clone())
         .unwrap_or_else(|| "Singles".to_string());
 
     let existing_album = album::Entity::find()
         .filter(album::Column::Title.eq(&album_title))
         .filter(album::Column::ArtistId.eq(album_artist_id))
-        .one(&state.db)
+        .one(&tx)
         .await
-        .map_err(|e| format!("DB: {e}"))?;
+        .map_err(upload_error)?;
 
     let album_id = if let Some(a) = existing_album {
         a.id
@@ -976,10 +806,7 @@ async fn process_single_upload(
             year: Set(audio_meta.year.map(|y| y as i16)),
             created_at: Set(chrono::Utc::now().into()),
         };
-        let result = new_album
-            .insert(&state.db)
-            .await
-            .map_err(|e| format!("DB: {e}"))?;
+        let result = new_album.insert(&tx).await.map_err(upload_error)?;
 
         // Store cover art if present in metadata
         if let Some(cover_data) = &audio_meta.cover_art {
@@ -990,7 +817,7 @@ async fn process_single_upload(
             {
                 let mut update: album::ActiveModel = result.clone().into();
                 update.cover_url = Set(Some(format!("/api/media/{cover_path}")));
-                if let Err(e) = update.update(&state.db).await {
+                if let Err(e) = update.update(&tx).await {
                     tracing::warn!(error = %e, "failed to update album cover URL");
                 }
             }
@@ -999,7 +826,7 @@ async fn process_single_upload(
         result.id
     };
 
-    let track_title = audio_meta.title.clone().unwrap_or_else(|| {
+    let track_title = tags.title.or(audio_meta.title.clone()).unwrap_or_else(|| {
         std::path::Path::new(filename)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -1007,6 +834,16 @@ async fn process_single_upload(
             .to_string()
     });
 
+    let relative_path = state
+        .storage
+        .store_file(
+            user_id,
+            tags.album.as_deref(),
+            &stored_name.to_string_lossy(),
+            &data,
+        )
+        .await
+        .map_err(upload_error)?;
     let track_id = Uuid::new_v4();
     let new_track = track::ActiveModel {
         id: Set(track_id),
@@ -1023,28 +860,32 @@ async fn process_single_upload(
             .filter(|g| !g.is_empty())),
         year: Set(audio_meta.year.map(|y| y as i16)),
         musicbrainz_id: Set(None),
-        file_path: Set(relative_path),
+        file_path: Set(relative_path.clone()),
         format: Set(audio_meta.format.clone()),
         file_size: Set(audio_meta.file_size as i64),
         bitrate: Set(audio_meta.bitrate.map(|b| b as i32)),
         sample_rate: Set(audio_meta.sample_rate.map(|s| s as i32)),
         waveform_data: Set(waveform.map(|w| serde_json::json!(w))),
         uploaded_by: Set(Some(user_id)),
+        file_hash: Set(Some(hash)),
         content_hash: Set(None),
         play_count: Set(0),
         created_at: Set(chrono::Utc::now().into()),
     };
 
-    new_track
-        .insert(&state.db)
-        .await
-        .map_err(|e| format!("DB: {e}"))?;
+    if let Err(e) = new_track.insert(&tx).await {
+        if let Err(cleanup) = state.storage.delete_file(&relative_path).await {
+            tracing::warn!(%relative_path, %cleanup, "could not remove rejected upload");
+        }
+        return Err(upload_error(e));
+    }
+    tx.commit().await.map_err(upload_error)?;
 
     // Publish track to P2P blob store (best-effort)
     publish_track_to_p2p(
         state,
         track_id,
-        data,
+        &data,
         &track_title,
         &artist_name,
         &album_title,
@@ -1074,6 +915,69 @@ async fn process_single_upload(
         format: audio_meta.format,
         message: "Track uploaded successfully".into(),
     })
+}
+
+#[cfg(test)]
+pub(crate) async fn check_duplicate_uploads(state: &AppState, user_id: Uuid, wav: Vec<u8>) {
+    async fn upload(
+        state: &AppState,
+        user_id: Uuid,
+        name: &str,
+        data: &[u8],
+    ) -> Result<UploadResponse, UploadError> {
+        process_single_upload(state, user_id, name, data.to_vec(), UploadTags::default()).await
+    }
+    let (a, b) = tokio::join!(
+        upload(state, user_id, "upload-a.wav", &wav),
+        upload(state, user_id, "upload-b.wav", &wav)
+    );
+    let (original, rejected) = if a.is_ok() { (a, b) } else { (b, a) };
+    let id = original.unwrap().id;
+    assert_eq!(rejected.unwrap_err().0, StatusCode::CONFLICT);
+
+    let row = track::Entity::find_by_id(id)
+        .one(&state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    let path = row.file_path.clone();
+    let mut legacy: track::ActiveModel = row.into();
+    legacy.file_hash = Set(None);
+    legacy.update(&state.db).await.unwrap();
+    assert_eq!(
+        upload(state, user_id, "legacy.wav", &wav)
+            .await
+            .unwrap_err()
+            .0,
+        StatusCode::CONFLICT
+    );
+    state.storage.delete_file(&path).await.unwrap();
+    assert_eq!(
+        upload(state, user_id, "restored.wav", &wav)
+            .await
+            .unwrap()
+            .id,
+        id
+    );
+
+    let restored = track::Entity::find_by_id(id)
+        .one(&state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        state.storage.read_file(&restored.file_path).await.unwrap(),
+        wav
+    );
+    state
+        .storage
+        .delete_file(&restored.file_path)
+        .await
+        .unwrap();
+    track::Entity::delete_by_id(id)
+        .exec(&state.db)
+        .await
+        .unwrap();
 }
 
 // ─── P2P publication helper ─────────────────────────────────────────
@@ -1305,6 +1209,30 @@ pub async fn upload_album_cover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artwork_uses_the_image_signature() {
+        assert_eq!(
+            cover_content_type(b"\x89PNG\r\n\x1a\n1234"),
+            Some("image/png")
+        );
+        assert_eq!(cover_content_type(b"RIFF1234WEBP"), Some("image/webp"));
+        assert_eq!(cover_content_type(b"RIFF1234WAVE"), None);
+    }
+
+    #[test]
+    fn media_resolver_accepts_only_artwork_extensions() {
+        let temp = tempfile::tempdir().unwrap();
+        for (filename, allowed) in [
+            ("cover.JPG", true),
+            ("song.flac", false),
+            ("info.txt", false),
+        ] {
+            let path = temp.path().join(filename);
+            std::fs::File::create(&path).unwrap();
+            assert_eq!(try_resolve_media(temp.path(), &path).is_some(), allowed);
+        }
+    }
 
     // ─── validate_audio_magic_bytes tests ──────────────────────────
 

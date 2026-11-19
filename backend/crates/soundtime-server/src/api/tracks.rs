@@ -1278,6 +1278,7 @@ mod tests {
             waveform_data: None,
             uploaded_by: Some(Uuid::new_v4()),
             play_count: 42,
+            file_hash: None,
             content_hash: None,
             created_at: Utc::now().fixed_offset(),
         }

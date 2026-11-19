@@ -29,6 +29,7 @@ mod embeddings;
 mod listing_worker;
 pub mod metadata_lookup;
 mod p2p_logs;
+mod storage_catalog;
 mod storage_worker;
 mod trending;
 
@@ -36,6 +37,30 @@ mod trending;
 struct ApiStatus {
     status: &'static str,
     version: &'static str,
+}
+
+fn valid_signing_secret(secret: &str) -> bool {
+    secret.trim().len() >= 32
+        && !matches!(
+            secret.trim(),
+            "dev-secret-change-me-in-production"
+                | "dev-secret-change-in-production"
+                | "change-me-to-a-secure-random-string"
+                | "change-me-to-a-secure-random-string-min-32-chars"
+                | "generate_a_long_random_string_here"
+                | "<generate with: openssl rand -base64 32>"
+        )
+}
+
+#[test]
+fn production_signing_secret_rejects_empty_and_documented_values() {
+    assert!(!valid_signing_secret(""));
+    assert!(!valid_signing_secret(
+        "change-me-to-a-secure-random-string-min-32-chars"
+    ));
+    assert!(valid_signing_secret(
+        &uuid::Uuid::new_v4().simple().to_string()
+    ));
 }
 
 #[tokio::main]
@@ -73,18 +98,11 @@ async fn main() {
     let jwt_secret = std::env::var("JWT_SECRET")
         .unwrap_or_else(|_| "dev-secret-change-me-in-production".to_string());
 
-    // SECURITY: warn if JWT secret is the default fallback
-    if jwt_secret == "dev-secret-change-me-in-production"
-        || jwt_secret == "change-me-to-a-secure-random-string"
-    {
-        tracing::error!(
-            "JWT_SECRET is set to a known default value! \
-             This is a critical security vulnerability. \
-             Set JWT_SECRET to a strong random string (≥32 chars) in production."
-        );
-        if std::env::var("SOUNDTIME_ENV").unwrap_or_default() == "production" {
-            panic!("Refusing to start: JWT_SECRET must be set to a secure value in production.");
+    if !valid_signing_secret(&jwt_secret) {
+        if std::env::var("SOUNDTIME_ENV").as_deref() == Ok("production") {
+            panic!("Set JWT_SECRET to a random secret of at least 32 bytes before starting in production");
         }
+        tracing::warn!("JWT_SECRET is short or uses a documented placeholder");
     }
     let domain = std::env::var("SOUNDTIME_DOMAIN").unwrap_or_else(|_| "localhost:8080".to_string());
 
@@ -239,7 +257,8 @@ async fn main() {
     api::editorial::spawn_editorial_scheduler(state.clone());
 
     // Spawn the storage integrity / sync worker (runs daily)
-    storage_worker::spawn(state.clone());
+    let storage_task_tracker = storage_worker::new_tracker();
+    storage_worker::spawn(state.clone(), storage_task_tracker.clone());
 
     // Spawn the listing heartbeat worker (announces to public directory)
     listing_worker::spawn(state.clone());
@@ -264,7 +283,6 @@ async fn main() {
     }
 
     // Task tracker for async storage operations (sync, integrity check)
-    let storage_task_tracker = storage_worker::new_tracker();
     let sync_task_tracker = soundtime_p2p::new_sync_tracker();
     // Shared tracker for the background metadata enrichment task.
     // Installed as an Axum Extension on the /admin/metadata routes so
@@ -618,6 +636,21 @@ async fn main() {
                 )),
         );
 
+    let api_routes = if std::env::var("P2P_RENDEZVOUS_SERVER")
+        .is_ok_and(|value| value.eq_ignore_ascii_case("true"))
+    {
+        let directory = soundtime_p2p::rendezvous::Rendezvous::default();
+        let rendezvous = Router::new()
+            .route("/p2p/rendezvous", post(api::p2p::rendezvous))
+            .layer(axum::Extension(Arc::new(tokio::sync::Mutex::new(
+                directory,
+            ))))
+            .layer(DefaultBodyLimit::max(1024));
+        api_routes.merge(rendezvous)
+    } else {
+        api_routes
+    };
+
     // CORS configuration — restrict to configured origins
     let cors = {
         let allowed_origins_str = std::env::var("CORS_ORIGINS").unwrap_or_default();
@@ -713,11 +746,14 @@ async fn main() {
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!(%addr, "server started");
+    let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
+    let listener = tokio::net::TcpListener::bind((host.as_str(), port))
+        .await
+        .expect("could not bind HTTP listener to HOST and PORT");
+    tracing::info!(addr = %listener.local_addr().unwrap(), "server started");
 
     axum::serve(
-        tokio::net::TcpListener::bind(addr).await.unwrap(),
+        listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await

@@ -1,0 +1,17 @@
+services:
+  backend:
+    volumes:
+      - type: volume
+        source: network_smb
+        target: /data/music/network-smb
+        read_only: true
+        volume:
+          nocopy: true
+
+volumes:
+  network_smb:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: "//${SMB_SERVER:?Set SMB_SERVER to the SMB server address}/${SMB_SHARE:?Set SMB_SHARE to the share name}"
+      o: "addr=${SMB_SERVER},vers=3.0,ro,username=${SMB_USERNAME:?Set SMB_USERNAME},password=${SMB_PASSWORD:?Set SMB_PASSWORD},file_mode=0444,dir_mode=0555"

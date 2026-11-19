@@ -11,11 +11,10 @@ lofty = "0.22"
 symphonia = { version = "0.5", features = ["mp3", "flac", "ogg", "wav", "aac", "pcm", "all-codecs"] }
 tracing = "0.1"
 thiserror = "2"
-tokio = { version = "1", features = ["fs", "io-util", "sync"] }
+tokio = { version = "1", features = ["fs", "io-util", "process", "sync"] }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
-aws-sdk-s3 = "1"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 async-trait = "0.1"
 
 [dev-dependencies]

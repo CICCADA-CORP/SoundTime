@@ -10,9 +10,9 @@ services:
       - postgres_data:/var/lib/postgresql/data
     # SECURITY: do NOT expose postgres port in production. Uncomment for local dev only.
     # ports:
-    #   - "5432:5432"
+    #   - "127.0.0.1:5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U soundtime"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -23,7 +23,7 @@ services:
     restart: unless-stopped
     command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -61,6 +61,8 @@ services:
       P2P_LOCAL_DISCOVERY: ${P2P_LOCAL_DISCOVERY:-true}
       P2P_DHT_DISCOVERY: ${P2P_DHT_DISCOVERY:-true}
       P2P_SEED_PEERS: ${P2P_SEED_PEERS:-}
+      P2P_RENDEZVOUS_URL: ${P2P_RENDEZVOUS_URL:-}
+      P2P_RENDEZVOUS_SERVER: ${P2P_RENDEZVOUS_SERVER:-false}
     depends_on:
       postgres:
         condition: service_healthy

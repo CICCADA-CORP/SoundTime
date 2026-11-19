@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { page } from "$app/stores";
+  import { page } from "$app/state";
   import { onMount } from "svelte";
   import { api } from "$lib/api";
   import type { Album, Track } from "$lib/types";
@@ -14,7 +14,7 @@
 
   onMount(async () => {
     try {
-      album = await api.get<Album>(`/albums/${$page.params.id}`);
+      album = await api.get<Album>(`/albums/${page.params.id}`);
     } catch (e) { console.error('Failed to load album:', e); } finally { loading = false; }
   });
 

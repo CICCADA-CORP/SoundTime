@@ -1,7 +1,7 @@
 //! Admin API — P2P settings, instance management, blocked domains, monitoring, metadata
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Extension, Json,
 };
@@ -451,7 +451,7 @@ pub async fn list_instances(
         })
         .collect();
 
-    instances.sort_by(|a, b| b.track_count.cmp(&a.track_count));
+    instances.sort_by_key(|instance| std::cmp::Reverse(instance.track_count));
 
     Ok(Json(instances))
 }
@@ -917,7 +917,8 @@ pub struct StorageStatusResponse {
 pub async fn storage_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<StorageStatusResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let total_tracks = track::Entity::find().count(&state.db).await.map_err(|e| {
+    let local_tracks = track::Entity::find().filter(track::Column::FilePath.not_like("p2p://%"));
+    let total_tracks = local_tracks.clone().count(&state.db).await.map_err(|e| {
         tracing::error!(error = %e, "storage_status: failed to count tracks");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -930,7 +931,7 @@ pub async fn storage_status(
         total_size: Option<i64>,
     }
 
-    let size_result = track::Entity::find()
+    let size_result = local_tracks
         .select_only()
         .column_as(
             Expr::cust("COALESCE(SUM(file_size)::bigint, 0)"),
@@ -983,26 +984,11 @@ pub async fn run_integrity_check(
     State(state): State<Arc<AppState>>,
     Extension(tracker): Extension<crate::storage_worker::TaskTrackerHandle>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    // Reject if a task is already running
-    {
-        let lock = tracker.lock().await;
-        if let Some(crate::storage_worker::TaskStatus::Running { .. }) = &*lock {
-            return Err((
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({ "error": "A storage task is already running" })),
-            ));
-        }
-    }
-
-    // Mark as running
-    {
-        let mut lock = tracker.lock().await;
-        *lock = Some(crate::storage_worker::TaskStatus::Running {
-            progress: crate::storage_worker::TaskProgress {
-                processed: 0,
-                total: None,
-            },
-        });
+    if !crate::storage_worker::try_start(&tracker).await {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "A storage task is already running" })),
+        ));
     }
 
     let tracker_clone = tracker.clone();
@@ -1027,38 +1013,31 @@ pub async fn run_integrity_check(
     ))
 }
 
+#[derive(Deserialize, Default)]
+pub struct SyncOptions {
+    #[serde(default)]
+    prune_empty: String,
+}
+
 /// POST /api/admin/storage/sync
 ///
 /// Launches the storage sync as a background task and returns immediately.
 pub async fn run_storage_sync(
+    Query(options): Query<SyncOptions>,
     State(state): State<Arc<AppState>>,
     Extension(tracker): Extension<crate::storage_worker::TaskTrackerHandle>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    // Reject if a task is already running
-    {
-        let lock = tracker.lock().await;
-        if let Some(crate::storage_worker::TaskStatus::Running { .. }) = &*lock {
-            return Err((
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({ "error": "A storage task is already running" })),
-            ));
-        }
-    }
-
-    // Mark as running
-    {
-        let mut lock = tracker.lock().await;
-        *lock = Some(crate::storage_worker::TaskStatus::Running {
-            progress: crate::storage_worker::TaskProgress {
-                processed: 0,
-                total: None,
-            },
-        });
+    if !crate::storage_worker::try_start(&tracker).await {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "A storage task is already running" })),
+        ));
     }
 
     let tracker_clone = tracker.clone();
     tokio::spawn(async move {
-        match crate::storage_worker::run_sync(&state, Some(&tracker_clone)).await {
+        let allow_empty: Vec<&str> = options.prune_empty.split(',').collect();
+        match crate::storage_worker::run_sync(&state, Some(&tracker_clone), &allow_empty).await {
             Ok(report) => {
                 let mut lock = tracker_clone.lock().await;
                 *lock = Some(crate::storage_worker::TaskStatus::Completed {

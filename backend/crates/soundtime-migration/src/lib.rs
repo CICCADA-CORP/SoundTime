@@ -33,6 +33,7 @@ mod m20240101_000030_add_behavioral_signals;
 mod m20240101_000031_add_track_embeddings;
 mod m20240101_000032_add_performance_indexes;
 mod m20240101_000033_refresh_collation_version;
+mod m20240101_000034_track_file_hash;
 
 pub struct Migrator;
 
@@ -73,6 +74,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000031_add_track_embeddings::Migration),
             Box::new(m20240101_000032_add_performance_indexes::Migration),
             Box::new(m20240101_000033_refresh_collation_version::Migration),
+            Box::new(m20240101_000034_track_file_hash::Migration),
         ]
     }
 }

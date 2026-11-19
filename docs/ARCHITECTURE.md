@@ -43,14 +43,14 @@ The core server is written in **Rust** for safety and speed.
 
 The user interface is a Single Page Application (SPA) powered by SvelteKit.
 
-- **Framework**: `SvelteKit 2` + `Svelte 5` (Runes)
+- **Framework**: `SvelteKit 3` + `Svelte 5` (Runes)
 - **Styling**: `TailwindCSS`
 - **Components**: `shadcn-svelte`
 - **State Management**: Svelte 5 Runes for global stores (Player, Queue)
 
 ## Peer-to-Peer (`crates/soundtime-p2p`)
 
-We use **Iroh 0.96** for secure, direct device-to-device communication.
+We use **Iroh 1.5** for secure, direct device-to-device communication.
 
 - **Discovery**: DNS (PkarrPublisher) + DHT (DhtAddressLookup) + optional mDNS + Peer Exchange (PEX)
 - **Transfer**: BLAKE3 verified streaming via iroh-blobs `FsStore`

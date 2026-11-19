@@ -1,0 +1,17 @@
+services:
+  backend:
+    volumes:
+      - type: volume
+        source: network_nfs
+        target: /data/music/network-nfs
+        read_only: true
+        volume:
+          nocopy: true
+
+volumes:
+  network_nfs:
+    driver: local
+    driver_opts:
+      type: nfs
+      device: ":${NFS_EXPORT:?Set NFS_EXPORT to the exported NFS path}"
+      o: "addr=${NFS_SERVER:?Set NFS_SERVER to the NFS server address},nfsvers=4,ro"

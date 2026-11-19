@@ -35,7 +35,7 @@ Edit `.env` with production values. **All variables marked as required must be s
 # ─── Required ───
 JWT_SECRET=<generate with: openssl rand -base64 32>
 POSTGRES_PASSWORD=<strong random password>
-DOMAIN=music.example.com
+SOUNDTIME_DOMAIN=music.example.com
 
 # ─── Application ───
 HOST=0.0.0.0
@@ -44,7 +44,7 @@ SOUNDTIME_ENV=production
 RUST_LOG=info,soundtime=info
 ```
 
-> **Warning**: The server will **panic** on startup if `JWT_SECRET` is left as the default value when `SOUNDTIME_ENV=production`.
+> **Warning**: The backend image starts in production mode and requires a random `JWT_SECRET` of at least 32 bytes. Replace any example value before upgrading. Changing this value invalidates existing sessions.
 
 ### Database
 
@@ -63,6 +63,39 @@ POSTGRES_DB=soundtime
 STORAGE_BACKEND=local
 AUDIO_STORAGE_PATH=/data/music
 ```
+
+#### Read-only SMB and NFS music libraries
+
+With the local storage backend, Docker Engine on Linux can mount your NAS share directly. Uploads and extracted covers stay in the writable `music_data` volume. The backend reads the original tracks from the share. The Docker host needs network access to the NAS and kernel support for the selected filesystem. [Docker volume drivers](https://docs.docker.com/engine/storage/volumes/#share-data-between-machines)
+
+For **NFSv4**, allow the Docker host to read the export. Give the backend user permission to read files and traverse directories on the export. Set these values in `.env`.
+
+```dotenv
+COMPOSE_FILE=docker-compose.yml:docker/compose.nfs.yml
+NFS_SERVER=192.0.2.10
+NFS_EXPORT=/music
+```
+
+For **SMB 3**, give a dedicated NAS account read access to the share. Use a password without commas because the Linux CIFS mount options use commas as separators. Restrict access to `.env` and to the Docker API. The local volume driver stores the SMB credentials in its volume options.
+
+```dotenv
+COMPOSE_FILE=docker-compose.yml:docker/compose.smb.yml
+SMB_SERVER=192.0.2.10
+SMB_SHARE=music
+SMB_USERNAME=soundtime-reader
+SMB_PASSWORD='replace-with-share-password'
+```
+
+To enable both sources, set `COMPOSE_FILE=docker-compose.yml:docker/compose.nfs.yml:docker/compose.smb.yml` and configure both sets of variables. Run the following commands from the project root.
+
+```bash
+chmod 600 .env
+docker compose config --quiet
+docker compose up -d
+docker compose exec backend ls /data/music
+```
+
+The shares appear as `network-nfs` and `network-smb` under `/data/music`. Open **Admin → Synchronization** and start a sync. SoundTime reads tags and embedded album art during import. Keep the selected Compose files enabled across restarts so the tracks remain available to the scanner and player.
 
 #### S3-compatible storage (MinIO, AWS S3, etc.)
 
@@ -85,9 +118,11 @@ P2P_PORT=11204
 P2P_BIND_PORT=11204
 P2P_BLOBS_DIR=/data/p2p/blobs
 P2P_SECRET_KEY_PATH=/data/p2p/secret_key
-P2P_DHT_DISCOVERY=true                  # Mainline DHT peer discovery (default: true)
+P2P_DHT_DISCOVERY=true                  # Look up known NodeIds on the Mainline DHT
 P2P_LOCAL_DISCOVERY=false               # disable mDNS in production
 P2P_SEED_PEERS=                         # comma-separated NodeIds of peers to auto-connect
+P2P_RENDEZVOUS_URL=                     # shared directory endpoint for opt-in peer discovery
+P2P_RENDEZVOUS_SERVER=false             # host a rendezvous directory
 P2P_CACHE_MAX_SIZE=2GB                  # max disk for cached P2P blobs (default: 2GB)
 ```
 
@@ -116,14 +151,15 @@ SOUNDTIME_DOMAIN=music.example.com
 
 ## Docker Compose Architecture
 
-The `docker-compose.yml` file orchestrates four services:
+The default Compose file starts five services.
 
 | Service | Image | Ports | Description |
 |---------|-------|-------|-------------|
-| **postgres** | `postgres:16` | internal | PostgreSQL database with health checks |
-| **backend** | Built from `docker/Dockerfile.backend` | `8080`, `11204/udp` | Rust Axum API server |
-| **frontend** | Built from `docker/Dockerfile.frontend` | `3000` | SvelteKit SSR server |
-| **nginx** | `nginx:alpine` | `80` (or `NGINX_PORT`) | Reverse proxy |
+| **postgres** | `pgvector/pgvector:pg16` | internal | PostgreSQL database with pgvector |
+| **redis** | `redis:7-alpine` | `127.0.0.1:6379` (or `REDIS_PORT`) | Redis cache |
+| **backend** | `ghcr.io/ciccada-corp/soundtime-backend:latest` | `8080`, `11204/udp` | Rust Axum API server |
+| **frontend** | `ghcr.io/ciccada-corp/soundtime-frontend:latest` | `3000` | SvelteKit SSR server |
+| **nginx** | `nginx:alpine` | `8880` (or `NGINX_PORT`) | HTTP reverse proxy |
 
 ### Persistent Volumes
 
@@ -201,12 +237,13 @@ If you already have a reverse proxy (Traefik, Caddy, etc.), point it to the Ngin
 
 ### Updating
 
+Instances upgrading an existing P2P store from iroh-blobs 0.96 must stop the backend, back up its P2P volume and confirm the snapshot before the new backend opens the index. Follow [Upgrading the P2P store](p2p-networking.md#upgrading-the-p2p-store) before pulling images.
+
 ```bash
 cd SoundTime
-git pull
-docker compose down
-docker compose up --build -d
-docker image prune -f
+git pull --ff-only
+docker compose pull
+docker compose up -d
 ```
 
 Database migrations run automatically on backend startup.

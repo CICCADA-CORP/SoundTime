@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { page } from "$app/stores";
+  import { page } from "$app/state";
   import { onMount } from "svelte";
   import { api } from "$lib/api";
   import type { Playlist } from "$lib/types";
@@ -21,7 +21,7 @@
   let isOwner = $derived(playlist !== null && auth.user != null && playlist.owner_id === auth.user.id);
 
   onMount(async () => {
-    const id = $page.params.id;
+    const id = page.params.id;
     try {
       const data = await api.get<Playlist>(`/playlists/${id}`);
       playlist = {

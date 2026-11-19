@@ -238,6 +238,7 @@ export interface P2pStatus {
   peer_count: number;
   online_peer_count: number;
   dht_discovery_enabled: boolean;
+  rendezvous_configured?: boolean;
 }
 
 export interface P2pPeer {
@@ -481,6 +482,9 @@ export interface IntegrityReport {
 }
 
 export interface SyncReport {
+  moved: number;
+  removed: number;
+  empty_sources: string[];
   scanned: number;
   imported: number;
   skipped: number;

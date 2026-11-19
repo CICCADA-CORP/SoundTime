@@ -179,9 +179,6 @@ impl BlobCache {
             }
 
             // Remove the tag for this blob hash, making it eligible for GC.
-            // iroh-blobs 0.96 does not expose a public delete_blob method;
-            // instead, blobs are cleaned up by garbage collection once all
-            // tags referencing them are removed.
             let tag_name = format!("p2p-cache-{}", hash);
             match blob_store.tags().delete(tag_name).await {
                 Ok(_) => {
@@ -248,13 +245,11 @@ fn parse_size(s: &str) -> Option<u64> {
         (n, 1024u64 * 1024 * 1024)
     } else if let Some(n) = s.strip_suffix("MB") {
         (n, 1024u64 * 1024)
-    } else if let Some(n) = s.strip_suffix("KB") {
-        (n, 1024u64)
     } else {
-        return None;
+        (s.strip_suffix("KB")?, 1024u64)
     };
 
-    num_str.trim().parse::<u64>().ok().map(|n| n * multiplier)
+    num_str.trim().parse::<u64>().ok()?.checked_mul(multiplier)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -294,6 +289,7 @@ mod tests {
         assert_eq!(parse_size("abc"), None);
         assert_eq!(parse_size(""), None);
         assert_eq!(parse_size("GB"), None);
+        assert_eq!(parse_size("18446744073709551615TB"), None);
     }
 
     #[tokio::test]
