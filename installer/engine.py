@@ -37,11 +37,13 @@ def defaults():
 def _storage(value):
     if value == {"kind": "local"}:
         return {"kind": "local"}
-    fields = {"kind", "endpoint", "region", "bucket", "prefix", "accessKey", "secretKey"}
+    reuse = isinstance(value, dict) and value.get("reuseCredentials") is True
+    fields = {"kind", "endpoint", "region", "bucket", "prefix"}
+    fields.update({"reuseCredentials"} if reuse else {"accessKey", "secretKey"})
     if not isinstance(value, dict) or value.keys() != fields or value.get("kind") != "s3":
         raise ValueError("Choisissez le stockage sur disque ou renseignez les paramètres S3.")
     if any(not isinstance(v, str) or len(v) > 2048 or not all(ch.isprintable() for ch in v)
-           for v in value.values()):
+           for k, v in value.items() if k != "reuseCredentials"):
         raise ValueError("Les champs S3 doivent tenir chacun sur une ligne de texte.")
     s = value.copy()
     if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", s["bucket"]) or ".." in s["bucket"]:
@@ -57,7 +59,7 @@ def _storage(value):
                 raise ValueError
         except ValueError:
             raise ValueError("L’adresse S3 doit être une URL HTTP ou HTTPS sans identifiants, paramètres ou fragment. Laissez-la vide pour AWS.") from None
-    if not s["accessKey"].strip() or not s["secretKey"].strip():
+    if not reuse and (not s["accessKey"].strip() or not s["secretKey"].strip()):
         raise ValueError("Renseignez la clé d’accès et la clé secrète du service S3.")
     s["prefix"] = s["prefix"].strip("/")
     if ".." in s["prefix"].split("/"):
@@ -67,11 +69,11 @@ def _storage(value):
 
 def _settings(values, *, remote=False):
     if not isinstance(values, dict):
-        raise ValueError("Les réglages sont incomplets. Rechargez la page de l’assistant.")
+        raise ValueError("Les réglages sont incomplets. Relancez l’installateur et réessayez.")
     s = {"musicDirectory": "", "storage": {"kind": "local"}, **values}
     fields = {"directory", "musicDirectory", "port", "peerPort", "p2p", "domain", "access", "storage"}
     if s.keys() != fields:
-        raise ValueError("Les réglages sont incomplets. Rechargez la page de l’assistant.")
+        raise ValueError("Les réglages sont incomplets. Relancez l’installateur et réessayez.")
     for field in ("port", "peerPort"):
         if type(s[field]) is not int or not 1 <= s[field] <= 65535:
             raise ValueError("Choisissez un numéro de port entre 1 et 65535.")
@@ -292,15 +294,79 @@ def _override(settings, lan=False):
 """.encode()
 
 
+def _saved_plan(directory, data):
+    """Recover only public settings from an installer-owned Compose override."""
+    try:
+        yaml = data.decode("utf-8")
+        listen = re.search(r"^    ports: !override \['(127\.0\.0\.1|0\.0\.0\.0):(\d+):80'\]$", yaml, re.M)
+        if not listen:
+            raise ValueError
+        options = {key: json.loads(value) for key, value in re.findall(
+            r'^      (SOUNDTIME_DOMAIN|P2P_ENABLED|P2P_BIND_PORT|STORAGE_BACKEND|S3_REGION|S3_BUCKET|S3_ENDPOINT|S3_PREFIX): (".*")$', yaml, re.M
+        )}
+        plan = dict(defaults(), directory=str(directory), port=int(listen[2]),
+                    access="local" if listen[1] == "127.0.0.1" else "lan",
+                    domain=options["SOUNDTIME_DOMAIN"], p2p=options["P2P_ENABLED"] == "true",
+                    peerPort=int(options["P2P_BIND_PORT"]))
+        source = re.search(r'^        source: (".*")$', yaml, re.M)
+        if source:
+            plan["musicDirectory"] = json.loads(source[1]).replace("$$", "$")
+        if options.get("STORAGE_BACKEND") == "s3":
+            plan["storage"] = {"kind": "s3", "reuseCredentials": True,
+                               "region": options["S3_REGION"], "bucket": options["S3_BUCKET"],
+                               "endpoint": options.get("S3_ENDPOINT", "").replace("$$", "$"),
+                               "prefix": options["S3_PREFIX"].replace("$$", "$")}
+        # Only trust a layout we know how to reproduce without losing a setting.
+        if _override(plan, lan=plan["access"] == "lan") != data:
+            raise ValueError
+        return plan
+    except (UnicodeError, KeyError, ValueError, AttributeError, TypeError):
+        raise ValueError("Impossible de reprendre automatiquement ces réglages. Restaurez la configuration de cette installation ou choisissez un dossier vide.") from None
+
+
+def recommend(directory=None):
+    """Suggest settings on this machine without creating files or returning credentials."""
+    plan = defaults()
+    path = Path(plan["directory"] if directory is None else directory).expanduser()
+    if not path.is_absolute() or path.is_symlink() or path == Path(path.anchor):
+        raise ValueError("Choisissez un dossier d’installation dédié avec un chemin absolu.")
+    path = path.resolve()
+    plan["directory"] = str(path)
+    if (path / MANIFEST).is_file() and _state(path):
+        override = path / "compose.override.yaml"
+        if override.exists() or override.is_symlink():
+            return _saved_plan(path, _unseal(override))
+        if b"\nS3_ACCESS_KEY=" in _unseal(path / MANIFEST):
+            raise ValueError("Restaurez le fichier compose.override.yaml de l’installation d’origine avant de reprendre.")
+    for port in range(8880, 8900):
+        try:
+            _check_port(port, "127.0.0.1", socket.SOCK_STREAM, None, "nginx", 80)
+        except ValueError:
+            continue
+        plan["port"] = port
+        break
+    return plan
+
+
+def _check_saved_credentials(path, storage):
+    override = path / "compose.override.yaml"
+    if (not override.is_file() or _saved_plan(path, _unseal(override))["storage"] != storage
+            or b"\nS3_ACCESS_KEY=" not in _unseal(path / MANIFEST)):
+        raise ValueError("Pour modifier le stockage S3, renseignez de nouveau les clés du bucket.")
+
+
 def _configure(directory, settings, lan=False, *, keep_credentials=False):
     path = directory / "compose.override.yaml"
     data = _override(settings, lan)
     previous = _unseal(path) if path.exists() or path.is_symlink() else None
-    if not keep_credentials:
+    storage = settings.get("storage", {"kind": "local"})
+    if storage.get("reuseCredentials"):
+        _check_saved_credentials(directory, storage)
+    elif not keep_credentials:
         envpath = directory / MANIFEST
         env = _unseal(envpath)
         core = env.partition(b"\nS3_ACCESS_KEY=")[0].rstrip(b"\n") + b"\n"
-        new_env = core + _secret_variables(settings.get("storage", {"kind": "local"})).encode()
+        new_env = core + _secret_variables(storage).encode()
         if env != new_env:
             _write(envpath, _seal(new_env))
     if previous != data:
@@ -311,6 +377,8 @@ def _docker_env():
     # The instance credentials and service options come from this installation.
     # Preserve the CLI's context, credentials, proxy, PATH and system environment.
     keys = set(re.findall(r"\$\{(\w+)", (ROOT / "docker-compose.yml").read_text()))
+    keys.update(("SOUNDTIME_S3_ACCESS_KEY", "SOUNDTIME_S3_SECRET_KEY",
+                 "SOUNDTIME_ADMIN_PASSWORD", "SOUNDTIME_BOOTSTRAP_PASSWORD"))
     return {k: v for k, v in os.environ.items() if k not in keys and not k.startswith("COMPOSE_")}
 
 
@@ -395,6 +463,8 @@ def preflight(settings):
     def directory():
         nonlocal meta
         meta = _state(path)
+        if s["storage"].get("reuseCredentials"):
+            _check_saved_credentials(path, s["storage"])
         ancestor = path
         while not ancestor.exists():
             ancestor = ancestor.parent
@@ -572,11 +642,13 @@ def enable_lan(settings, report):
         return _publish(path, s, report)
 
 
-def export_project(settings, target):
+def export_project(settings, target, *, language="fr"):
     if __package__:
         from . import project_export
     else:
         import project_export
     s = _settings(settings, remote=True)
+    if s["storage"].get("reuseCredentials"):
+        raise ValueError("Pour exporter une configuration S3, fournissez les clés du bucket.")
     return project_export.archive(s, target, ROOT, _storage_environment(s["storage"]),
-                                  _secret_variables(s["storage"]))
+                                  _secret_variables(s["storage"]), language=language)

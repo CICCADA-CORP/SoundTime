@@ -22,7 +22,7 @@
 
 SoundTime is a self-hosted music server for your own audio collection. Browse by artist or album, build a queue, and listen from a desktop or mobile browser. You decide who can access the web catalog and whether your server shares music with other SoundTime instances.
 
-[Download the installer](#guided-installation) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md) · [Community](#community) · [Disclaimer](#disclaimer)
+[Download the CLI](#guided-installation) · [Manual installation](#manual-installation) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md) · [Community](#community) · [Disclaimer](#disclaimer)
 
 ![SoundTime playing Last Light from the demo library, with cover art on the left and the next three tracks queued on the right](docs/assets/soundtime-player.webp)
 
@@ -30,41 +30,72 @@ SoundTime is a self-hosted music server for your own audio collection. Browse by
 
 ### Guided installation
 
-Choose your computer below, even if you plan to host SoundTime on a NAS or server. Each installer includes its own copy of Python.
+[Download the portable SoundTime CLI](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.0/SoundTime-CLI.zip) · [SHA-256 checksum](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.0/SoundTime-CLI.zip.sha256) · [Install manually with Docker Compose](#manual-installation)
 
-| Your computer | Intel or AMD (64-bit) | ARM (64-bit) |
-| --- | --- | --- |
-| Windows | [Download for Windows x64](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-Windows-x64.zip) | [Download for Windows on Arm](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-Windows-arm64.zip) |
-| Mac | [Download for Mac with Intel](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-macOS-x64.zip) | [Download for Mac with Apple Silicon](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-macOS-arm64.zip) |
-| Linux | [Download for Linux x64](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-Linux-x64.tar.gz) | [Download for Linux ARM64](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-Linux-arm64.tar.gz) |
+Extract the **entire ZIP** and open a terminal in the extracted folder. The same download runs on Windows, macOS and Linux, on Intel/AMD x64 and ARM64. It includes its runtime.
 
-1. Extract the archive. On Windows, open **SoundTime-Installer.exe**. On Mac, open **SoundTime Installer**. On Linux, run `./SoundTime-Installer` from the extracted folder.
-2. In the French-language wizard, choose **Sur cette machine** for this computer or **Sur une autre machine** for another host. SoundTime uses Docker on the machine that will host your music.
-3. Choose **Installation rapide** to use the defaults or **Installation personnalisée** to select a music folder, S3 bucket and prefix, or network settings.
+| Terminal | Start the installer |
+| --- | --- |
+| macOS or Linux | `./soundtime` |
+| Windows PowerShell | `.\soundtime.cmd` |
+| Windows Command Prompt (cmd) | `soundtime.cmd` |
 
-For a Synology or QNAP NAS, export the Docker Compose project and import it into your NAS container manager. The export also works on a dedicated server, VPS, VM or cloud instance with Docker Compose alone. For a guided installation over SSH, the remote Linux host needs Python 3.9 or later. [Step-by-step guide in French](docs/installateur.md)
+Choose **This computer** to detect your operating system, or **Another machine** to install over SSH. For SSH, enter the host, account and port. The CLI detects the remote system and architecture, shows where your music will live, and checks Docker, the installation folder and the ports before you confirm. For a NAS managed through Synology Container Manager or QNAP Container Station, choose the project export under **Another machine**.
+
+SoundTime needs Docker with Linux containers on the host that will run your library. You can choose local or S3-compatible audio storage and create your first administrator account in the terminal. The CLI supports English, French, Spanish, Russian and Chinese. Add `--lang fr` to select French, or `--help` to see the commands. [Installation guide in French](docs/installateur.md)
 
 ### Manual installation
 
-This setup uses Git, OpenSSL and Docker with Compose v2. Compose pulls the published AMD64 or ARM64 images from GitHub Container Registry. To run changes from your checkout, follow the [development setup](#development).
+You can install SoundTime directly from the repository with Git and Docker Compose. Use Docker Desktop with Linux containers on Windows or macOS, or Docker Engine with Compose on Linux. Run these steps on the machine that will host SoundTime. Compose pulls the published AMD64 or ARM64 images. [Development setup for building from source](#development)
 
 #### 1. Configure a new instance
 
 ```sh
 git clone https://github.com/CICCADA-CORP/SoundTime.git
 cd SoundTime
-(umask 077 && cp .env.example .env)
 ```
 
-Open `.env` and set the following values before starting the containers. Run `openssl rand -hex 32` twice to generate two independent secrets.
+On **macOS or Linux**, create the configuration file and use OpenSSL to generate two different secrets. Keep the two values private.
+
+```sh
+(umask 077 && cp .env.example .env)
+openssl rand -hex 32
+openssl rand -hex 32
+```
+
+On **Windows**, open PowerShell in the repository directory. These commands create the configuration file and print two independently generated secrets.
+
+```powershell
+Copy-Item .env.example .env
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+1..2 | ForEach-Object {
+    $bytes = New-Object byte[] 32
+    $rng.GetBytes($bytes)
+    [BitConverter]::ToString($bytes).Replace('-', '')
+}
+$rng.Dispose()
+```
+
+Open `.env` in a text editor and save these settings.
 
 | Setting | What to enter |
 | --- | --- |
 | `POSTGRES_PASSWORD` | The first generated value. Compose uses it for PostgreSQL and the backend connection. |
 | `JWT_SECRET` | The second generated value. Keep it across upgrades so existing sessions remain valid. |
-| `P2P_ENABLED` | Set to `false` for a standalone server. The Compose default is `true`. |
+| `P2P_ENABLED` | Set to `false` for a standalone server, or `true` to enable peer networking. |
 
-For an automated installation with the default peer networking settings, the project also ships a Bash installer. It generates credentials on a fresh installation and uses `~/soundtime` by default. [Installer and usage](install.sh)
+To keep first-time administrator setup private, use Docker Compose 2.24.4 or newer and save the following as `docker-compose.override.yml` beside `docker-compose.yml`. This exposes the web entrance only on the host itself.
+
+```yaml
+services:
+  backend:
+    ports: !reset []
+  frontend:
+    ports: !reset []
+  nginx:
+    ports: !override
+      - "127.0.0.1:8880:80"
+```
 
 #### 2. Start the services
 
@@ -75,7 +106,7 @@ docker compose up -d
 docker compose ps
 ```
 
-Open the setup wizard through Nginx and create the administrator account. Choose **Private Instance** to require sign-in for the catalog and audio streams and to close public registration. For a standalone server, also turn off **P2P Network (iroh)** in the wizard. Complete setup before giving other people access. [Open setup](http://localhost:8880/setup)
+Open `http://localhost:8880/setup` and create the first administrator account. On a remote host, run `ssh -N -L 18880:127.0.0.1:8880 user@host` from your own computer and open `http://localhost:18880/setup`. Choose **Private Instance** to require sign-in. For a standalone server, also turn off **P2P Network (iroh)** in setup. To share the installation, configure HTTPS, firewall rules and the intended listening address after setup. [Deployment and peer networking](docs/deployment.md)
 
 #### 3. Play your first track
 

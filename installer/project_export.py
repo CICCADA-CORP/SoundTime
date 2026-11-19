@@ -9,6 +9,13 @@ import shlex
 import zipfile
 from pathlib import PurePosixPath
 
+if __package__:
+    from . import i18n
+    from .guide_strings import ROWS
+else:
+    import i18n
+    from guide_strings import ROWS
+
 
 TARGETS = {"nas": "NAS", "server": "serveur dédié", "vps": "VPS", "vm": "machine virtuelle", "cloud": "serveur cloud"}
 
@@ -86,80 +93,40 @@ def _guard(nginx, password):
                    "docker/acces/comptes": f"soundtime:{{SHA}}{digest}\n".encode()}
 
 
-def _instructions(s, target, password, project):
-    dest = s["directory"]
+def _instructions(s, target, password, project, language):
+    def msg(key, **values):
+        return i18n.text(language, ROWS, key, **values)
+
+    directory = s["directory"]
     port = s["port"]
-    intro = {
-        "nas": "Dans le gestionnaire de fichiers de votre NAS, créez le dossier du projet. Activez son service de conteneurs Linux.",
-        "server": "Connectez-vous au serveur dédié avec le compte qui peut gérer Docker.",
-        "vm": "Dans la VM, démarrez Docker. Pour vous y connecter depuis votre ordinateur, configurez une adresse joignable ou une redirection SSH dans l’hyperviseur.",
-        "vps": "Connectez-vous en SSH à votre VPS avec votre compte habituel. Autorisez votre accès SSH dans le pare-feu de l’hébergeur.",
-        "cloud": "Utilisez une instance Linux avec disque persistant. Son groupe de sécurité doit autoriser SSH depuis votre adresse. Les volumes Docker résident sur le disque de cette instance.",
-    }[target]
-    guide = f"""Installer SoundTime sur votre {TARGETS[target]}
-
-{intro}
-Prévoyez un moteur Docker Linux x86-64 ou ARM64 avec Compose v2, de la place pour les images et la bibliothèque, et un accès à Docker Hub et ghcr.io.
-
-1. Transférer le projet
-Décompressez cette archive privée dans le dossier choisi sur la machine cible.
-{dest}
-Dans ce dossier doivent se trouver compose.yaml, le fichier caché .env et le sous-dossier docker. Limitez l’accès au projet à votre compte, notamment à .env, aux fichiers de clés et à ce guide. Cette archive initialise une nouvelle instance. Pour une reprise ou une mise à jour, gardez le même projet et ses identifiants.
-
-2. Démarrer SoundTime
-"""
+    sections = [msg("title_" + target), "", msg(target), msg("requirements"), "",
+                msg("transfer"), msg("extract"), directory, msg("credentials"), "", msg("start")]
     if target == "nas":
-        guide += f"""Sur un NAS Synology avec Container Manager, ouvrez Projet → Créer. Choisissez le dossier du projet et son fichier compose.yaml existant, puis lancez la création.
-Sur QNAP avec Container Station, ouvrez Applications → Créer et collez le contenu de qnap-compose.yaml. Copiez également le dossier qnap/ de l’archive sous {dest} avant de démarrer.
-
-"""
-    guide += f"""
-Depuis un terminal de la machine cible, vous pouvez aussi lancer ces commandes.
-  cd {shlex.quote(dest)}
-  docker compose config --quiet
-  docker compose pull
-  docker compose up -d
-  docker compose ps
-
-Avec Portainer sur Docker Standalone, ouvrez Stacks → Add stack → Upload. Utilisez le nom {project} et importez compose.yaml. Dans Environment variables, utilisez Load variables from .env file pour charger le .env de cette archive. Cliquez sur Deploy the stack. Les fichiers docker/ doivent déjà se trouver dans le dossier indiqué sur l’hôte du moteur Docker.
-"""
-    guide += "\n3. Créer le premier compte\n"
+        sections.extend([msg("synology"), msg("qnap", directory=directory), ""])
+    sections.extend([msg("terminal"), "  cd " + shlex.quote(directory),
+                     "  docker compose config --quiet", "  docker compose pull",
+                     "  docker compose up -d", "  docker compose ps", "", msg("portainer", project=project),
+                     "", msg("account"), msg("cli_setup")])
     if password:
-        guide += f"""Sur un réseau local de confiance, ouvrez http://ADRESSE-DU-NAS:{port}/setup. Remplacez ADRESSE-DU-NAS par son adresse sur votre réseau.
-Votre navigateur vous demande d’abord les identifiants temporaires du projet SoundTime.
-  Identifiant temporaire : soundtime
-  Mot de passe temporaire : {password}
-Créez ensuite votre propre compte administrateur SoundTime et terminez les écrans de configuration dans ce navigateur. Choisissez « Instance privée » si la bibliothèque doit être réservée aux personnes connectées.
-Une fois SoundTime ouvert, renommez docker/acces/bootstrap.active en bootstrap.termine dans le gestionnaire de fichiers du NAS. Redémarrez ensuite le conteneur nginx du projet depuis l’interface du NAS ou avec « docker compose restart nginx ». Le réseau local utilisera alors directement les comptes SoundTime. Pour un accès par Internet, installez d’abord un reverse proxy HTTPS.
-"""
+        sections.extend([msg("nas_guard", port=port), "  " + msg("login"),
+                         "  " + msg("password", password=password), msg("private"), msg("unlock")])
     else:
-        guide += f"""L’accès web commence sur la boucle locale du serveur. Sur votre ordinateur, adaptez cette commande à votre compte et à l’adresse de la machine puis lancez-la dans un terminal.
-  ssh -N -L 127.0.0.1:{port}:127.0.0.1:{port} votre-compte@votre-serveur
-Gardez cette fenêtre ouverte. Visitez http://127.0.0.1:{port}/setup depuis votre ordinateur. Créez votre compte administrateur puis terminez la configuration. Vous pouvez aussi ouvrir la même adresse dans un navigateur sur la machine cible.
-"""
+        sections.extend([msg("tunnel"),
+                         f"  ssh -N -L 127.0.0.1:{port}:127.0.0.1:{port} USER@HOST",
+                         msg("setup_url", port=port), msg("private")])
         if s["access"] == "lan":
-            guide += f"""Pour autoriser ensuite les appareils de votre réseau, réglez SOUNDTIME_BIND_IP dans .env sur l’adresse privée de la machine (par exemple 192.168.1.20). Depuis le dossier du projet, faites « docker compose up -d nginx ». Dans Portainer, modifiez la variable du même nom et redéployez la stack. Les appareils de ce réseau ouvrent http://ADRESSE-PRIVÉE:{port}/. Pour un accès par Internet, gardez la boucle locale et placez un reverse proxy HTTPS sur l’hôte.
-"""
-    guide += "\n4. Vérifier votre musique\n"
+            sections.append(msg("lan", port=port))
     if s["storage"]["kind"] == "s3":
-        guide += ("Le serveur conserve les médias dans le bucket " + s["storage"]["bucket"] +
-                  ". Vérifiez que ce bucket existe et que le conteneur peut joindre votre service S3. "
-                  "Téléversez un petit morceau puis lancez sa lecture pour vérifier les droits d’écriture et de lecture. "
-                  "Administration → Synchronisation nécessite aussi le droit de lister les objets du bucket.\n")
+        music = msg("s3", bucket=s["storage"]["bucket"])
     elif s["musicDirectory"]:
-        guide += (f"Votre dossier {s['musicDirectory']} est monté en lecture seule dans /data/music/collection. "
-                  "Branchez le disque avant le démarrage et avant chaque synchronisation. "
-                  "Ouvrez Administration → Synchronisation pour importer ses titres.\n")
+        music = msg("collection", folder=s["musicDirectory"])
     else:
-        guide += "Dans SoundTime, ouvrez Téléverser, choisissez un morceau et lancez sa lecture.\n"
-    return guide + """
-5. Conserver l’installation
-Les volumes Docker conservent le catalogue, les fichiers téléversés sur disque et les données du réseau pair à pair. Conservez les volumes, le dossier du projet et le nom de la stack lors des redémarrages. Sauvegardez la base PostgreSQL, le stockage des médias et les identifiants avant une mise à jour. Pour suspendre les services, utilisez « docker compose stop ». Relancez avec « docker compose up -d ».
-En cas de difficulté au démarrage, consultez le journal du projet dans Portainer ou lancez « docker compose logs --tail=100 » dans le dossier du projet.
-"""
+        music = msg("upload")
+    sections.extend(["", msg("music"), music, "", msg("keep"), msg("backup"), msg("logs"), ""])
+    return "\n".join(sections)
 
 
-def archive(s, target, root, storage_env, secret_variables):
+def archive(s, target, root, storage_env, secret_variables, *, language="fr"):
     if not isinstance(target, str) or target not in TARGETS:
         raise ValueError("Choisissez une destination parmi NAS, serveur dédié, VPS, VM et cloud.")
     project = "soundtime-" + secrets.token_hex(8)
@@ -183,7 +150,10 @@ def archive(s, target, root, storage_env, secret_variables):
         nginx, auth_files = _guard(nginx, password)
         files.update(auth_files)
     files["docker/nginx.conf"] = nginx.encode()
-    files["LISEZ-MOI.txt"] = _instructions(s, target, password, project).encode()
+    guide = _instructions(s, target, password, project, language).encode()
+    files["LISEZ-MOI.txt"] = guide
+    if i18n.language(language) != "fr":
+        files["README.txt"] = guide
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as packed:
         for name, data in files.items():
