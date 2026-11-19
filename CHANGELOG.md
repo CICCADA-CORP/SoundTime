@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- The **Radio & podcasts** page brings together Radio Browser stations and Apple podcast search and charts. Listeners can stream a station or a public podcast episode and return to their music queue. Listeners and administrators can turn both directories off.
+- The federation pilot lets instances follow a peer's catalogue, stream verified audio ranges on demand and optionally share complete tracks within a disk quota. Withdrawn tracks keep their positions in playlists and become unavailable for playback.
+- MusicBrainz matching uses recording IDs, ISRCs, release, edition and duration alongside title and artist. Administrators can review ambiguous matches before changing the credits.
 - Storage sync updates moved tracks in place and reconciles identifiable duplicates from earlier scans. It asks for confirmation before cleaning an empty local, SMB or NFS source.
 - Single and batch uploads detect identical audio files. The storage dashboard counts local media separately from remote tracks.
 - Docker Compose supports read-only SMB and NFS music sources with local writable storage for uploads and cover art.
