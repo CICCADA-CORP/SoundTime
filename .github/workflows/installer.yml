@@ -1,0 +1,121 @@
+name: SoundTime installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional installer release tag, for example installer-v1.0.0"
+        type: string
+        required: false
+  pull_request:
+    paths:
+      - 'installer/**'
+      - 'docker-compose.yml'
+      - 'docker/nginx.conf'
+      - 'docs/assets/soundtime-logo.png'
+      - '.github/workflows/installer.yml'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: Install SoundTime and verify an S3 upload
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install and resume against published images
+        run: python installer/tests/smoke_docker.py
+      - name: Configure the exported NAS project and upload to S3
+        run: python installer/tests/smoke_export.py
+
+  package:
+    name: Build and open ${{ matrix.package }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: macos-15, package: macOS-arm64.zip}
+          - {runner: macos-15-intel, package: macOS-x64.zip}
+          - {runner: windows-2025, package: Windows-x64.zip}
+          - {runner: windows-11-arm, package: Windows-arm64.zip}
+          - {runner: ubuntu-22.04, package: Linux-x64.tar.gz}
+          - {runner: ubuntu-22.04-arm, package: Linux-arm64.tar.gz}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Test installer behavior
+        if: matrix.runner == 'ubuntu-22.04'
+        run: python -m unittest discover -s installer/tests -v
+      - run: python -m pip install -r installer/packaging/requirements.txt
+      - run: python installer/packaging/build.py
+      - name: Test the packaged interface
+        run: python installer/packaging/verify.py dist/installer/SoundTime-Installer-${{ matrix.package }}
+      - name: Package the portable Python launcher
+        if: matrix.runner == 'ubuntu-22.04'
+        run: |
+          python installer/packaging/build.py --sources
+          python installer/packaging/verify.py dist/installer/SoundTime-Installer-sources.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: SoundTime-Installer-${{ matrix.package }}
+          path: dist/installer/*
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    if: github.event_name == 'release' || (github.ref == 'refs/heads/main' && inputs.release_tag != '')
+    needs: [package, integration]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: SoundTime-Installer-*
+          path: packages
+          merge-multiple: true
+      - name: Publish verified installers and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+          EVENT_NAME: ${{ github.event_name }}
+        working-directory: packages
+        run: |
+          for file in SoundTime-Installer-{Windows-{x64,arm64}.zip,macOS-{x64,arm64}.zip,Linux-{x64,arm64}.tar.gz}; do
+            test -s "$file" && test -s "$file.sha256" || exit 1
+          done
+          sha256sum -c ./*.sha256
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            gh release upload "$RELEASE_TAG" ./SoundTime-Installer-* --repo "$GITHUB_REPOSITORY"
+          else
+            [[ "$RELEASE_TAG" =~ ^installer-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Download the archive matching your computer, extract it, and open **SoundTime Installer**. The Windows, macOS and Linux installers include their own runtime. SoundTime runs in Docker on the machine hosting your music.
+
+          | Platform | Choose |
+          | --- | --- |
+          | Windows | x64 for Intel or AMD, arm64 for Windows on Arm |
+          | macOS | x64 for Intel, arm64 for Apple Silicon |
+          | Linux | x64 for Intel or AMD, arm64 for a 64-bit ARM system |
+
+          The French-language wizard supports local installations, NAS projects, remote Linux machines over SSH and S3-compatible storage. SHA-256 checksums are provided alongside each archive.
+          NOTES
+            gh release create "$RELEASE_TAG" ./SoundTime-Installer-* --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --title "SoundTime Installer ${RELEASE_TAG#installer-v}" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" --latest
+          fi

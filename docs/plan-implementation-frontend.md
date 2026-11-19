@@ -1,8 +1,8 @@
 # Plan d’implémentation du frontend SoundTime
 
-**État au 19 novembre 2026.** Les lots 1 à 6 sont intégrés dans la copie de travail issue de `e660472`. Un membre peut suivre un lien privé vers son album, se connecter et écouter le fichier en continu pendant la navigation. Le lot 7 dispose d’une recette locale et d’un contrôle CI avant promotion.
+**État au 19 novembre 2026.** Les lots 1 à 6 sont intégrés dans la copie de travail issue de `e660472`. Un membre peut suivre un lien privé vers son album, se connecter et écouter le fichier en continu pendant la navigation. Les images Linux ARM64 du lot 7 ont passé la recette locale sur instance privée. La promotion publique reste conditionnée à la CI.
 
-Avant les corrections, les 593 tests unitaires passaient, alors que Chromium recevait un HTTP 401 sur le flux privé après une connexion valide. Les huit scénarios de recette exercent désormais le navigateur, le proxy, le serveur et PostgreSQL ensemble.
+Avant les corrections, les 593 tests unitaires passaient, alors que Chromium recevait un HTTP 401 sur le flux privé après une connexion valide. Les neuf scénarios de recette exercent désormais le navigateur, le proxy, le serveur et PostgreSQL ensemble.
 
 ## L’interface à prendre comme référence
 
@@ -25,13 +25,20 @@ Le socle est **Svelte 5, SvelteKit 3, TypeScript, Tailwind 3 et shadcn-svelte**.
 | ✓ **4 · Bibliothèque et playlists** — après 1, en parallèle de 2 et 3 | Donner à la bibliothèque et au sélecteur « Ajouter à une playlist » une source propriétaire paginée. Conserver la liste publique pour la découverte. Brancher pagination, mutations et actualisation des listes sur les mêmes contrats. | Le membre A crée une playlist privée, y ajoute un titre et la retrouve après rechargement. B ne peut ni la lire ni la modifier. Le sélecteur atteint la 21e playlist et la bibliothèque le 101e import. Un échec d’ajout permet une nouvelle tentative sans doublon. |
 | ✓ **5 · Étendre le design au catalogue** — après 1, intégration avec 3 et 4 | Harmoniser Explorer, résultats de recherche, pistes, albums, artistes, playlists et leurs fiches avec les composants d’accueil. Appliquer les mêmes règles à la bibliothèque, aux favoris, à l’historique et à l’import. Préserver les URL et les commandes existantes. | Du clavier ou du téléphone, chercher un artiste, ouvrir son album, lancer un titre, l’ajouter aux favoris puis le retrouver. Les états chargement, vide, panne partielle, refus et réessai sont distincts. Le bouton Retour restitue un contexte de navigation cohérent. |
 | ✓ **6 · Paramètres et exploitation** — après 2 et les composants communs de 5 | Extraire les sections compte et lecture de Paramètres, puis les domaines d’Administration au fil de leur migration, en commençant par le stockage et ses tests. Harmoniser setup et conditions d’utilisation. Vérifier que chaque réglage audio affiché a un effet observable. | Un membre change ses préférences et se déconnecte. Un administrateur retrouve les réglages, le suivi des tâches, les thèmes et les plugins. L’annulation d’une confirmation rend le focus au déclencheur. Les droits sont vérifiés lors d’un accès direct à l’URL. |
-| En cours · **7 · Qualifier et publier** — après 2 à 6 | Brancher le parcours Cypress fiable dans la CI, essayer l’image exacte derrière Nginx, puis répéter le retour arrière. | La matrice ci-dessous passe sur la version candidate. L’équipe dispose de la révision, du digest, des résultats et du digest précédent testé. |
+| Recette locale validée · **7 · Qualifier et publier** — après 2 à 6 | Brancher le parcours Cypress fiable dans la CI, essayer l’image exacte derrière Nginx, puis répéter le retour arrière. | La matrice ci-dessous passe sur la version candidate. L’équipe dispose de la révision, du digest, des résultats et du digest précédent testé. |
+
+### Suivi du catalogue
+
+- **Navigation sur réseau lent — validée sur le frontend candidat.** À 1440 et 390 px, les nouveautés d’Explorer apparaissent ensemble dans les deux ordres d’arrivée des réponses. L’accueil passe du gabarit de chargement aux quatre titres sélectionnés. Une section en erreur ou sans réponse laisse accéder aux morceaux disponibles et propose de réessayer. Les retours navigateur conservent la destination et la lecture en cours. Le parcours entre fiches a aussi été vérifié avec WebKit mobile en mode headless.
+- **Titres sans crédit d’artiste — validé sur l’instance privée locale.** L’annuaire affiche 10 artistes crédités. Les 15 titres sans artiste font toujours partie des 25 morceaux de la bibliothèque. La recherche, la pagination de l’annuaire et la lecture d’un titre sans crédit ont passé la recette derrière Nginx.
 
 **Ordre de livraison.** Une fois les lots 2 à 4 réunis, la première version de démonstration utilise le vrai backend et des comptes ordinaires. Le lot 5 peut avancer dès le lot 1 sur les composants visuels. La validation d’une action métier attend le contrat correspondant. L’administration peut être découpée en plusieurs revues sans immobiliser le parcours d’écoute. [Scénarios Cypress existants](../frontend/cypress/e2e) · [Initialisation des tests](../frontend/cypress/support/e2e.ts) · [Administration](../frontend/src/routes/admin/+page.svelte)
 
 **Découpage du code.** Pour le lot 5, garder les en-têtes, grilles, listes et états du catalogue dans `components/catalog`, les primitives visuelles sans connaissance de l’API dans `components/ui`. Réutiliser `catalogQuery` pour que la réponse d’une recherche lente ne remplace pas la page courante, et l’invalidation des playlists après une mutation réussie. Pour le lot 6, extraire un domaine accompagné de ses tests à chaque revue. La page admin actuelle concentre plus de 3 300 lignes. Le stockage offre un premier découpage vérifiable grâce à ses tests existants. [Requêtes du catalogue](../frontend/src/lib/catalog/query.svelte.ts) · [Invalidation des playlists](../frontend/src/lib/catalog/playlists.svelte.ts) · [Tests du stockage](../frontend/src/routes/admin/storage.test.ts)
 
 ## Décisions d’implémentation
+
+**Explorer.** Le champ de recherche mène aux résultats du catalogue. L’onglet Nouveautés présente jusqu’à quatre albums et six titres récemment ajoutés. Tendances, Artistes, Genres et Playlists chargent leurs données à l’ouverture de la rubrique. Le paramètre d’URL `tab` conserve la rubrique au rechargement et dans l’historique du navigateur. La recherche élargie au réseau reste une action explicite sur la page de résultats. [Page Explorer](../frontend/src/routes/explore/+page.svelte) · [Tests de navigation](../frontend/src/routes/explore/page.test.ts)
 
 1. **Autorisation des médias privés.** Le navigateur échange le Bearer contre un cookie HttpOnly limité aux chemins de médias. Sa validité est plafonnée à dix minutes et à la durée restante du Bearer. Le lecteur utilise l’URL du morceau, renouvelle l’autorisation à la reprise et conserve la position. La déconnexion arrête le lecteur et expire le cookie. [Contrat HTTP](api-reference.md) · [Autorisation média](../backend/crates/soundtime-server/src/auth/media.rs)
 2. **Politique d’inscription.** Le setup, le formulaire, l’annuaire et le serveur partagent la politique effective. Les réglages absents sur les installations antérieures conservent leur comportement. Un lien privé récupère son chemin local après connexion. [Politique serveur](../backend/crates/soundtime-server/src/auth/registration.rs) · [Navigation](../frontend/src/lib/access/navigation.ts)
@@ -58,7 +65,7 @@ scripts/test-private-listening.sh
 
 Pour tester des images déjà disponibles, définir `QA_USE_BUILT_IMAGES=1`, `QA_FRONTEND_IMAGE` et `QA_BACKEND_IMAGE`. Pour répéter un retour arrière sur les mêmes données, fournir également `QA_ROLLBACK_FRONTEND_IMAGE` avec le digest d’une version ayant réussi le test de lecture privée. Le script refait le test de lecture sur cette version, puis sur la candidate restaurée. Les identifiants fictifs sont générés pour chaque exécution. [Script de recette](../scripts/test-private-listening.sh) · [Scénarios Cypress](../frontend/cypress/private) · [CI](../.github/workflows/ci.yml)
 
-### Résultats sur l’instance privée locale
+### Première recette sur les bundles Node
 
 | Contrôle | Résultat observé |
 | --- | --- |
@@ -74,7 +81,23 @@ Pour tester des images déjà disponibles, définir `QA_USE_BUILT_IMAGES=1`, `QA
 
 **Versions vérifiées.** L’empreinte SHA-256 du contenu du bundle intermédiaire est `0d0c4fae8bbd5bf0e50bf54528340c5d1dbdd42249552b17b918702f8e4efa9e`. Celle du bundle de livraison de la seconde instance est `e4c53e7fad707e8f3b138034f05ea504bd67fe6bdd461ea5e1a63dc902ec1df0`. Pour les reproduire, trier les fichiers de `build/` par chemin relatif et hacher la concaténation du chemin UTF-8, d’un octet nul et du SHA-256 binaire du contenu de chaque fichier.
 
-**Avant promotion.** Le contrôle CI sélectionne les deux digests Linux AMD64 produits pour la révision et exécute la recette avant la publication des tags. Lors de la qualification locale, le moteur Docker s’est arrêté pendant la construction. La recette a abouti avec les bundles Node de production et le serveur Rust derrière Nginx. La validation des images par digest reste à réaliser sur le runner, de même que l’écoute sur Safari iPhone et le parcours avec lecteur d’écran.
+### Qualification Docker sur instance privée
+
+Le 19 novembre 2026, la recette a vérifié les identifiants des deux images effectivement démarrées derrière Nginx, avec PostgreSQL et les inscriptions fermées. La capture frontend date de 17 h 30 CET. Le serveur reprend la capture de 16 h 46 et les corrections de compilation et de lint associées.
+
+| Image locale Linux ARM64 | Identifiant Docker |
+| --- | --- |
+| Frontend Explorer | `sha256:1f147bf72e43917f6c53aac51f6cc90494f37e7b3c78f156cd586ca73fbff3d0` |
+| Serveur | `sha256:520714e46cb43d766c47633c960c186247cf0ade5ea32d482bcb8f702a6f493a` |
+| Frontend de retour arrière | `sha256:914f67c8e836a090ea280c0da71b90fa52c99bd604d0c6f4dd4d76929dbd5cb7` |
+
+Les neuf scénarios Cypress ont réussi. Ils couvrent notamment le rechargement de l’onglet Genres, le retour navigateur, la recherche suivie d’une écoute, les favoris, les playlists et les droits d’administration. Deux parcours d’écoute ont réussi sur l’image de repli, puis sur la candidate restaurée, avec le même backend et les mêmes médias.
+
+WebKit 26.5 en mode headless à 390 × 844 a vérifié la lecture tactile, une plage HTTP 206, la pause, le déplacement à sept secondes et la reprise. Le contrôle visuel d’Explorer a couvert 320, 390 et 1440 px. Sur téléphone, le champ de recherche occupe la largeur disponible et les albums défilent sur une seule rangée au-dessus des premiers titres.
+
+Les 652 tests Vitest passent, ainsi que 277 tests du serveur et 302 tests P2P. Svelte Check, le typage Cypress, rustfmt et Clippy passent. Une base historique a migré du schéma 34 au schéma 42 et le rejeu a été vérifié.
+
+**Avant promotion.** Le contrôle CI sélectionne les deux digests Linux AMD64 produits pour la révision et exécute la recette avant la publication des tags. La recette locale utilise des images Linux ARM64. La CI doit encore qualifier les digests Linux AMD64 destinés au registre. Le contrôle sur iPhone physique et le parcours au lecteur d’écran restent à réaliser.
 
 ## Mise en production et retour arrière
 

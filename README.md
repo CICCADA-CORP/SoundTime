@@ -22,16 +22,25 @@
 
 SoundTime is a self-hosted music server for your own audio collection. Browse by artist or album, build a queue, and listen from a desktop or mobile browser. You decide who can access the web catalog and whether your server shares music with other SoundTime instances.
 
-[Quick start](#quick-start) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md)
 [Quick start](#quick-start) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md) · [Community](#community) · [Disclaimer](#disclaimer)
 
 ![SoundTime playing Last Light from the demo library, with cover art on the left and the next three tracks queued on the right](docs/assets/soundtime-player.webp)
 
 ## Quick start
 
+### Guided installation
+
+Open the **SoundTime Installer** and choose where to host your music. **Installation rapide** starts SoundTime on this computer and opens the administrator setup page. The custom path lets you connect a read-only music folder or an S3 bucket and prefix, choose the web port and enable network access or peer sharing.
+
+For a NAS, dedicated server, VPS, VM or Linux cloud instance, choose **Sur une autre machine**. The wizard can install over an existing SSH connection or export a private Docker Compose project for the target. NAS projects include definitions for Synology Container Manager and QNAP Container Station. [Guide de l’installateur](docs/installateur.md)
+
+Packaged installers for macOS, Windows and Linux are attached to releases built with the installer workflow. With a source checkout and Python 3.9 or later, double-click `installer/Lancer.command` on Mac or `installer/Lancer.cmd` on Windows, or run `python3 installer/launcher.py` on Linux. [SoundTime releases](https://github.com/CICCADA-CORP/SoundTime/releases)
+
+### Manual installation
+
 This setup uses Git, OpenSSL and Docker with Compose v2. Compose pulls the published AMD64 or ARM64 images from GitHub Container Registry. To run changes from your checkout, follow the [development setup](#development).
 
-### 1. Configure a new instance
+#### 1. Configure a new instance
 
 ```sh
 git clone https://github.com/CICCADA-CORP/SoundTime.git
@@ -49,7 +58,7 @@ Open `.env` and set the following values before starting the containers. Run `op
 
 For an automated installation with the default peer networking settings, the project also ships a Bash installer. It generates credentials on a fresh installation and uses `~/soundtime` by default. [Installer and usage](install.sh)
 
-### 2. Start the services
+#### 2. Start the services
 
 ```sh
 docker compose config --quiet
@@ -60,9 +69,9 @@ docker compose ps
 
 Open the setup wizard through Nginx and create the administrator account. Choose **Private Instance** to require sign-in for the catalog and audio streams and to close public registration. For a standalone server, also turn off **P2P Network (iroh)** in the wizard. Complete setup before giving other people access. [Open setup](http://localhost:8880/setup)
 
-### 3. Play your first track
+#### 3. Play your first track
 
-Sign in, open **Upload**, and add an audio file. Open **Tracks** and press **Play**. SoundTime reads artist, album and cover tags during import. A track without an album stays in **Tracks** and on its artist’s page. An explicitly named album appears in **Albums**, even when you own only one of its tracks.
+Sign in, open **Upload**, and add an audio file. Open **Tracks** and press **Play**. SoundTime reads artist, album and cover tags during import. A track without an album stays in **Tracks** and on its artist’s page. An explicitly named album appears in **Albums**, even when you own only one of its tracks. Tracks with no artist credit remain playable and searchable by title. The artist directory lists credited artists.
 
 ## Library and playback
 
