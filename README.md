@@ -22,7 +22,7 @@
 
 SoundTime is a self-hosted music server for your own audio collection. Browse by artist or album, build a queue, and listen from a desktop or mobile browser. You decide who can access the web catalog and whether your server shares music with other SoundTime instances.
 
-[Quick start](#quick-start) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md) · [Community](#community) · [Disclaimer](#disclaimer)
+[Download the installer](#guided-installation) · [Library and playback](#library-and-playback) · [Operating an instance](#operating-an-instance) · [Development](#development) · [API reference](docs/api-reference.md) · [Community](#community) · [Disclaimer](#disclaimer)
 
 ![SoundTime playing Last Light from the demo library, with cover art on the left and the next three tracks queued on the right](docs/assets/soundtime-player.webp)
 
@@ -30,11 +30,19 @@ SoundTime is a self-hosted music server for your own audio collection. Browse by
 
 ### Guided installation
 
-Open the **SoundTime Installer** and choose where to host your music. **Installation rapide** starts SoundTime on this computer and opens the administrator setup page. The custom path lets you connect a read-only music folder or an S3 bucket and prefix, choose the web port and enable network access or peer sharing.
+Choose your computer below, even if you plan to host SoundTime on a NAS or server. Each installer includes its own copy of Python.
 
-For a NAS, dedicated server, VPS, VM or Linux cloud instance, choose **Sur une autre machine**. The wizard can install over an existing SSH connection or export a private Docker Compose project for the target. NAS projects include definitions for Synology Container Manager and QNAP Container Station. [Guide de l’installateur](docs/installateur.md)
+| Your computer | Intel or AMD (64-bit) | ARM (64-bit) |
+| --- | --- | --- |
+| Windows | [Download for Windows x64](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-Windows-x64.zip) | [Download for Windows on Arm](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-Windows-arm64.zip) |
+| Mac | [Download for Mac with Intel](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-macOS-x64.zip) | [Download for Mac with Apple Silicon](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-macOS-arm64.zip) |
+| Linux | [Download for Linux x64](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-Linux-x64.tar.gz) | [Download for Linux ARM64](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v1.0.0/SoundTime-Installer-Linux-arm64.tar.gz) |
 
-Packaged installers for macOS, Windows and Linux are attached to releases built with the installer workflow. With a source checkout and Python 3.9 or later, double-click `installer/Lancer.command` on Mac or `installer/Lancer.cmd` on Windows, or run `python3 installer/launcher.py` on Linux. [SoundTime releases](https://github.com/CICCADA-CORP/SoundTime/releases)
+1. Extract the archive. On Windows, open **SoundTime-Installer.exe**. On Mac, open **SoundTime Installer**. On Linux, run `./SoundTime-Installer` from the extracted folder.
+2. In the French-language wizard, choose **Sur cette machine** for this computer or **Sur une autre machine** for another host. SoundTime uses Docker on the machine that will host your music.
+3. Choose **Installation rapide** to use the defaults or **Installation personnalisée** to select a music folder, S3 bucket and prefix, or network settings.
+
+For a Synology or QNAP NAS, export the Docker Compose project and import it into your NAS container manager. The export also works on a dedicated server, VPS, VM or cloud instance with Docker Compose alone. For a guided installation over SSH, the remote Linux host needs Python 3.9 or later. [Step-by-step guide in French](docs/installateur.md)
 
 ### Manual installation
 
