@@ -1,4 +1,3 @@
-# SoundTime
 <h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/soundtime-signature-white.png">
