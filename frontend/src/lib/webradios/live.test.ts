@@ -129,3 +129,104 @@ it("resumes a resolved stream on a fresh gesture without counting another statio
   expect(live.phase).toBe("playing");
   expect(api.post).toHaveBeenCalledOnce();
 });
+
+it("releases a silent stream after the connection deadline and lets another station play", async () => {
+  vi.useFakeTimers();
+  try {
+    api.post.mockResolvedValue({ url: "https://station.test/silent", hls: false });
+    const opening = live.start(station, 1, vi.fn());
+    audio.play.mockResolvedValueOnce(undefined);
+    await opening;
+    expect(live.phase).toBe("loading");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(live.phase).toBe("failed");
+    expect(audio.pause).toHaveBeenCalledOnce();
+    expect(audio.src).toBe("");
+    expect(live.url).toBe("https://station.test/silent");
+    await live.start({ ...station, name: "Next FM" }, 1, vi.fn());
+    expect(live.phase).toBe("playing");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("stops a live stream when it cannot revalidate permission and recovers on a fresh check", async () => {
+  api.get.mockResolvedValueOnce(enabled);
+  await webPreferences.refresh("listener");
+  api.post.mockResolvedValue({ url: "https://station.test/music", hls: false });
+  await live.start(station, 1, vi.fn());
+  api.get.mockRejectedValueOnce(new Error("offline"));
+  await webPreferences.refresh("listener");
+  expect(webPreferences.failed).toBe(true);
+  expect(webPreferences.enabled).toBe(false);
+  expect(live.station).toBeNull();
+  api.get.mockResolvedValueOnce({ user_enabled: true });
+  await webPreferences.refresh("listener");
+  expect(webPreferences.failed).toBe(true);
+  expect(webPreferences.status).toBeNull();
+  api.get.mockResolvedValueOnce(enabled);
+  await webPreferences.refresh("listener");
+  expect(webPreferences.failed).toBe(false);
+  expect(webPreferences.enabled).toBe(true);
+  expect(live.station).toBeNull();
+});
+
+it("ignores an old status reply or failure after switching account", async () => {
+  for (const lateFailure of [true, false]) {
+    let finish!: () => void;
+    api.get.mockImplementationOnce(() => new Promise((resolve, reject) => {
+      finish = () => lateFailure ? reject(new Error("late")) : resolve(enabled);
+    }));
+    const old = webPreferences.refresh("first");
+    expect(webPreferences.refresh("first")).toBe(old);
+    const blocked = { ...enabled, user_enabled: false, enabled: false };
+    api.get.mockResolvedValueOnce(blocked);
+    await webPreferences.refresh("second");
+    finish();
+    await old;
+    expect(webPreferences.status).toEqual(blocked);
+    expect(webPreferences.userEnabled).toBe(false);
+    expect(webPreferences.failed).toBe(false);
+  }
+});
+
+it("immediately stops a guest stream for a preference change from another tab", async () => {
+  api.get.mockResolvedValue(enabled);
+  await webPreferences.refresh(null);
+  api.post.mockResolvedValue({ url: "https://station.test/music", hls: false });
+  await live.start(station, 1, vi.fn());
+  localStorage.setItem("soundtime_webradios_guest", "false");
+  window.dispatchEvent(new StorageEvent("storage", { key: "soundtime_webradios_guest" }));
+  expect(live.station).toBeNull();
+  await webPreferences.refresh(null);
+  expect(webPreferences.showInNavigation).toBe(false);
+  expect(api.put).not.toHaveBeenCalled();
+});
+
+it.each([401, 403])("rechecks access when the play endpoint refuses with %s", async status => {
+  api.get.mockResolvedValueOnce(enabled);
+  await webPreferences.refresh("listener");
+  const disabled = { ...enabled, instance_enabled: false, enabled: false };
+  api.get.mockResolvedValueOnce(disabled);
+  api.post.mockRejectedValueOnce({ status });
+  const release = vi.fn();
+  await live.start(station, 1, release);
+  expect(live.station).toBeNull();
+  expect(audio.play).not.toHaveBeenCalled();
+  expect(release).toHaveBeenCalledOnce();
+  expect(api.get).toHaveBeenCalledTimes(2);
+  await vi.waitFor(() => expect(webPreferences.status).toEqual(disabled));
+});
+
+it("ignores a failed previous resolution after another station starts", async () => {
+  let fail!: (error: unknown) => void;
+  api.post.mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }));
+  const stale = live.start(station, 1, vi.fn());
+  api.post.mockResolvedValueOnce({ url: "https://station.test/current", hls: false });
+  await live.start({ ...station, name: "Current" }, 1, vi.fn());
+  fail({ status: 403 });
+  await stale;
+  expect(live.station?.name).toBe("Current");
+  expect(live.phase).toBe("playing");
+  expect(audio.src).toBe("https://station.test/current");
+});
