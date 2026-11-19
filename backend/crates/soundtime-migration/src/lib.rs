@@ -44,6 +44,7 @@ mod m20240101_000041_peer_observations;
 
 mod m20240101_000042_federation_workers;
 mod m20240101_000043_pending_backfill;
+mod m20240101_000044_track_cover;
 
 pub struct Migrator;
 
@@ -109,6 +110,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000041_peer_observations::Migration),
             Box::new(m20240101_000042_federation_workers::Migration),
             Box::new(m20240101_000043_pending_backfill::Migration),
+            Box::new(m20240101_000044_track_cover::Migration),
         ]
     }
 }

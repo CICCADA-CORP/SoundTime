@@ -179,7 +179,7 @@ stage=historical-upgrade
 if [[ $mode == rust-tests ]]; then
     stage=rust-and-postgres
     "${compose[@]}" exec -T db-a createdb -U soundtime --template soundtime_federation_history soundtime_federation_rust
-    tests=(cargo test --offline --locked --release --workspace --features soundtime-server/redis --lib --bins --tests)
+    tests=(cargo test --offline --locked --release --workspace --features soundtime-server/redis --lib --bins --tests --no-fail-fast)
     "${compose[@]}" run --rm -T --no-deps rust-tests "${tests[@]}" -- --test-threads=1 2>&1 | tee "$run_dir/rust-tests.log"
     "${compose[@]}" run --rm -T --no-deps rust-tests "${tests[@]}" -- --ignored --test-threads=1 2>&1 | tee "$run_dir/postgres-tests.log"
     stage=complete
