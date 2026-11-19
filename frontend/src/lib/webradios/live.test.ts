@@ -116,3 +116,16 @@ it("ignores a late resolution after stop and releases a playing guest or member 
   expect(api.put).toHaveBeenCalledWith("/webradios/preference", { enabled: false });
   expect(live.station).toBeNull();
 });
+
+
+it("resumes a resolved stream on a fresh gesture without counting another station play", async () => {
+  api.post.mockResolvedValue({ url: "https://station.test/direct", hls: false });
+  const opening = live.start(station, 1, vi.fn());
+  audio.play.mockRejectedValueOnce(new DOMException("User gesture required", "NotAllowedError"));
+  await opening;
+  expect(live.phase).toBe("ready");
+  expect(audio.src).toBe("https://station.test/direct");
+  live.resume();
+  expect(live.phase).toBe("playing");
+  expect(api.post).toHaveBeenCalledOnce();
+});

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ExternalLink, RotateCw, Square } from "lucide-svelte";
+  import { ExternalLink, Play, RotateCw, Square } from "lucide-svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import PlayerRange from "$lib/components/player/PlayerRange.svelte";
@@ -16,7 +16,7 @@
       <a href="/webradios" class="block truncate text-sm font-semibold hover:underline">{station.name}</a>
       <p class="text-xs text-muted-foreground" role="status">
         {t(live.phase === "unsupported" ? "webradios.unsupported" : live.phase === "failed" ? "webradios.playError"
-             : live.phase === "playing" ? "webradios.live" : "common.loading")}
+             : live.phase === "playing" ? "webradios.live" : live.phase === "ready" ? "shell.play" : "common.loading")}
         {#if live.url && (live.phase === "unsupported" || live.phase === "failed")}
           <a href={live.url} target="_blank" rel="noreferrer" class="inline-flex items-center gap-1 underline">
             {t("webradios.external")}<ExternalLink size={11} />
@@ -24,7 +24,10 @@
         {/if}
       </p>
     </div>
-    {#if live.phase === "failed"}
+    {#if live.phase === "ready"}
+      <button class="grid size-10 place-items-center rounded-full border border-border" type="button"
+        aria-label={t("webradios.playStation", { name: station.name })} onclick={live.resume}><Play size={16} /></button>
+    {:else if live.phase === "failed"}
       <button class="grid size-10 place-items-center rounded-full border border-border" type="button"
         aria-label={t("radio.tryAgain")} onclick={() => player.playStation(station)}><RotateCw size={16} /></button>
     {/if}

@@ -2,7 +2,7 @@ import type Hls from "hls.js";
 import { api, prepareMediaSession } from "$lib/api";
 import { stationUrl, type WebradioStation } from "./types";
 
-type LivePhase = "loading" | "playing" | "failed" | "unsupported";
+type LivePhase = "loading" | "ready" | "playing" | "failed" | "unsupported";
 let station = $state.raw<WebradioStation | null>(null);
 let phase = $state<LivePhase>("loading");
 let stream = $state<string | null>(null);
@@ -35,6 +35,26 @@ function stop() {
   stream = null;
   release?.();
   release = undefined;
+}
+
+// Some mobile browsers require a fresh gesture after the directory resolves.
+async function playAudio(element: HTMLAudioElement) {
+  try {
+    await element.play();
+  } catch (error) {
+    if (audio !== element) return;
+    if (error instanceof DOMException && error.name === "NotAllowedError") {
+      clearTimeout(connectionTimer);
+      phase = "ready";
+    } else {
+      phase = "failed";
+      unload();
+    }
+  }
+}
+
+function resume() {
+  if (audio && phase === "ready") void playAudio(audio);
 }
 
 async function start(next: WebradioStation, volume: number, onRelease: () => void) {
@@ -97,11 +117,11 @@ async function start(next: WebradioStation, volume: number, onRelease: () => voi
       hls = engine;
       engine.on(HlsLight.Events.ERROR, (_, error) => { if (error.fatal) failed(); });
       engine.on(HlsLight.Events.MEDIA_ATTACHED, () => { if (current()) engine.loadSource(url); });
-      engine.on(HlsLight.Events.MANIFEST_PARSED, () => { if (current()) void element.play().catch(failed); });
+      engine.on(HlsLight.Events.MANIFEST_PARSED, () => { if (current()) void playAudio(element); });
       engine.attachMedia(element);
     } else {
       element.src = url;
-      await element.play();
+      await playAudio(element);
     }
   } catch (error) {
     if (!current()) return;
@@ -120,6 +140,7 @@ export const live = {
   get phase() { return phase; },
   get url() { return stream; },
   start,
+  resume,
   stop,
   setVolume(value: number) { if (audio) audio.volume = value; },
 };
