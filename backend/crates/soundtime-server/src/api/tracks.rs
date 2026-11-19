@@ -155,7 +155,9 @@ pub(super) async fn attach_availability<'a>(
     state: &AppState,
     tracks: impl IntoIterator<Item = &'a mut TrackResponse>,
 ) -> Result<(), (StatusCode, String)> {
-    use sea_orm::{DbBackend, FromQueryResult, Statement};
+    use sea_orm::{
+        AccessMode, ConnectionTrait, DbBackend, FromQueryResult, Statement, TransactionTrait,
+    };
     #[derive(FromQueryResult)]
     struct CatalogRow {
         track_id: Uuid,
@@ -181,16 +183,26 @@ pub(super) async fn attach_availability<'a>(
          LEFT JOIN albums al ON al.id = t.album_id",
         [strict.into(), enabled.into(), serde_json::json!(ids).into()],
     );
-    let rows = CatalogRow::find_by_statement(query)
-        .all(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(%e, "track availability lookup failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Track availability unavailable".to_owned(),
-            )
-        })?;
+    // The provider branches give this sparse ID lookup a high estimated cost.
+    // JIT can spend hundreds of milliseconds compiling it for a single saved track.
+    let rows = async {
+        let tx = state
+            .db
+            .begin_with_config(None, Some(AccessMode::ReadOnly))
+            .await?;
+        tx.execute_unprepared("SET LOCAL jit = off").await?;
+        let rows = CatalogRow::find_by_statement(query).all(&tx).await?;
+        tx.commit().await?;
+        Ok::<_, sea_orm::DbErr>(rows)
+    }
+    .await
+    .map_err(|e| {
+        tracing::error!(%e, "track availability lookup failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Track availability unavailable".to_owned(),
+        )
+    })?;
     let catalog: HashMap<_, _> = rows.into_iter().map(|row| (row.track_id, row)).collect();
     for track in tracks {
         if let Some(row) = catalog.get(&track.id) {
