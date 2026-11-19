@@ -6155,6 +6155,7 @@ name = "soundtime-server"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "anyhow",
  "argon2",
  "axum 0.8.8",
  "axum-test",

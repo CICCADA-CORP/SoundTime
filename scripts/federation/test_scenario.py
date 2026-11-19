@@ -52,7 +52,7 @@ class FederationScenarioTests(unittest.TestCase):
         node.name = "A"
         node.telemetry.return_value = {"catalog_entries_received": 5, "audio_bytes_sent": 0,
                                        "audio_bytes_received": 0, "range_proof_bytes_received": 0,
-                                       "range_windows_verified": 0}
+                                       "range_windows_verified": 0, "relay_windows_verified": 0}
         start = scenario.counters([node])
         node.telemetry.return_value["catalog_entries_received"] += 1
         with patch.object(scenario.time, "sleep"), self.assertRaises(scenario.ScenarioError):

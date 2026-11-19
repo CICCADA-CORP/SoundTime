@@ -407,11 +407,10 @@ impl CacheVolume {
         let now = SystemTime::now();
         if now.duration_since(entry.touched).unwrap_or_default()
             > std::time::Duration::from_secs(60)
+            && self.check_owner().is_ok()
         {
-            if self.check_owner().is_ok() {
-                if let Ok(directory) = File::open(self.root.join(hash.to_string())) {
-                    let _ = directory.set_modified(now);
-                }
+            if let Ok(directory) = File::open(self.root.join(hash.to_string())) {
+                let _ = directory.set_modified(now);
             }
         }
         entry.touched = now;

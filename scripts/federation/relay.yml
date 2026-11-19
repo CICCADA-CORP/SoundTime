@@ -1,0 +1,42 @@
+# Compose 2.24.4+ replaces the base backend peer network list. The only
+# three-homed container exposes the official HTTP/WebSocket relay internally.
+x-relay-env: &relay-env
+  P2P_RELAY_URL: http://relay.federation.test:3340
+  P2P_RELAY_ONLY: "true"
+  P2P_BIND_PORT: "0"
+
+services:
+  relay:
+    image: soundtime-federation-relay:${COMPOSE_PROJECT_NAME}
+    pull_policy: never
+    build:
+      context: ../../backend
+      dockerfile: ../docker/Dockerfile.backend
+      target: federation-relay
+    networks:
+      site-a: {aliases: [relay.federation.test]}
+      site-b: {aliases: [relay.federation.test]}
+      site-c: {aliases: [relay.federation.test]}
+    healthcheck:
+      test: ["CMD","curl","--fail","--silent","http://127.0.0.1:3340/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 40
+  backend-a:
+    environment: *relay-env
+    networks: !override
+      site-a: {aliases: [backend]}
+    depends_on:
+      relay: {condition: service_healthy}
+  backend-b:
+    environment: *relay-env
+    networks: !override
+      site-b: {aliases: [backend]}
+    depends_on:
+      relay: {condition: service_healthy}
+  backend-c:
+    environment: *relay-env
+    networks: !override
+      site-c: {aliases: [backend]}
+    depends_on:
+      relay: {condition: service_healthy}

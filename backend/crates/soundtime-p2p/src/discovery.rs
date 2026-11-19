@@ -253,16 +253,8 @@ pub async fn add_and_ping_peer(
     let peer_id = peer_addr.id.to_string();
     info!(%peer_id, "adding peer and pinging");
 
-    let started = chrono::Utc::now();
-    match node.ping_peer(peer_addr).await {
-        Ok(P2pMessage::Pong {
-            node_id,
-            track_count,
-            version,
-        }) => {
-            registry
-                .upsert_peer_versioned(&node_id, None, track_count, version)
-                .await;
+    match node.ping_into(peer_addr, registry).await {
+        Ok(P2pMessage::Pong { node_id, .. }) => {
             let info = match registry.get_peer(&node_id).await {
                 Some(info) => info,
                 None => {
@@ -277,10 +269,7 @@ pub async fn add_and_ping_peer(
                 "unexpected response from {peer_id}"
             )))
         }
-        Err(e) => {
-            registry.failed_since(&peer_id, started, false).await;
-            Err(e)
-        }
+        Err(e) => Err(e),
     }
 }
 
@@ -300,24 +289,13 @@ pub async fn refresh_all_peers(node: &Arc<P2pNode>, registry: &PeerRegistry) {
         };
 
         let peer_addr = EndpointAddr::new(node_id);
-        let started = chrono::Utc::now();
-        match node.ping_peer(peer_addr).await {
-            Ok(P2pMessage::Pong {
-                node_id: _,
-                track_count,
-                version,
-            }) => {
-                registry
-                    .upsert_peer_versioned(&peer.node_id, peer.name.clone(), track_count, version)
-                    .await;
-                if !peer.is_online {
-                    if let Err(error) = node.resume_subscription(node_id).await {
-                        warn!(peer = %peer.node_id, %error, "unable to resume catalogue subscription");
-                    }
-                }
-            }
-            _ => {
-                registry.failed_since(&peer.node_id, started, false).await;
+        if matches!(
+            node.ping_into(peer_addr, registry).await,
+            Ok(P2pMessage::Pong { .. })
+        ) && !peer.is_online
+        {
+            if let Err(error) = node.resume_subscription(node_id).await {
+                warn!(peer = %peer.node_id, %error, "unable to resume catalogue subscription");
             }
         }
     }

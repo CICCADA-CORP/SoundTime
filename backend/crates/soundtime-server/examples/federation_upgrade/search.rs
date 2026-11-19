@@ -190,6 +190,33 @@ pub async fn check(db: &DatabaseConnection) -> Result<()> {
     assert!(ids(&tx, TRACKS, "changedfixture:*", 0, true)
         .await?
         .is_empty());
+    tx.execute_unprepared(include_str!("presence_and_legacy.sql"))
+        .await?;
+    let persist = include_str!("../../../soundtime-p2p/src/persist_presence.sql");
+    for (online, sec, expected) in [
+        (true, 2, true),
+        (false, 1, true),
+        (false, 3, false),
+        (true, 2, false),
+    ] {
+        let stamp = format!("2026-11-19T00:00:0{sec}Z");
+        let peer = json!([{"id":"ordered-peer","name":null,"version":null,"tracks":3,"online":online,
+            "seen":stamp,"checked":stamp}]);
+        tx.execute(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            persist,
+            [peer.into()],
+        ))
+        .await?;
+        let row = tx
+            .query_one(Statement::from_string(
+                DbBackend::Postgres,
+                "SELECT is_online FROM p2p_peers WHERE node_id='ordered-peer'",
+            ))
+            .await?
+            .ok_or("missing durable observation")?;
+        assert_eq!(row.try_get::<bool>("", "is_online")?, expected);
+    }
     tx.rollback().await?;
     Ok(())
 }

@@ -213,14 +213,7 @@ pub async fn add_peer(
     }
     let started = chrono::Utc::now();
     match node.ping_peer(peer_addr).await {
-        Ok(P2pMessage::Pong {
-            node_id: peer_nid,
-            track_count,
-            version,
-        }) => {
-            node.registry()
-                .upsert_peer_versioned(&peer_nid, None, track_count, version)
-                .await;
+        Ok(P2pMessage::Pong { track_count, .. }) => {
             if node.explicit_catalog() && follow {
                 node.request_catalog_from_peer(node_id)
                     .await

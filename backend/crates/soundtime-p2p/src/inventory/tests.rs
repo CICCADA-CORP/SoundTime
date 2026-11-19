@@ -125,7 +125,7 @@ async fn interrupted_inventory_replay_lease_scoping_and_origin_withdrawal() -> R
     let delta = |cursor| {
         serde_json::to_vec(&Delta {
             cursor,
-            change: Change::Put(one.clone()),
+            change: Change::Put(Box::new(one.clone())),
         })
     };
     assert!(apply_delta(&db, b, &delta(15)?).await.is_err());

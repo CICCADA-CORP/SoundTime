@@ -37,6 +37,7 @@ pub(super) struct RangeTransfers {
     failed: Mutex<HashMap<EndpointId, Instant>>,
     pub(super) proof_bytes_received: AtomicU64,
     pub(super) verified_windows: AtomicU64,
+    pub(super) relay_windows_verified: AtomicU64,
 }
 
 impl RangeTransfers {
@@ -61,6 +62,7 @@ impl RangeTransfers {
             failed: Mutex::default(),
             proof_bytes_received: AtomicU64::new(0),
             verified_windows: AtomicU64::new(0),
+            relay_windows_verified: AtomicU64::new(0),
         }
     }
 
@@ -197,6 +199,7 @@ impl P2pNode {
                             self.providers(id, req).await?.contains(&peer),
                             "offer expired"
                         );
+                        let mut relayed = false;
                         let window = if peer == self.node_id() {
                             let encoded = self.encode_range(req).await?;
                             range_transport::decode_window(req, &encoded)?
@@ -208,7 +211,19 @@ impl P2pNode {
                                 .await?;
 
                             let conn = self.ranges.pool.get_connection(peer).await?;
-                            range_transport::fetch_window(&conn, req, track.subscription()).await?
+                            let relay_only_path = || {
+                                let paths = conn.paths();
+                                paths
+                                    .iter()
+                                    .any(|path| path.is_selected() && path.is_relay())
+                                    && paths.iter().all(|path| path.is_relay())
+                            };
+                            let before = relay_only_path();
+                            let verified =
+                                range_transport::fetch_window(&conn, req, track.subscription())
+                                    .await?;
+                            relayed = (before || self._config.relay_only) && relay_only_path();
+                            verified
                         };
                         ensure!(
                             self.providers(id, req).await?.contains(&peer),
@@ -220,6 +235,11 @@ impl P2pNode {
                                 Ordering::Relaxed,
                             );
                             self.ranges.verified_windows.fetch_add(1, Ordering::Relaxed);
+                            if relayed {
+                                self.ranges
+                                    .relay_windows_verified
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
                             self.audio_bytes_received
                                 .fetch_add(window.data.len() as u64, Ordering::Relaxed);
                         }

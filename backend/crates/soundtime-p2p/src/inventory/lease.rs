@@ -104,8 +104,10 @@ pub(crate) async fn current(db: &DatabaseConnection, after: i64) -> Result<Vec<J
     ensure!(after >= 0, "invalid mirror cursor");
     let rows = db
         .query_all(sql(
-            "SELECT relay_cursor,envelope,manifest FROM federation_mirror_leases
-        WHERE relay_cursor>$1 ORDER BY relay_cursor LIMIT 16",
+            "SELECT l.relay_cursor,l.envelope,l.manifest FROM federation_mirror_leases l
+        WHERE l.relay_cursor>$1 AND NOT EXISTS(SELECT FROM blocked_domains b WHERE b.domain=l.provider)
+        AND NOT EXISTS(SELECT FROM federation_peer_policies p WHERE p.node_id=l.provider AND (p.is_banned OR p.source_disabled))
+        ORDER BY l.relay_cursor LIMIT 16",
             [after.into()],
         ))
         .await?;
@@ -175,7 +177,8 @@ pub(crate) async fn accept(
         ))
         .await?
         .is_some();
-    if provider.banned
+    if l.provider == local
+        || provider.banned
         || disabled
         || !(sender_policy.followed || origin.followed || provider.followed || l.origin == local)
     {

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: scripts/test-p2p-federation.sh baseline|compatibility|acceptance|retention"
+    echo "Usage: scripts/test-p2p-federation.sh baseline|compatibility|acceptance|relay|retention|cluster|load-smoke|load-full|rust-tests"
     echo "Set FEDERATION_ARTIFACT_DIR to choose where each run stores its report and logs."
 }
 
@@ -10,7 +10,7 @@ if [[ $# == 1 && $1 == --help ]]; then
     usage
     exit 0
 fi
-if [[ $# != 1 ]] || [[ $1 != baseline && $1 != compatibility && $1 != acceptance && $1 != retention ]]; then
+if [[ $# != 1 ]] || [[ $1 != baseline && $1 != compatibility && $1 != acceptance && $1 != relay && $1 != retention && $1 != cluster && $1 != load-smoke && $1 != load-full && $1 != rust-tests ]]; then
     usage >&2
     exit 2
 fi
@@ -21,11 +21,18 @@ export FEDERATION_CACHE_SIZE=1GB FEDERATION_VERSIONED=false FEDERATION_RETAIN_B=
 if [[ $mode != baseline ]]; then
     export FEDERATION_EXPLICIT_A=true FEDERATION_EXPLICIT_B=true
 fi
-if [[ $mode == acceptance || $mode == retention ]]; then
+if [[ $mode == acceptance || $mode == relay || $mode == retention || $mode == cluster || $mode == load-* ]]; then
     export FEDERATION_EXPLICIT_C=true FEDERATION_RANGES=true FEDERATION_CACHE_SIZE=0 FEDERATION_VERSIONED=true
 fi
 if [[ $mode == retention ]]; then
     export FEDERATION_CACHE_SIZE=256MB FEDERATION_RETAIN_B=true
+fi
+if [[ $mode == load-* ]]; then
+    # Check local generator capacity before building or starting the disposable project.
+    python3 "$(dirname "$0")/federation/load.py" --preflight "$mode"
+    if [[ ${SOUNDTIME_LOAD_CACHE:-cold} == warm ]]; then
+        export FEDERATION_CACHE_SIZE=1GB FEDERATION_RETAIN_B=true
+    fi
 fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -38,6 +45,17 @@ project="st-fed-$(python3 -c 'import secrets; print(secrets.token_hex(8))')"
 export FEDERATION_SECRET
 FEDERATION_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
 compose=(docker compose --env-file /dev/null --project-name "$project" --file "$root/scripts/federation/compose.yml")
+scale=()
+if [[ $mode == cluster ]]; then
+    compose+=(--file "$root/scripts/federation/cluster.yml")
+    scale+=(--scale catalog-http=2)
+fi
+if [[ $mode == relay ]]; then
+    compose+=(--file "$root/scripts/federation/relay.yml")
+    export SOUNDTIME_TEST_RELAY=1
+elif [[ $mode == rust-tests ]]; then
+    compose+=(--file "$root/scripts/federation/rust-tests.yml")
+fi
 stage=prerequisites
 resources_started=false
 images_started=false
@@ -62,7 +80,7 @@ finish() {
         "${compose[@]}" --profile migration down --volumes --timeout 10 > "$run_dir/cleanup.log" 2>&1 || status=1
     fi
     if [[ $images_started == true ]]; then
-        for image in "soundtime-federation-backend:$project" "soundtime-federation-frontend:$project" "soundtime-federation-migration:$project"; do
+        for image in "soundtime-federation-backend:$project" "soundtime-federation-frontend:$project" "soundtime-federation-migration:$project" "soundtime-federation-relay:$project" "soundtime-federation-rust-tests:$project"; do
             if docker image inspect "$image" > /dev/null 2>&1; then
                 docker image rm --no-prune "$image" >> "$run_dir/cleanup.log" 2>&1 || status=1
             fi
@@ -95,18 +113,41 @@ docker info --format '{{.ServerVersion}}' > "$run_dir/docker-version.txt"
 "${compose[@]}" config --quiet
 stage=build
 images_started=true
-for service in backend-a frontend-a migration-fixture; do
+build_services=(backend-a frontend-a migration-fixture)
+if [[ $mode == rust-tests ]]; then build_services=(migration-fixture rust-tests); fi
+if [[ $mode == relay ]]; then build_services+=(relay); fi
+for service in "${build_services[@]}"; do
     "${compose[@]}" build "$service" 2>&1 | tee "$run_dir/build-$service.log"
 done
 
 stage=startup
 resources_started=true
-"${compose[@]}" up --detach --no-build --wait --wait-timeout 180 proxy-a proxy-b proxy-c 2>&1 | tee "$run_dir/startup.log"
+services=(proxy-a proxy-b proxy-c)
+if [[ $mode == rust-tests ]]; then services=(db-a); fi
+"${compose[@]}" up --detach --no-build --wait --wait-timeout 180 ${scale[@]+"${scale[@]}"} "${services[@]}" 2>&1 | tee "$run_dir/startup.log"
 
 # A fourth disposable database on db-a, with no API process or storage scanner attached.
 stage=historical-upgrade
 "${compose[@]}" exec -T db-a createdb -U soundtime soundtime_federation_history
 "${compose[@]}" run --rm -T --no-deps migration-fixture > "$run_dir/historical-references.jsonl" 2> "$run_dir/historical-upgrade.log"
+
+if [[ $mode == rust-tests ]]; then
+    stage=rust-and-postgres
+    "${compose[@]}" exec -T db-a createdb -U soundtime --template soundtime_federation_history soundtime_federation_rust
+    tests=(cargo test --offline --locked --release --workspace --features soundtime-server/redis --lib --bins --tests)
+    "${compose[@]}" run --rm -T --no-deps rust-tests "${tests[@]}" -- --test-threads=1 2>&1 | tee "$run_dir/rust-tests.log"
+    "${compose[@]}" run --rm -T --no-deps rust-tests "${tests[@]}" -- --ignored --test-threads=1 2>&1 | tee "$run_dir/postgres-tests.log"
+    stage=complete
+    exit 0
+fi
+if [[ $mode == relay ]]; then
+    stage=relay-isolation
+    ids=()
+    for service in backend-a backend-b backend-c relay; do
+        ids+=("$("${compose[@]}" ps -q "$service")")
+    done
+    python3 scripts/federation/relay-topology.py "${ids[@]}" > "$run_dir/relay-topology.json"
+fi
 
 proxy_url() {
     local address
@@ -125,6 +166,8 @@ stage=scenario
 export SOUNDTIME_TEST_COMPOSE_PROJECT="$project"
 scenario=scripts/federation/scenario.py
 if [[ $mode == retention ]]; then scenario=scripts/federation/retention.py; fi
+if [[ $mode == load-* ]]; then scenario=scripts/federation/load.py; fi
+if [[ $mode == cluster ]]; then scenario=scripts/federation/cluster.py; fi
 python3 "$scenario" \
     --a "$url_a" --b "$url_b" --c "$url_c" \
     --mode "$mode" --report "$run_dir/report.json" 2>&1 | redact_audio_tokens | tee "$run_dir/scenario.log"

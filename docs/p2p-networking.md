@@ -364,6 +364,8 @@ curl -X POST http://localhost:8080/api/admin/blocked-domains \
 | `P2P_BLOBS_DIR` | `data/p2p/blobs` | iroh-blobs persistent storage path |
 | `P2P_SECRET_KEY_PATH` | `data/p2p/secret_key` | Path to the Ed25519 secret key |
 | `P2P_PUBLIC_DISCOVERY` | `true` | Use the public iroh lookups and relays. Turning it off also disables Mainline DHT. LAN discovery and explicitly configured rendezvous are independent. |
+| `P2P_RELAY_URL` | empty | Use one explicitly configured HTTP(S) iroh relay and seed known peers on it. |
+| `P2P_RELAY_ONLY` | `false` | Disable direct IP transports and use only the configured relay. |
 | `P2P_EXPLICIT_CATALOG` | `false` | Opt in to the control protocol which separates presence and catalogue subscription. |
 | `P2P_VERSIONED_CATALOG` | `false` | Enable signed publication inventories on peers that also enable explicit catalogues. |
 | `P2P_SHARE_CACHED` | `false` | With versioned catalogues and range streaming enabled, announce renewable leases for complete verified cache admissions. |
@@ -471,3 +473,21 @@ If most traffic goes through relays, direct connections may be failing:
 1. Open UDP port 11204 on both ends
 2. Check if your ISP supports QUIC (some block UDP)
 3. Consider hosting peers on the same network for best performance
+
+### Read replicas and a single P2P owner
+
+Use the standalone configuration for one server. A deployment serving more catalogue reads can run the same backend image with the optional `docker/compose.public.yml` overlay. Both images must contain the federation migrations. For example, `docker compose -f docker-compose.yml -f docker/compose.public.yml up -d --scale catalog-http=2` starts two read processes. Supply the same database, signing secret and catalogue policy flags to each process.
+
+Nginx distributes indexed GET requests for search, tracks, albums and artists across the replicas. Searches requesting external peers, account changes, uploads, media and cache operations go to the owner. Each catalogue replica defaults to eight PostgreSQL connections. Readers query the same primary and enforce the private-instance authentication middleware.
+
+An owner configured with `SOUNDTIME_ROLE=worker` acquires a database lease before opening its P2P identity and cache. A standby needs the same original files, blob volume, persistent secret key and a service endpoint that routes to the active worker. On takeover PostgreSQL issues a higher generation and rejects writes from the former owner. An expired owner exits for its supervisor to restart. Returning to the standalone role on a database with a lease also acquires a new generation. Roll back the feature flags using a binary that understands withdrawals and bans.
+
+`P2P_MAX_RANGE_TRANSFERS` limits active verified transfers per direction and `P2P_MAX_RANGES_PER_PEER` limits one remote identity. Set `P2P_UPLOAD_BYTES_PER_SECOND` and `P2P_PEER_UPLOAD_BYTES_PER_SECOND` to bound encoded range responses. The corresponding download settings pace useful incoming audio. Each limited direction permits a burst of one encoded window. A rate of zero disables that rate limit. These settings cover the versioned range protocol. Legacy full-file transfers and browser-facing HTTP consume separate bandwidth.
+
+### Original files and object storage
+
+An HTTP read of an S3 original captures its version ID or ETag and sends one conditional range request for the selected bytes. A local or mounted original keeps an open file descriptor and SoundTime checks the file's size and timestamps after reading each window. A detected change ends that response. The next request opens a fresh version.
+
+Scanning an S3 object for tags and waveform uses a temporary file under `S3_CACHE_PATH`. The defaults allow 512 MiB per analysis and keep 256 MiB free. Configure `S3_ANALYSIS_MAX_BYTES` and `S3_ANALYSIS_MIN_FREE_BYTES` in bytes. One scanner can hold the staging directory at a time. Completion and the next scan after an interruption reclaim the temporary files.
+
+Set `P2P_REFERENCE_IMMUTABLE_UPLOADS=true` only on an instance whose managed filesystem uploads remain immutable at their recorded paths. Large eligible uploads can then be referenced in place by iroh-blobs. A mutable source uses a snapshot for P2P proofs. The browser-facing S3 range reader bypasses old local materializations. Existing files in a legacy S3 cache remain part of the volume's disk usage.

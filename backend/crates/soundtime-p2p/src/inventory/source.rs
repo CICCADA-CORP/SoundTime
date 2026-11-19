@@ -29,7 +29,7 @@ pub(crate) enum Response {
     Mirrors(Vec<super::lease::JournalEntry>),
     Snapshot { entries: Vec<Entry>, done: bool },
     Changes(Vec<Delta>),
-    Withdrawal(Option<SignedPublication>),
+    Withdrawal(Option<Box<SignedPublication>>),
 }
 
 // The historical envelope always comes from the frozen journal. Never attach a
@@ -100,10 +100,10 @@ fn event(key: &SecretKey, row: &QueryResult) -> Result<Delta> {
     };
     Ok(Delta {
         cursor,
-        change: Change::Put(Entry {
+        change: Change::Put(Box::new(Entry {
             publication: SignedPublication::sign(key, manifest)?,
             offer_until: offer.then(|| chrono::Utc::now().timestamp() + MAX_LEASE_SECS / 2),
-        }),
+        })),
     })
 }
 
@@ -143,7 +143,7 @@ pub(crate) async fn answer(
             let mut entries = Vec::with_capacity(rows.len().min(PAGE_ENTRIES));
             for row in rows.iter().take(PAGE_ENTRIES) {
                 match event(key, row)?.change {
-                    Change::Put(entry) => entries.push(entry),
+                    Change::Put(entry) => entries.push(*entry),
                     _ => bail!("snapshot contains an invalid publication"),
                 }
             }
@@ -167,7 +167,9 @@ pub(crate) async fn answer(
             origin,
             publication,
         } => Ok(Response::Withdrawal(
-            withdrawal(db, key, origin, publication).await?,
+            withdrawal(db, key, origin, publication)
+                .await?
+                .map(Box::new),
         )),
     }
 }

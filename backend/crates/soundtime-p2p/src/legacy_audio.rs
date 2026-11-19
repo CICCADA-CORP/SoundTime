@@ -5,7 +5,7 @@ use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt};
 use iroh::{EndpointAddr, EndpointId};
 use iroh_blobs::Hash;
-use sea_orm::{ConnectionTrait, DbBackend, Statement};
+use sea_orm::{ConnectionTrait, DatabaseTransaction, DbBackend, Statement, TransactionTrait};
 use soundtime_db::media_access;
 use std::{sync::Arc, time::Duration};
 use tracing::warn;
@@ -18,7 +18,7 @@ impl P2pNode {
     async fn legacy_grants(&self, id: Uuid, hash: Hash) -> Result<(bool, bool), P2pError> {
         let row=self.db.query_one(sql("SELECT
                 (p.state='unresolved' AND t.content_hash=$2 AND t.file_path='p2p://'||$2) IS TRUE AS legacy,
-                ((p.state='unresolved' AND cp.track_id IS NOT NULL AND cp.content_hash=$2) OR
+                ((p.state='unresolved' AND cp.track_id IS NOT NULL AND cp.content_hash=$2 AND t.content_hash=$2 AND t.file_path='p2p://'||$2) OR
                  (p.state='active' AND v.content_hash=$2 AND (own.is_local OR confirmed.track_id IS NOT NULL))) IS TRUE AS retained
             FROM tracks t JOIN track_publications p ON p.track_id=t.id
             LEFT JOIN federation_legacy_copies cp ON cp.track_id=t.id
@@ -46,7 +46,7 @@ impl P2pNode {
         let (legacy, retained) = self.legacy_grants(id, hash).await?;
         if retained {
             if let Ok(bytes) = self.get_local_track(hash).await {
-                if self.legacy_grants(id, hash).await?.1 {
+                if Hash::new(&bytes) == hash && self.legacy_grants(id, hash).await?.1 {
                     return Ok((bytes, legacy.then_some(raw)));
                 }
             }
@@ -132,6 +132,9 @@ impl P2pNode {
                 return Err(P2pError::TrackNotFound(id.to_string()));
             }
             let store = async {
+                if !self.cache_on_play() {
+                    return Ok(());
+                }
                 if let Some(mut writer) =
                     self.reserve_cached_version(hash, data.len() as u64).await?
                 {
@@ -139,6 +142,10 @@ impl P2pNode {
                         writer.append(chunk).await?;
                     }
                     let _guard = writer.commit_guard(false).await?;
+                    self.bind_legacy_copy(id, hash).await?;
+                } else if let Some(_guard) = self.blob_cache.read_guard(hash) {
+                    // The independently authenticated full transfer also proves this
+                    // UUID can share storage with an already admitted content hash.
                     self.bind_legacy_copy(id, hash).await?;
                 }
                 Ok::<_, anyhow::Error>(())
@@ -151,17 +158,39 @@ impl P2pNode {
         Err(P2pError::TrackNotFound(id.to_string()))
     }
 
-    async fn bind_legacy_copy(&self, id: Uuid, hash: Hash) -> Result<(), P2pError> {
-        self.db
-            .execute(sql(
-                "INSERT INTO federation_legacy_copies(track_id,content_hash)
+    async fn lock_legacy_copy(&self, hash: Hash) -> Result<DatabaseTransaction, P2pError> {
+        let tx = self.db.begin().await?;
+        tx.query_one(sql(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1,41))",
+            [hash.to_string().into()],
+        ))
+        .await?;
+        Ok(tx)
+    }
+
+    async fn bind_legacy_copy(&self, id: Uuid, hash: Hash) -> anyhow::Result<()> {
+        let tx = self.lock_legacy_copy(hash).await?;
+        if !self.cache_contains(hash) && !self.blob_store.blobs().has(hash).await? {
+            tx.commit().await?;
+            return Ok(());
+        }
+        // Tags can be recovered before the background v34 backfill reaches this UUID.
+        tx.query_one(sql(
+            "SELECT federation_project_track(t,true) FROM tracks t WHERE t.id=$1
+          AND NOT EXISTS(SELECT FROM track_publications p WHERE p.track_id=t.id)",
+            [id.into()],
+        ))
+        .await?;
+        tx.execute(sql(
+            "INSERT INTO federation_legacy_copies(track_id,content_hash)
            SELECT t.id,t.content_hash FROM tracks t JOIN track_publications p ON p.track_id=t.id
            WHERE t.id=$1 AND p.state='unresolved' AND t.content_hash=$2 AND t.file_path='p2p://'||$2
            AND NOT EXISTS(SELECT FROM federation_legacy_denied_hashes x WHERE x.content_hash=$2)
            ON CONFLICT(track_id) DO UPDATE SET content_hash=excluded.content_hash",
-                [id.into(), hash.to_string().into()],
-            ))
-            .await?;
+            [id.into(), hash.to_string().into()],
+        ))
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -210,14 +239,18 @@ impl P2pNode {
     }
 
     async fn forget_missing_legacy(&self, hash: Hash) -> anyhow::Result<()> {
-        if !self.has_blob(hash).await {
-            self.db
-                .execute(sql(
-                    "DELETE FROM federation_legacy_copies WHERE content_hash=$1",
-                    [hash.to_string().into()],
-                ))
-                .await?;
+        if self.cache_contains(hash) {
+            return Ok(());
         }
+        let tx = self.lock_legacy_copy(hash).await?;
+        if !self.cache_contains(hash) && !self.blob_store.blobs().has(hash).await? {
+            tx.execute(sql(
+                "DELETE FROM federation_legacy_copies WHERE content_hash=$1",
+                [hash.to_string().into()],
+            ))
+            .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 

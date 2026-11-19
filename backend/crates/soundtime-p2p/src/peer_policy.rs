@@ -104,7 +104,7 @@ pub async fn shareable(
 ) -> Result<Vec<String>, DbErr> {
     // Pick a point on the keyspace and wrap once. Both ranges use the index;
     // an instance with hundreds of subscriptions can expose different samples.
-    let pivot=data_encoding::HEXLOWER.encode(&rand::random::<[u8;32]>());
+    let pivot = data_encoding::HEXLOWER.encode(&rand::random::<[u8; 32]>());
     db.query_all(Statement::from_sql_and_values(
         DbBackend::Postgres,
         "WITH eligible AS NOT MATERIALIZED (SELECT p.node_id FROM federation_peer_policies p
@@ -115,7 +115,7 @@ pub async fn shareable(
            UNION ALL
            (SELECT node_id,1 AS part FROM eligible WHERE node_id < $3 ORDER BY node_id LIMIT $2)
          ) sampled ORDER BY part,node_id LIMIT $2",
-        [recipient.into(), limit.into(),pivot.into()],
+        [recipient.into(), limit.into(), pivot.into()],
     ))
     .await?
     .iter()

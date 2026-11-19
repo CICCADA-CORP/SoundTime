@@ -32,7 +32,7 @@ def run(args, report):
     for x in nodes:
         for y in nodes:
             if x != y:
-                x.connect(y, follow=True)
+                x.connect(y, follow=not (x is c and y is b))
     b_id = wait_for("original on B", lambda: b.search("Rareorigin"))
     c_id = wait_for("original on C", lambda: c.search("Rareorigin"))
     endpoint = "/admin/cache/tracks/" + b_id + "/pin"
@@ -52,11 +52,13 @@ def run(args, report):
     wait_for("restarted B", lambda: ready(b), timeout=60)
     require(b.node_id == identity and b.call(endpoint)["pinned"], "Restart lost the public identity or pin")
     for x, y in [(b,a),(a,b),(c,b),(b,c)]:
-        x.connect(y, follow=True)
+        x.connect(y, follow=not (x is c and y is b))
 
     # Ban A on C to guarantee the fetch cannot accidentally select the origin;
     # then stop A to establish that B's durable copy works independently of A.
     ban = c.call("/admin/blocked-domains", method="POST", body={"domain":a.node_id,"reason":"retention test"})
+    wait_for("unfollowed B offered the pinned publication to C",
+             lambda: b.node_id in c.call("/admin/p2p/tracks/" + c_id + "/mirrors")["providers"], timeout=60)
     switch_backend("A", False)
     try:
         def from_mirror():
@@ -78,7 +80,7 @@ def run(args, report):
     wait_for("restarted origin", lambda: ready(a), timeout=60)
     c.call("/admin/blocked-domains/" + ban["id"],method="DELETE")
     for x,y in [(a,b),(b,a),(a,c),(c,a)]:
-        x.connect(y, follow=True)
+        x.connect(y, follow=not (x is c and y is b))
     a.call("/tracks/" + source,method="DELETE")
     wait_for("pinned B rejects signed withdrawal",lambda:probe_stream(b,b_id,audio)==410)
     wait_for("C rejects signed withdrawal",lambda:probe_stream(c,c_id,audio)==410)

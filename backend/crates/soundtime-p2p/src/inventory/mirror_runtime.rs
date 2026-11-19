@@ -115,7 +115,7 @@ impl P2pNode {
             let _permit = permit;
             let origin = offer.provider.lease.origin;
             let peers = node.registry.online_peers().await;
-            let msg = &P2pMessage::MirrorOffer(offer);
+            let msg = &P2pMessage::MirrorOffer(Box::new(offer));
             let node = &node;
             stream::iter(peers)
                 .for_each_concurrent(4, |peer| async move {
@@ -152,6 +152,8 @@ impl P2pNode {
                 anyhow::bail!("unexpected mirror index")
             };
             ensure!(rows.len() <= 16, "oversized mirror index");
+            self.catalog_entries_received
+                .fetch_add(rows.len() as u64, std::sync::atomic::Ordering::Relaxed);
             let last = rows.len() < 16;
             for event in rows {
                 ensure!(event.cursor > after, "unordered mirror journal");
@@ -177,18 +179,22 @@ impl P2pNode {
         let mut shutdown = node.shutdown_tx.subscribe();
         let mut evicted = node.blob_cache.evictions();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(10));
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut after = None;
+            let mut next_scan = tokio::time::Instant::now();
             loop {
                 tokio::select! {
                     _=shutdown.changed()=>break,
                     event=evicted.recv()=>match event{
                         Ok(hash)=>if let Err(e)=node.refresh_cached_hash(hash).await{tracing::warn!(%hash,%e,"cache eviction publication refresh deferred");},
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>after=None,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>{after=None;next_scan=tokio::time::Instant::now();},
                         Err(tokio::sync::broadcast::error::RecvError::Closed)=>break,
                     },
-                    _=tick.tick()=>if let Err(e)=node.refresh_cached_page(&mut after).await{tracing::warn!(%e,"mirror reconciliation deferred");},
+                    _=tick.tick()=>if after.is_some() || tokio::time::Instant::now()>=next_scan {
+                        if let Err(e)=node.refresh_cached_page(&mut after).await {tracing::warn!(%e,"mirror reconciliation deferred");}
+                        next_scan=tokio::time::Instant::now()+Duration::from_secs(60);
+                    },
                 }
             }
         });
@@ -223,14 +229,27 @@ impl P2pNode {
         }
     }
     async fn refresh_cached_page(self: &Arc<Self>, after: &mut Option<(Uuid, i64)>) -> Result<()> {
-        let rows=self.db.query_all(sql("SELECT track_id,revision FROM federation_cached_publications
-             WHERE $1::uuid IS NULL OR (track_id,revision)>($1,$2) ORDER BY track_id,revision LIMIT 128",
-             [after.map(|(id,_)|id).into(),after.map(|(_,rev)|rev).into()])).await?;
+        let rows=self.db.query_all(sql("SELECT c.track_id,c.revision,c.content_hash,p.state='active' AND p.revision=c.revision
+              AND NOT EXISTS(SELECT FROM federation_hidden_publications h WHERE h.track_id=p.track_id)
+              AND NOT EXISTS(SELECT FROM federation_content_blocks b WHERE b.content_hash=c.content_hash) AS authorized,
+              coalesce(l.active,false) AS offered,coalesce(l.expires_at>now()+interval '20 minutes',false) AS fresh
+             FROM federation_cached_publications c JOIN track_publications p ON p.track_id=c.track_id
+             LEFT JOIN federation_mirror_leases l ON l.track_id=c.track_id AND l.revision=c.revision AND l.provider=$3
+             WHERE $1::uuid IS NULL OR (c.track_id,c.revision)>($1,$2) ORDER BY c.track_id,c.revision LIMIT 128",
+             [after.map(|(id,_)|id).into(),after.map(|(_,rev)|rev).into(),self.node_id().to_string().into()])).await?;
         for row in &rows {
             let id = row.try_get("", "track_id")?;
             let rev = row.try_get("", "revision")?;
-            self.revalidate_cached(id, rev).await?;
             *after = Some((id, rev));
+            let present = self.cache_contains(row.try_get::<String>("", "content_hash")?.parse()?);
+            let offered: bool = row.try_get("", "offered")?;
+            if !present
+                || !row.try_get::<bool>("", "authorized")?
+                || self.share_cached() != offered
+                || (offered && !row.try_get::<bool>("", "fresh")?)
+            {
+                self.revalidate_cached(id, rev).await?;
+            }
         }
         if rows.len() < 128 {
             *after = None;

@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 from uuid import UUID
 import wave
@@ -89,9 +89,16 @@ class Instance:
         status = self.call("/p2p/status")
         require(status["enabled"] and status["node_id"], f"{self.name}: P2P disabled")
         self.node_id = status["node_id"]
+        transport = self.telemetry()
+        self.relay_only = transport["relay_only"]
+        if self.relay_only:
+            url = urlsplit(status.get("relay_url") or "")
+            require(status["relay_connected"] and (url.hostname or "").rstrip(".") == "relay.federation.test"
+                    and url.port == 3340 and not transport["direct_addresses"],
+                    f"{self.name}: expected only the local test relay")
         override = os.getenv(f"SOUNDTIME_TEST_{self.name}_DIRECT")
-        self.addresses = override.split(",") if override else self.telemetry()["direct_addresses"]
-        require(self.addresses, f"{self.name}: no direct socket addresses")
+        self.addresses = override.split(",") if override else transport["direct_addresses"]
+        require((not self.addresses) if self.relay_only else bool(self.addresses), f"{self.name}: unexpected direct sockets")
 
     def add_peer(self, other, follow=None):
         payload = {"node_id": other.node_id, "direct_addresses": other.addresses}
@@ -118,13 +125,13 @@ class Instance:
         expected = "Catalogue followed" if followed else "Catalogue unfollowed"
         require(result["message"] == expected, f"{self.name}: {result['message']}")
 
-    def upload(self, title, pcm):
+    def upload(self, title, pcm, extension="wav", mime="audio/wav"):
         boundary = secrets.token_hex(24)
         fields = [
             f'--{boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n{title}\r\n'.encode(),
             f'--{boundary}\r\nContent-Disposition: form-data; name="artist"\r\n\r\nSoundTime fixture\r\n'.encode(),
-            (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{title}.wav"'
-             '\r\nContent-Type: audio/wav\r\n\r\n').encode(),
+            (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{title}.{extension}"'
+             f'\r\nContent-Type: {mime}\r\n\r\n').encode(),
             pcm, f"\r\n--{boundary}--\r\n".encode(),
         ]
         result = self.call("/upload", method="POST", body=b"".join(fields),
@@ -184,6 +191,7 @@ def counters(instances):
         readings[node.name]["catalog_entries"] = status["catalog_entries_received"]
         readings[node.name]["proof_bytes"] = status["range_proof_bytes_received"]
         readings[node.name]["verified_windows"] = status["range_windows_verified"]
+        readings[node.name]["relay_windows"] = status["relay_windows_verified"]
         require(all(type(n) is int and n >= 0 for n in readings[node.name].values()),
                 f"Invalid transport counters on {node.name}")
     return readings
@@ -259,7 +267,7 @@ def discover_and_subscribe(nodes, mode, report, main_title, cancel_title):
     wait_for("B's catalogue after reciprocal subscription", lambda: a.search("Firstlocal"))
 
     start = counters(nodes)
-    if mode == "acceptance":
+    if mode in ("acceptance", "relay"):
         b.connect(c, follow=False)
         c.connect(b, follow=False)
         quiet_catalogue(nodes, start, measurements, "third_modern_presence")
@@ -371,7 +379,10 @@ def switch_backend(name, running):
     native_driver = os.getenv("SOUNDTIME_TEST_FAULT_DRIVER")
     if re.fullmatch(r"st-fed-[0-9a-f]{16}", project):
         command = ["docker", "compose", "--env-file", "/dev/null", "--project-name", project,
-                   "--file", str(Path(__file__).with_name("compose.yml")), action]
+                   "--file", str(Path(__file__).with_name("compose.yml"))]
+        if os.getenv("SOUNDTIME_TEST_RELAY") == "1":
+            command += ["--file", str(Path(__file__).with_name("relay.yml"))]
+        command.append(action)
         if not running:
             command += ["--timeout", "3"]
         command.append("backend-" + name.lower())
@@ -431,8 +442,8 @@ def origin_failure_cycle(nodes, tracks, audio, playlists, measurements):
     require(after["A"]["sent"] >= 65536 and after["C"]["sent"] == 0, "Unblocked publication did not return to A")
     measurements["peer_unban"] = after
 
-    switch_origin(False)
     try:
+        switch_origin(False)
         # Actively confirm the failed authenticated connection. This doesn't unfollow
         # the catalogue, allowing its UUID to be restored after the origin returns.
         outcome = b.add_peer(a, follow=True)
@@ -462,7 +473,7 @@ def origin_failure_cycle(nodes, tracks, audio, playlists, measurements):
 
 
 def check(report, name, passed, milestone=1):
-    report["checks"][name] = {"passed": bool(passed), "enforced": report["mode"] == "acceptance", "task": milestone}
+    report["checks"][name] = {"passed": bool(passed), "enforced": report["mode"] in ("acceptance","relay"), "task": milestone}
 
 
 def exercise(args, report):
@@ -487,7 +498,9 @@ def _exercise(args, report, stack):
     report["nodes"] = {n.name: {"node_id": n.node_id, "direct_addresses": n.addresses} for n in nodes}
     modes = {n.name: n.telemetry()["explicit_catalog"] for n in nodes}
     report["explicit_catalog"] = modes
-    pilot = args.mode == "acceptance"
+    report["relay_only"] = {n.name: n.relay_only for n in nodes}
+    require(all(n.relay_only == (args.mode == "relay") for n in nodes), "Unexpected physical P2P topology")
+    pilot = args.mode in ("acceptance","relay")
     require(modes == {"A": args.mode != "baseline", "B": args.mode != "baseline", "C": pilot},
             f"Unexpected wire modes for {args.mode}: {modes}")
     require(len({n.node_id for n in nodes}) == 3, "Duplicate P2P identity")
@@ -558,6 +571,10 @@ def _exercise(args, report, stack):
                                           "p2p": remote}
     require(remote["B"]["received"] >= delivered and remote["A"]["sent"] >= delivered,
             "Cold range did not traverse the expected A to B P2P path")
+    if args.mode == "relay":
+        require(remote["B"]["relay_windows"] == remote["B"]["verified_windows"] == 1,
+                "Cold verified audio did not traverse the isolated relay")
+        check(report, "verified_cold_range_on_relay", True, milestone=11)
     check(report, "range_downloads_less_than_the_entire_file",
           remote["B"]["received"] < len(main_audio), milestone=9)
 
@@ -674,7 +691,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ("a", "b", "c"):
         parser.add_argument("--" + option, required=True)
-    parser.add_argument("--mode", required=True, choices=("baseline", "compatibility", "acceptance"))
+    parser.add_argument("--mode", required=True, choices=("baseline", "compatibility", "acceptance", "relay"))
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
     report = {"schema": 1, "mode": args.mode, "started_at": datetime.now(timezone.utc).isoformat(),
@@ -685,7 +702,7 @@ def main():
         report["worktree_dirty"] = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=root))
         exercise(args, report)
         failed = [k for k, v in report["checks"].items() if v["enforced"] and not v["passed"]]
-        if args.mode == "acceptance" and failed:
+        if args.mode in ("acceptance","relay") and failed:
             raise ScenarioError("Failed acceptance checks: " + ", ".join(failed))
         report["status"] = "observed" if args.mode == "baseline" else ("compatible" if args.mode == "compatibility" else "accepted")
     except Exception as exc:

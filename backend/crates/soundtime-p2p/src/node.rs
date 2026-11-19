@@ -79,6 +79,7 @@ const MAX_P2P_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 const MAX_CONCURRENT_P2P_CONNECTIONS: usize = 64;
 
 /// Sanitize a string for use as a filesystem directory name.
+#[cfg(test)]
 fn sanitize_for_path(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -167,7 +168,7 @@ pub enum P2pMessage {
     StopCatalog,
     CatalogChanged,
     SignedWithdrawal(crate::inventory::SignedPublication),
-    MirrorOffer(crate::inventory::lease::Offer),
+    MirrorOffer(Box<crate::inventory::lease::Offer>),
     /// Peer discovery pong
     Pong {
         node_id: String,
@@ -271,6 +272,8 @@ pub struct P2pConfig {
     pub share_identity: bool,
     /// Use the public n0 address lookups and relays.
     pub enable_public_discovery: bool,
+    pub relay_url: Option<String>,
+    pub relay_only: bool,
     /// Whether to enable local network (mDNS) discovery
     pub enable_local_discovery: bool,
     /// Whether to publish and resolve known EndpointIds on the Mainline DHT
@@ -298,6 +301,8 @@ impl Default for P2pConfig {
             cache_on_play: false,
             share_identity: false,
             enable_public_discovery: true,
+            relay_url: None,
+            relay_only: false,
             enable_local_discovery: true,
             enable_dht_discovery: true,
             rendezvous_url: None,
@@ -368,6 +373,11 @@ impl P2pConfig {
             share_identity: std::env::var("P2P_SHARE_IDENTITY")
                 .is_ok_and(|v| v.eq_ignore_ascii_case("true")),
             enable_public_discovery,
+            relay_url: std::env::var("P2P_RELAY_URL")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
+            relay_only: std::env::var("P2P_RELAY_ONLY")
+                .is_ok_and(|s| s.eq_ignore_ascii_case("true")),
             enable_local_discovery,
             enable_dht_discovery,
             rendezvous_url: std::env::var("P2P_RENDEZVOUS_URL")
@@ -396,6 +406,8 @@ pub struct TransportStats {
     pub audio_bytes_received: u64,
     pub range_proof_bytes_received: u64,
     pub range_windows_verified: u64,
+    pub relay_windows_verified: u64,
+    pub relay_only: bool,
     pub range_streaming: bool,
     /// Count of received track announcements, including entries later filtered by policy.
     pub catalog_entries_received: u64,
@@ -437,6 +449,7 @@ pub struct P2pNode {
     /// Semaphore to limit concurrent incoming P2P connections.
     conn_semaphore: Arc<tokio::sync::Semaphore>,
     manual_addresses: MemoryLookup,
+    manual_relay: Option<iroh::RelayUrl>,
     catalogs: catalogs::Catalogs,
     pex_workers: Arc<tokio::sync::Semaphore>,
     subscribers: tokio::sync::RwLock<std::collections::HashSet<EndpointId>>,
@@ -552,10 +565,34 @@ impl P2pNode {
 
         // N0 configures the public relays and DNS/Pkarr address lookups.
         let manual_addresses = MemoryLookup::new();
+        let manual_relay = config
+            .relay_url
+            .as_deref()
+            .map(str::parse::<iroh::RelayUrl>)
+            .transpose()
+            .map_err(|e| P2pError::Endpoint(format!("invalid P2P_RELAY_URL: {e}")))?;
+        if manual_relay.as_ref().is_some_and(|u| {
+            !matches!(u.scheme(), "http" | "https")
+                || u.host_str().is_none()
+                || !u.username().is_empty()
+                || u.password().is_some()
+                || u.query().is_some()
+                || u.fragment().is_some()
+        }) {
+            return Err(P2pError::Endpoint(
+                "expected an HTTP(S) relay URL without credentials, query or fragment".into(),
+            ));
+        }
+        if config.relay_only && manual_relay.is_none() {
+            return Err(P2pError::Endpoint(
+                "P2P_RELAY_ONLY requires P2P_RELAY_URL".into(),
+            ));
+        }
         let builder = if config.enable_public_discovery {
             Endpoint::builder(iroh::endpoint::presets::N0)
         } else {
             Endpoint::builder(iroh::endpoint::presets::Minimal)
+                .dns_resolver(iroh::dns::DnsResolver::builder().disable_fallback().build())
                 .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         };
         let mut protocols = vec![SOUNDTIME_ALPN.to_vec()];
@@ -572,6 +609,13 @@ impl P2pNode {
             .address_lookup(manual_addresses.clone())
             .secret_key(secret_key)
             .alpns(protocols);
+        if let Some(url) = &manual_relay {
+            builder =
+                builder.relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(url.clone())));
+        }
+        if config.relay_only {
+            builder = builder.clear_ip_transports();
+        }
 
         // Optionally enable local network discovery (mDNS)
         if config.enable_local_discovery {
@@ -590,7 +634,7 @@ impl P2pNode {
         }
 
         // Bind to the configured port (0 = random)
-        if config.bind_port > 0 {
+        if config.bind_port > 0 && !config.relay_only {
             builder = builder
                 .bind_addr(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, config.bind_port))
                 .map_err(|e| P2pError::Endpoint(e.to_string()))?;
@@ -608,7 +652,7 @@ impl P2pNode {
         // Wait for relay connection (up to 15 seconds)
         // With discovery services registered, the endpoint will automatically
         // connect to one of n0's production relay servers and publish its address.
-        if config.enable_public_discovery {
+        if config.enable_public_discovery || manual_relay.is_some() {
             info!("waiting for relay connection...");
             match tokio::time::timeout(std::time::Duration::from_secs(15), endpoint.online()).await
             {
@@ -707,6 +751,7 @@ impl P2pNode {
             health_manager,
             conn_semaphore: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_P2P_CONNECTIONS)),
             manual_addresses,
+            manual_relay,
             pex_workers: Arc::new(tokio::sync::Semaphore::new(2)),
             subscribers: Default::default(),
             audio_bytes_sent: AtomicU64::new(0),
@@ -974,6 +1019,8 @@ impl P2pNode {
             audio_bytes_received: self.audio_bytes_received.load(Ordering::Relaxed),
             range_proof_bytes_received: self.ranges.proof_bytes_received.load(Ordering::Relaxed),
             range_windows_verified: self.ranges.verified_windows.load(Ordering::Relaxed),
+            relay_windows_verified: self.ranges.relay_windows_verified.load(Ordering::Relaxed),
+            relay_only: self._config.relay_only,
             range_streaming: self.range_streaming(),
             catalog_entries_received: self.catalog_entries_received.load(Ordering::Relaxed),
             explicit_catalog: self.explicit_catalog(),
@@ -1273,7 +1320,15 @@ impl P2pNode {
         }
         let started = chrono::Utc::now();
         let result = if followed {
-            self.request_catalog_from_peer(id).await
+            // Announce the durable subscription before the initial pull; this also
+            // negotiates capabilities when an admin follows a previously offline ID.
+            match self.ping_peer(EndpointAddr::new(id)).await {
+                Ok(P2pMessage::Pong { .. }) => self.request_catalog_from_peer(id).await,
+                Ok(_) => Err(P2pError::Connection(
+                    "invalid subscription presence reply".into(),
+                )),
+                Err(error) => Err(error),
+            }
         } else if self
             .registry
             .get_peer(&peer)
@@ -1354,25 +1409,23 @@ impl P2pNode {
             if policy.banned {
                 continue;
             }
-            if let Ok(Ok(P2pMessage::Pong {
-                node_id,
-                track_count,
-                version,
-            })) = tokio::time::timeout(
+            let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 self.ping_peer(EndpointAddr::new(id)),
-            )
-            .await
-            {
-                self.registry
-                    .upsert_peer_versioned(&node_id, None, track_count, version)
-                    .await;
-            }
+            ).await;
         }
     }
 
     /// Send a ping to a peer and wait for pong.
     pub async fn ping_peer(&self, peer_addr: EndpointAddr) -> Result<P2pMessage, P2pError> {
+        self.ping_into(peer_addr, self.registry()).await
+    }
+
+    pub(super) async fn ping_into(
+        &self,
+        peer_addr: EndpointAddr,
+        registry: &PeerRegistry,
+    ) -> Result<P2pMessage, P2pError> {
         let started = chrono::Utc::now();
         let source = peer_addr.id.to_string();
         let result = match tokio::time::timeout(
@@ -1390,12 +1443,12 @@ impl P2pNode {
                 track_count,
                 version,
             }) if node_id == &source => {
-                self.registry
+                registry
                     .upsert_peer_versioned(&source, None, *track_count, version.clone())
                     .await;
             }
             Err(P2pError::Connection(_) | P2pError::Endpoint(_) | P2pError::Io(_)) => {
-                self.registry.failed_since(&source, started, false).await;
+                registry.failed_since(&source, started, false).await;
             }
             _ => {}
         }
@@ -1413,7 +1466,12 @@ impl P2pNode {
         } else {
             None
         };
-        if peer_addr.ip_addrs().next().is_some() {
+        let peer_addr = if let Some(url) = &self.manual_relay {
+            peer_addr.with_relay_url(url.clone())
+        } else {
+            peer_addr
+        };
+        if peer_addr.ip_addrs().next().is_some() || peer_addr.relay_urls().next().is_some() {
             self.manual_addresses.set_endpoint_info(peer_addr.clone());
         }
         let conn = self.conn_pool.get_connection(peer_addr.id).await.map_err(|e| {
@@ -1532,18 +1590,11 @@ impl P2pNode {
                 continue;
             }
             let ping = self.ping_peer(EndpointAddr::new(id));
-            let Ok(Ok(P2pMessage::Pong {
-                track_count,
-                version,
-                ..
-            })) = tokio::time::timeout(std::time::Duration::from_secs(15), ping).await
+            let Ok(Ok(P2pMessage::Pong { .. })) = tokio::time::timeout(std::time::Duration::from_secs(15), ping).await
             else {
                 debug!(peer = %peer_id, "rendezvous peer did not respond to ping");
                 continue;
             };
-            self.registry
-                .upsert_peer_versioned(&peer_id, None, track_count, version)
-                .await;
             info!(peer = %peer_id, "discovered SoundTime peer via rendezvous");
             if !self.explicit_catalog() {
                 let node = Arc::clone(self);
@@ -1584,11 +1635,8 @@ impl P2pNode {
                 Ok(P2pMessage::Pong {
                     node_id: nid,
                     track_count,
-                    version,
+                    ..
                 }) => {
-                    self.registry
-                        .upsert_peer_versioned(&nid, None, track_count, version)
-                        .await;
                     info!(peer = %nid, %track_count, "seed peer connected and registered");
                     // Exchange peer lists to discover the wider network
                     self.discover_via_peer(node_id).await;
@@ -2079,16 +2127,8 @@ impl P2pNode {
                 continue;
             }
             let resume = async {
-                if let P2pMessage::Pong {
-                    track_count,
-                    version,
-                    ..
-                } = self.ping_peer(EndpointAddr::new(id)).await?
-                {
+                if let P2pMessage::Pong { .. } = self.ping_peer(EndpointAddr::new(id)).await? {
                     self.resume_subscription(id).await?;
-                    self.registry
-                        .upsert_peer_versioned(peer, None, track_count, version)
-                        .await;
                 }
                 Ok::<_, P2pError>(())
             };
@@ -2791,6 +2831,10 @@ impl P2pNode {
     /// Internal: handle a single incoming connection.
     async fn handle_connection(self: &Arc<Self>, conn: Connection) -> Result<(), P2pError> {
         let peer_id = conn.remote_id().to_string();
+        if let Some(url) = &self.manual_relay {
+            self.manual_addresses
+                .add_endpoint_info(EndpointAddr::new(conn.remote_id()).with_relay_url(url.clone()));
+        }
 
         info!(%peer_id, "incoming connection");
 
@@ -2852,7 +2896,9 @@ impl P2pNode {
             };
 
             let entries = match &msg {
-                P2pMessage::AnnounceTrack(_) => 1,
+                P2pMessage::AnnounceTrack(_)
+                | P2pMessage::MirrorOffer(_)
+                | P2pMessage::SignedWithdrawal(_) => 1,
                 P2pMessage::CatalogSync(items) | P2pMessage::CatalogDelta { tracks: items, .. } => {
                     items.len() as u64
                 }
@@ -3361,7 +3407,7 @@ impl P2pNode {
                     .await
                     .map_err(|e| P2pError::Connection(e.to_string()))?;
                     if changed && offer.provider.lease.origin == self.node_id() {
-                        self.notify_mirror_change(offer).await;
+                        self.notify_mirror_change(*offer).await;
                     }
                 }
                 let _ = send.finish();

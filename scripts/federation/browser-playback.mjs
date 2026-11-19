@@ -201,7 +201,8 @@ try {
   }
   async function playback() {
     await send("Page.navigate", { url: origin + "/playlists/" + encodeURIComponent(playlist) });
-    await until("the remote track in its playlist", () => evaluate("Boolean(" + button + ")"));
+    await until("the remote track in its playlist", () => evaluate(
+      "location.pathname===" + JSON.stringify("/playlists/" + playlist) + " && Boolean(" + button + ")"));
     const started = performance.now();
     await evaluate(button + ".click()", true);
     // This slider is updated by timeupdate on the player's own HTMLAudioElement.
@@ -232,6 +233,17 @@ try {
       const {phase,listeners}=JSON.parse(line);
       let result;
       if (phase==="add") result=await addToPlaylists(listeners);
+      else if (phase==="measure") {
+        await asListener(listeners[0]);
+        const began=performance.now();
+        await send("Page.navigate",{url:origin+"/search?q="+encodeURIComponent(title)});
+        await until("search result visible",()=>evaluate("location.pathname==='/search' && "+
+          "new URL(location.href).searchParams.get('q')==="+JSON.stringify(title)+
+          " && Boolean("+row+"?.getBoundingClientRect().height)"));
+        const visible=performance.now()-began;
+        result={search_to_screen_ms:visible,...await playback()};
+        await send("Page.navigate",{url:"about:blank"});
+      }
       else if (phase==="play") {
         await asListener(listeners[0]);
         result=await playback();

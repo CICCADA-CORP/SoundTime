@@ -126,7 +126,6 @@ impl P2pNode {
                     "catalogue reader blocked"
                 );
                 if subscribing {
-                    self.subscribers.write().await.insert(peer);
                     self.db.execute(Statement::from_sql_and_values(DbBackend::Postgres,
                         "INSERT INTO federation_catalog_clients(node_id) VALUES($1) ON CONFLICT DO NOTHING",
                         [peer.to_string().into()])).await?;

@@ -404,7 +404,7 @@ pub struct Delta {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Change {
-    Put(Entry),
+    Put(Box<Entry>),
     RemoveOffer {
         origin: EndpointId,
         publication: Uuid,
