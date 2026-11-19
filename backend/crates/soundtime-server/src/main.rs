@@ -8,7 +8,6 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
-use sea_orm_migration::MigratorTrait;
 use serde::Serialize;
 use soundtime_db::AppState;
 use std::net::SocketAddr;
@@ -29,6 +28,7 @@ mod embeddings;
 mod listing_worker;
 pub mod metadata_lookup;
 mod p2p_logs;
+mod publications;
 mod storage_catalog;
 mod storage_worker;
 mod trending;
@@ -89,10 +89,36 @@ async fn main() {
 
     // Run migrations
     tracing::info!("running database migrations...");
-    soundtime_migration::Migrator::up(&db, None)
+    soundtime_migration::Migrator::up_locked(&db)
         .await
         .expect("failed to run migrations");
     tracing::info!("migrations complete");
+    let search_db = db.clone();
+    tokio::spawn(async move {
+        loop {
+            match soundtime_db::federation::refresh_search_batch(&search_db, 256).await {
+                Ok(processed) if processed > 0 => tokio::task::yield_now().await,
+                Ok(_) => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
+                Err(error) => {
+                    tracing::warn!(%error, "retrying the catalogue search index refresh");
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
+    let projection_db = db.clone();
+    tokio::spawn(async move {
+        loop {
+            match soundtime_db::federation::backfill_batch(&projection_db, 256).await {
+                Ok(0) => break,
+                Ok(_) => tokio::task::yield_now().await,
+                Err(error) => {
+                    tracing::warn!(%error, "retrying the publication backfill");
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
 
     // Build application state
     let jwt_secret = std::env::var("JWT_SECRET")
@@ -259,6 +285,7 @@ async fn main() {
     // Spawn the storage integrity / sync worker (runs daily)
     let storage_task_tracker = storage_worker::new_tracker();
     storage_worker::spawn(state.clone(), storage_task_tracker.clone());
+    publications::spawn_cleanup(state.clone());
 
     // Spawn the listing heartbeat worker (announces to public directory)
     listing_worker::spawn(state.clone());
@@ -323,8 +350,12 @@ async fn main() {
         .route("/refresh", post(auth::routes::refresh))
         .layer(GovernorLayer::new(auth_governor_conf));
 
+    let media_logout =
+        Router::new().route("/media-session", axum::routing::delete(auth::media::clear));
+
     // Auth routes (protected)
     let auth_protected = Router::new()
+        .route("/media-session", post(auth::media::establish))
         .route("/me", get(auth::routes::me))
         .route("/email", axum::routing::put(auth::routes::change_email))
         .route(
@@ -353,9 +384,7 @@ async fn main() {
         )
         .route("/tracks/{id}", get(api::tracks::get_track))
         .route("/tracks/{id}/credits", get(api::tracks::get_track_credits))
-        .route("/tracks/{id}/stream", get(api::audio::stream_track))
         .route("/tracks/{id}/lyrics", get(api::lyrics::get_track_lyrics))
-        .route("/media/{*path}", get(api::audio::serve_media))
         .route("/albums", get(api::albums::list_albums))
         .route("/albums/recent", get(api::albums::list_recent_albums))
         .route("/albums/{id}", get(api::albums::get_album))
@@ -369,6 +398,7 @@ async fn main() {
         .route("/libraries/{id}", get(api::libraries::get_library))
         .route("/users/{id}", get(api::users::get_user_profile))
         .route("/search", get(api::search::search))
+        .route("/p2p/search", get(api::p2p::network_search))
         .route("/genres", get(api::tracks::list_genres))
         .route(
             "/genres/{genre}/tracks",
@@ -382,6 +412,15 @@ async fn main() {
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             auth::middleware::require_auth_if_private,
+        ));
+
+    // Only native, read-only media handlers accept the restricted media cookie.
+    let media_api = Router::new()
+        .route("/tracks/{id}/stream", get(api::audio::stream_track))
+        .route("/media/{*path}", get(api::audio::serve_media))
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            auth::middleware::require_media_if_private,
         ));
 
     // Always-public routes (setup, auth) — never gated by private mode
@@ -399,6 +438,7 @@ async fn main() {
                 .layer(DefaultBodyLimit::max(500 * 1024 * 1024)), // 500 MB for audio uploads
         )
         .route("/tracks/my-uploads", get(api::tracks::my_uploads))
+        .route("/me/playlists", get(api::playlists::my_playlists))
         .route("/playlists", post(api::playlists::create_playlist))
         .route(
             "/playlists/{id}",
@@ -447,7 +487,11 @@ async fn main() {
         ));
 
     let api_routes = Router::new()
-        .nest("/auth", auth_public.merge(auth_protected))
+        .nest(
+            "/auth",
+            auth_public.merge(auth_protected).merge(media_logout),
+        )
+        .merge(media_api)
         .merge(always_public_api)
         .merge(public_api)
         .merge(protected_api)
@@ -456,7 +500,6 @@ async fn main() {
         // Public P2P status endpoint
         .route("/p2p/status", get(api::p2p::p2p_status))
         .route("/p2p/network-graph", get(api::p2p::network_graph))
-        .route("/p2p/search", get(api::p2p::network_search))
         // Public theme routes
         .route("/themes/active", get(api::themes::get_active_theme))
         .route("/themes/active.css", get(api::themes::serve_active_css))
@@ -555,6 +598,7 @@ async fn main() {
                 .route("/storage/task-status", get(api::admin::storage_task_status))
                 .layer(Extension(storage_task_tracker))
                 // P2P admin routes
+                .route("/p2p/transport", get(api::p2p::transport_stats))
                 .route(
                     "/p2p/peers",
                     get(api::p2p::list_peers).post(api::p2p::add_peer),
@@ -564,6 +608,10 @@ async fn main() {
                     axum::routing::delete(api::p2p::remove_peer),
                 )
                 .route("/p2p/peers/{node_id}/ping", post(api::p2p::ping_peer))
+                .route(
+                    "/p2p/peers/{node_id}/subscription",
+                    axum::routing::put(api::p2p::update_subscription),
+                )
                 // P2P library sync routes
                 .route("/p2p/library-sync", get(api::p2p::library_sync_overview))
                 .route(

@@ -80,6 +80,19 @@ describe('FavoriteButton', () => {
     expect(mockApi.delete).toHaveBeenCalledWith('/favorites/track-1');
   });
 
+  it('keeps the original state on failure and saves on a second attempt', async () => {
+    mockAuth.isAuthenticated = true;
+    mockApi.post.mockRejectedValueOnce(new Error('offline'));
+    render(FavoriteButton, { props: { trackId: 'retry' } });
+    const toggle = screen.getByRole('button');
+    await fireEvent.click(toggle);
+    expect(await screen.findByRole('alert')).toHaveTextContent('favorites.updateFailed');
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('applies custom size', () => {
     mockAuth.isAuthenticated = true; mockAuth.user = { id: '1', username: 'alice' };
     const { container } = render(FavoriteButton, { props: { trackId: 'track-1', size: 24 } });

@@ -23,15 +23,68 @@ function setTokens(access: string, refresh: string) {
   localStorage.setItem("soundtime_refresh_token", refresh);
 }
 
-export function clearTokens() {
-  localStorage.removeItem("soundtime_access_token");
-  localStorage.removeItem("soundtime_refresh_token");
+// Serialize creation and deletion so that a late cookie response cannot undo logout.
+let mediaOperations = Promise.resolve();
+let mediaRequest: Promise<void> | undefined;
+let mediaRevision = 0;
+let mediaRenewAt = 0;
+
+/** A fresh cookie lets native play() run synchronously in the user's gesture. */
+export function prepareMediaSession(force = false): Promise<void> | undefined {
+  if (!getAccessToken() || (!force && Date.now() < mediaRenewAt)) return;
+  if (mediaRequest) return mediaRequest;
+  const revision = mediaRevision;
+  const request = mediaOperations.then(async () => {
+    if (revision !== mediaRevision) return;
+    const grant = await apiFetch<{ expires_in: number }>("/auth/media-session", { method: "POST" });
+    if (revision === mediaRevision) mediaRenewAt = Date.now() + Math.max(0, grant.expires_in - 45) * 1000;
+  }).finally(() => {
+    if (mediaRequest === request) mediaRequest = undefined;
+  });
+  mediaRequest = request;
+  mediaOperations = request.catch(() => {});
+  return request;
 }
 
-async function refreshAccessToken(): Promise<boolean> {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) return false;
+function invalidateMediaSession(clearCookie: boolean) {
+  mediaRevision++;
+  mediaRenewAt = 0;
+  mediaRequest = undefined;
+  window.dispatchEvent(new Event("soundtime:logout"));
+  if (clearCookie) {
+    mediaOperations = mediaOperations.then(async () => {
+      await fetch(API_BASE + "/auth/media-session", { method: "DELETE", keepalive: true });
+    }).catch(() => {});
+  }
+}
 
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === "soundtime_access_token" && !event.newValue) invalidateMediaSession(!!mediaRequest);
+  });
+}
+
+export function clearTokens() {
+  const hadSession = !!getAccessToken() || !!mediaRequest;
+  localStorage.removeItem("soundtime_access_token");
+  localStorage.removeItem("soundtime_refresh_token");
+  invalidateMediaSession(hadSession);
+}
+
+let refreshRequest: { token: string; result: Promise<boolean> } | undefined;
+
+function refreshAccessToken(): Promise<boolean> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return Promise.resolve(false);
+  if (refreshRequest?.token === refreshToken) return refreshRequest.result;
+  const result = fetchRefreshedTokens(refreshToken).finally(() => {
+    if (refreshRequest?.result === result) refreshRequest = undefined;
+  });
+  refreshRequest = { token: refreshToken, result };
+  return result;
+}
+
+async function fetchRefreshedTokens(refreshToken: string): Promise<boolean> {
   try {
     const res = await fetch(`${API_BASE}/auth/refresh`, {
       method: "POST",
@@ -39,16 +92,17 @@ async function refreshAccessToken(): Promise<boolean> {
       body: JSON.stringify({ refresh_token: refreshToken }),
     });
 
+    if (getRefreshToken() !== refreshToken) return false;
     if (!res.ok) {
-      clearTokens();
+      if (res.status === 401 || res.status === 403) clearTokens();
       return false;
     }
 
     const data: TokenPair = await res.json();
+    if (getRefreshToken() !== refreshToken) return false;
     setTokens(data.access_token, data.refresh_token);
     return true;
   } catch {
-    clearTokens();
     return false;
   }
 }
@@ -88,9 +142,13 @@ export async function apiFetch<T = unknown>(
     const err: ApiError = await res.json().catch(() => ({
       error: `HTTP ${res.status}`,
     }));
-    throw new Error(err.error);
+    throw Object.assign(new Error(err.error), { status: res.status });
   }
 
+  // Refresh artwork access before an idle tab renders a new catalog response.
+  if (token && !options.method && !path.startsWith("/auth/") && mediaRenewAt && Date.now() >= mediaRenewAt) {
+    await prepareMediaSession()?.catch(() => {});
+  }
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   if (!text) return undefined as T;
@@ -178,12 +236,9 @@ export const api = {
   },
 };
 
-// SECURITY: The JWT token is passed as a URL query parameter because HTML <audio>/<video>
-// elements cannot set custom headers on their src requests. This is a known limitation.
-// Mitigations: tokens are short-lived (15min), stream endpoints validate the token server-side.
+/** Native audio uses a short-lived, same-origin media cookie. */
 export function streamUrl(trackId: string): string {
-  const token = getAccessToken();
-  return `${API_BASE}/tracks/${trackId}/stream${token ? `?token=${token}` : ""}`;
+  return `${API_BASE}/tracks/${encodeURIComponent(trackId)}/stream`;
 }
 
 // ─── Plugin API ─────────────────────────────────────────────────────
@@ -295,7 +350,7 @@ export const homeApi = {
 
   /** Get editorial playlists */
   editorialPlaylists: () =>
-    api.get<import("./types").EditorialPlaylist[]>("/editorial-playlists").catch(() => [] as import("./types").EditorialPlaylist[]),
+    api.get<import("./types").EditorialPlaylist[]>("/editorial-playlists"),
 };
 
 // ─── Last.fm API ─────────────────────────────────────────────────────

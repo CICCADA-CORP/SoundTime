@@ -4,6 +4,62 @@ use sea_orm::{
     EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
 };
 use soundtime_db::entities::track;
+use uuid::Uuid;
+
+pub fn reusable_track() -> sea_orm::sea_query::SimpleExpr {
+    sea_orm::sea_query::Expr::cust("NOT EXISTS (SELECT 1 FROM track_publications p WHERE p.track_id=tracks.id AND p.state='withdrawn')")
+}
+
+pub async fn source_restored(db: &impl ConnectionTrait, id: Uuid) -> Result<(), DbErr> {
+    db.execute(sea_orm::Statement::from_sql_and_values(
+        sea_orm::DbBackend::Postgres,
+        "DELETE FROM federation_missing_sources WHERE track_id=$1",
+        [id.into()],
+    ))
+    .await?;
+    Ok(())
+}
+
+/// Record explicit ownership only after the storage driver has successfully created the file.
+pub async fn record_managed(
+    db: &impl ConnectionTrait,
+    path: &str,
+    hash: &str,
+) -> Result<(), DbErr> {
+    db.execute(sea_orm::Statement::from_sql_and_values(
+        sea_orm::DbBackend::Postgres,
+        "INSERT INTO federation_managed_originals(file_path,sha256) VALUES($1,$2)
+         ON CONFLICT(file_path) DO UPDATE SET sha256=excluded.sha256",
+        [path.into(), hash.into()],
+    ))
+    .await?;
+    Ok(())
+}
+
+pub async fn shared_original(
+    db: &impl ConnectionTrait,
+    hash: &str,
+    storage: &dyn soundtime_audio::StorageBackend,
+) -> Result<Option<String>, String> {
+    let rows = db.query_all(sea_orm::Statement::from_sql_and_values(sea_orm::DbBackend::Postgres,
+        "SELECT m.file_path FROM federation_managed_originals m WHERE m.sha256=$1 AND EXISTS (
+            SELECT FROM tracks t LEFT JOIN track_publications p ON p.track_id=t.id WHERE t.file_path=m.file_path
+            AND t.file_hash=m.sha256 AND p.state IS DISTINCT FROM 'withdrawn'
+            AND NOT EXISTS (SELECT FROM federation_missing_sources s WHERE s.track_id=t.id)
+        ) ORDER BY m.file_path", [hash.into()])).await.map_err(|e| e.to_string())?;
+    for row in rows {
+        let path: String = row.try_get("", "file_path").map_err(|e| e.to_string())?;
+        if storage
+            .file_exists(&path)
+            .await
+            .map_err(|e| e.to_string())?
+            && storage.hash_file(&path).await.map_err(|e| e.to_string())? == hash
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
 
 pub async fn begin_write(db: &DatabaseConnection) -> Result<DatabaseTransaction, DbErr> {
     let txn = db.begin().await?;
@@ -18,10 +74,16 @@ pub async fn existing_hash(
     db: &impl ConnectionTrait,
     hash: &str,
     storage: &dyn soundtime_audio::StorageBackend,
+    owner: Option<Uuid>,
 ) -> Result<Option<track::Model>, String> {
-    let rows = track::Entity::find()
+    let mut query = track::Entity::find()
+        .filter(reusable_track())
         .filter(track::Column::FileHash.eq(hash))
-        .filter(track::Column::FilePath.not_like("p2p://%"))
+        .filter(track::Column::FilePath.not_like("p2p://%"));
+    if let Some(owner) = owner {
+        query = query.filter(track::Column::UploadedBy.eq(owner));
+    }
+    let rows = query
         .order_by_asc(track::Column::CreatedAt)
         .order_by_asc(track::Column::Id)
         .all(db)
@@ -42,6 +104,9 @@ pub async fn existing_hash(
             .await
             .map_err(|e| e.to_string())?;
         if actual == hash {
+            source_restored(db, row.id)
+                .await
+                .map_err(|e| e.to_string())?;
             return Ok(Some(row));
         }
         let mut update: track::ActiveModel = row.into();

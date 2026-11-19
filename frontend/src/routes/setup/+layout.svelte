@@ -1,7 +1,8 @@
 <script lang="ts">
-  import "../../app.css";
+  import type { Snippet } from "svelte";
+  let { children }: { children: Snippet } = $props();
 </script>
 
-<div class="min-h-screen bg-[hsl(var(--background))] text-[hsl(var(--foreground))] flex items-center justify-center">
-  <slot />
+<div class="flex min-h-screen items-center justify-center bg-sidebar px-4 text-foreground">
+  {@render children()}
 </div>

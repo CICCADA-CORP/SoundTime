@@ -97,7 +97,7 @@ pub async fn get_library(
 
     let track_ids: Vec<Uuid> = lt_entries.iter().map(|lt| lt.track_id).collect();
 
-    let tracks = if track_ids.is_empty() {
+    let mut tracks: Vec<_> = if track_ids.is_empty() {
         vec![]
     } else {
         track::Entity::find()
@@ -110,6 +110,7 @@ pub async fn get_library(
             .collect()
     };
 
+    super::tracks::attach_availability(&state, &mut tracks).await?;
     Ok(Json(LibraryDetailResponse {
         library: LibraryResponse::from(lib),
         tracks,

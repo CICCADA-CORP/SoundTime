@@ -1,80 +1,46 @@
 <script lang="ts">
   import { page } from "$app/state";
-  import { onMount } from "svelte";
+  import { Radio } from "lucide-svelte";
   import { api } from "$lib/api";
+  import { catalogQuery } from "$lib/catalog/query.svelte";
+  import { getRadioStore } from "$lib/stores/radio.svelte";
   import type { Artist } from "$lib/types";
+  import { t } from "$lib/i18n/index.svelte";
+  import { Button } from "$lib/components/ui/button";
+  import CatalogState from "$lib/components/catalog/CatalogState.svelte";
+  import RecordShelf from "$lib/components/catalog/RecordShelf.svelte";
+  import ReleaseHeader from "$lib/components/catalog/ReleaseHeader.svelte";
   import AlbumCard from "$lib/components/AlbumCard.svelte";
   import TrackList from "$lib/components/TrackList.svelte";
-  import { getRadioStore } from "$lib/stores/radio.svelte";
-  import { Radio as RadioIcon } from "lucide-svelte";
-  import { t } from "$lib/i18n/index.svelte";
 
-  let artist: Artist | null = $state(null);
-  let loading = $state(true);
-
-  onMount(async () => {
-    try {
-      artist = await api.get<Artist>(`/artists/${page.params.id}`);
-    } catch (e) { console.error('Failed to load artist:', e); } finally { loading = false; }
-  });
+  const artist = catalogQuery(() => api.get<Artist>(`/artists/${page.params.id}`));
+  const radio = getRadioStore();
 </script>
 
-<svelte:head><title>{artist?.name ?? "Artist"} — SoundTime</title></svelte:head>
+<svelte:head><title>{artist.data?.name ?? t("track.artist")} — SoundTime</title></svelte:head>
 
-{#if loading}
-  <div class="flex justify-center py-20">
-    <div class="w-8 h-8 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full animate-spin"></div>
-  </div>
-{:else if artist}
+{#if artist.data}
+  {@const data = artist.data}
   <div class="space-y-8">
-    <div class="flex items-end gap-6">
-      <div class="w-48 h-48 rounded-full bg-[hsl(var(--secondary))] flex items-center justify-center text-6xl shadow-xl flex-shrink-0 overflow-hidden">
-        {#if artist.image_url}
-          <img src={artist.image_url} alt={artist.name} class="w-full h-full object-cover" />
-        {:else}
-          🎤
-        {/if}
-      </div>
-      <div>
-        <p class="text-xs uppercase tracking-wider text-[hsl(var(--muted-foreground))]">Artist</p>
-        <h1 class="text-5xl font-bold mt-1">{artist.name}</h1>
-        {#if artist.bio}
-          <p class="text-sm text-[hsl(var(--muted-foreground))] mt-3 max-w-xl">{artist.bio}</p>
-        {/if}
-        <div class="mt-4 flex gap-2">
-          <button
-            class="px-4 py-2 rounded-lg bg-[hsl(var(--secondary))] hover:bg-[hsl(var(--primary))]/20 text-sm font-medium transition flex items-center gap-2"
-            onclick={() => {
-              if (!artist) return;
-              const radio = getRadioStore();
-              radio.startRadio("artist", { seedId: artist.id, label: artist.name });
-            }}
-          >
-            <RadioIcon class="w-4 h-4" />
-            {t('radio.startFromArtist')}
-          </button>
-        </div>
-      </div>
-    </div>
-
-    {#if artist.albums && artist.albums.length > 0}
-    <section>
-      <h2 class="text-xl font-semibold mb-4">Albums</h2>
-      <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-        {#each artist.albums as album}
-          <AlbumCard {album} />
-        {/each}
-      </div>
-    </section>
+    <ReleaseHeader kind="artist" title={data.name} image={data.image_url} label={t("track.artist")}>
+      {#snippet info()}{data.bio ?? ""}{/snippet}
+      {#snippet actions()}
+        <Button variant="secondary" disabled={radio.loading} onclick={() => radio.startRadio("artist", { seedId: data.id, label: data.name })}>
+          <Radio size={16} />{t("radio.startFromArtist")}
+        </Button>
+      {/snippet}
+    </ReleaseHeader>
+    {#if radio.error}<p class="text-sm text-destructive" role="alert">{t("radio.error")}</p>{/if}
+    {#if data.albums?.length}
+      <section class="space-y-4">
+        <h2 class="text-xl font-semibold">{t("artist.albums")}</h2>
+        <RecordShelf>{#each data.albums as album (album.id)}<AlbumCard {album} />{/each}</RecordShelf>
+      </section>
     {/if}
-
-    {#if artist.tracks && artist.tracks.length > 0}
-    <section>
-      <h2 class="text-xl font-semibold mb-4">Top Tracks</h2>
-      <TrackList tracks={artist.tracks} showArtist={false} />
-    </section>
+    {#if data.tracks?.length}
+      <section class="space-y-4"><h2 class="text-xl font-semibold">{t("artist.tracks")}</h2><TrackList tracks={data.tracks} showArtist={false} /></section>
     {/if}
   </div>
 {:else}
-  <p class="text-center py-20 text-[hsl(var(--muted-foreground))]">Artist not found.</p>
+  <CatalogState loading={artist.loading} failed={artist.failed} status={artist.status} retry={artist.retry} />
 {/if}

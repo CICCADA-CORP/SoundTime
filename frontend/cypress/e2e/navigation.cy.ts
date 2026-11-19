@@ -13,36 +13,46 @@ describe('Navigation', () => {
 		cy.url().should('include', '/explore');
 	});
 
-	it('navigates to library page', () => {
-		cy.get('a[href="/library"]').first().click();
-		cy.url().should('include', '/library');
+	for (const page of ['library', 'playlists', 'favorites', 'history']) {
+		it('navigates to ' + page + ' from the sidebar', () => {
+			cy.get('#workspace-sidebar a[href="/' + page + '"]').click();
+			cy.location('pathname').should('eq', '/' + page);
+		});
+	}
+
+	it('restores the desktop sidebar with the header toggle', () => {
+		cy.get('#sidebar-toggle').click().should('have.attr', 'aria-expanded', 'false');
+		cy.get('#workspace-sidebar').should('not.be.visible');
+		cy.get('#sidebar-toggle').click().should('have.attr', 'aria-expanded', 'true');
+		cy.get('#workspace-sidebar a[href="/albums"]').should('be.visible');
 	});
 
-	it('navigates to playlists page', () => {
-		cy.get('a[href="/playlists"]').first().click();
-		cy.url().should('include', '/playlists');
-	});
-
-	it('navigates to favorites page', () => {
-		cy.get('a[href="/favorites"]').first().click();
-		cy.url().should('include', '/favorites');
-	});
-
-	it('navigates to history page', () => {
-		cy.get('a[href="/history"]').first().click();
-		cy.url().should('include', '/history');
+	it('opens the menu on mobile and closes it when a destination is chosen', () => {
+		cy.viewport(390, 844);
+		cy.get('#sidebar-toggle').click();
+		cy.get('[role="dialog"] a[href="/albums"]').click();
+		cy.location('pathname').should('eq', '/albums');
+		cy.get('#sidebar-toggle').should('have.attr', 'aria-expanded', 'false');
 	});
 
 	it('navigates to settings page', () => {
-		cy.get('a[href="/settings"]').first().click();
+		cy.get('a[href="/settings"]:visible').first().click();
 		cy.url().should('include', '/settings');
 	});
 
-	it('search bar is visible', () => {
-		cy.get('input[type="search"], input[placeholder*="search"], input[placeholder*="Search"], input[placeholder*="Rechercher"]').should('exist');
+	it('opens the global search from navigation', () => {
+		cy.get('button[aria-keyshortcuts]:visible').click();
+		cy.get('[role="dialog"] input[type="search"]').should('be.focused');
 	});
 
-	it('audio player is present in layout', () => {
-		cy.get('[data-testid="audio-player"], .audio-player, audio').should('exist');
+	it('keeps the selected preview in the player when navigating', () => {
+		const feeds = ['tracks/popular', 'tracks/random', 'albums/recent', 'artists/top', 'editorial-playlists', 'stats/overview'];
+		for (const feed of feeds) cy.intercept('GET', '**/api/' + feed + '*', { statusCode: 503 });
+		cy.reload();
+		cy.get('[data-testid="audio-player"]').should('not.exist');
+		cy.get('section[aria-label="After Hours"] button').first().click();
+		cy.get('[data-testid="audio-player"]').should('contain', 'Last Light');
+		cy.get('a[href="/explore"]:visible').first().click();
+		cy.get('[data-testid="audio-player"]').should('contain', 'Last Light');
 	});
 });

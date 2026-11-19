@@ -36,7 +36,11 @@ ENV SOUNDTIME_BUILD_NUMBER=${SOUNDTIME_BUILD_NUMBER}
 RUN find crates -name "*.rs" -exec touch {} + \
     && cargo build --locked --release -p soundtime-server --features redis
 
-FROM debian:trixie-slim
+# Built only when the federation integration harness requests its own target.
+FROM builder AS federation-fixture-builder
+RUN cargo build --locked --release -p soundtime-server --features redis --example federation_upgrade
+
+FROM debian:trixie-slim AS runtime
 
 RUN apt-get update && apt-get install -y ca-certificates ffmpeg && rm -rf /var/lib/apt/lists/*
 RUN useradd -m appuser
@@ -54,3 +58,10 @@ USER appuser
 EXPOSE 8080
 
 CMD ["/app/soundtime-server"]
+
+FROM runtime AS federation-fixture
+COPY --from=federation-fixture-builder /app/target/release/examples/federation_upgrade /app/federation_upgrade
+ENTRYPOINT ["/app/federation_upgrade"]
+CMD []
+
+FROM runtime AS production

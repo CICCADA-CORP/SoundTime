@@ -24,6 +24,7 @@ Tokens are obtained via the [login](#post-apiauthlogin) or [refresh](#post-apiau
 |-----------|----------|-------|
 | Access token | 15 minutes | `Authorization: Bearer` header |
 | Refresh token | 7 days | POST body to `/api/auth/refresh` |
+| Media cookie | Up to 10 minutes | Native browser requests for track streams and artwork |
 
 ### Visibility Modes
 
@@ -56,7 +57,9 @@ All auth endpoints are **rate-limited** to 10 requests per 60 seconds per IP.
 
 ### `POST /api/auth/register`
 
-Register a new user account. The first registered user automatically becomes the admin.
+Register a new user account. The first registered user becomes the admin. After the first account exists, registration requires completed setup, a public instance and enabled registrations. An existing public instance with no `open_registrations` setting keeps its previous open-registration behavior. When registrations are closed the server returns `403 Forbidden`.
+
+`GET /api/nodeinfo` exposes this same effective policy as the boolean `open_registration`.
 
 **Body** `application/json`
 ```json
@@ -71,8 +74,21 @@ Register a new user account. The first registered user automatically becomes the
 **Response** `201 Created`
 ```json
 {
-  "access_token": "eyJ...",
-  "refresh_token": "eyJ..."
+  "user": {
+    "id": "f7253772-aa17-49c0-a38b-89bd44711c85",
+    "username": "alice",
+    "email": "alice@example.com",
+    "display_name": "Alice",
+    "avatar_url": null,
+    "role": "user",
+    "instance_id": "alice@music.example"
+  },
+  "tokens": {
+    "access_token": "eyJ...",
+    "refresh_token": "eyJ...",
+    "token_type": "Bearer",
+    "expires_in": 900
+  }
 }
 ```
 
@@ -88,13 +104,7 @@ Authenticate with username and password.
 }
 ```
 
-**Response** `200 OK`
-```json
-{
-  "access_token": "eyJ...",
-  "refresh_token": "eyJ..."
-}
-```
+**Response** `200 OK` with the same `user` and `tokens` object as registration.
 
 ### `POST /api/auth/refresh`
 
@@ -114,6 +124,16 @@ Exchange a valid refresh token for a new token pair.
   "refresh_token": "eyJ..."
 }
 ```
+
+### `POST /api/auth/media-session`
+
+Exchange a Bearer access token for media access on the same origin. A successful response contains `expires_in` in seconds and sets two HttpOnly, SameSite=Strict cookies named `soundtime_media`, scoped to `/api/tracks/` and `/api/media/`. HTTPS requests receive Secure cookies. The stream and artwork handlers accept the media credential for GET and HEAD.
+
+The grant expires within 600 seconds and by the end of the access token's lifetime. When the access token has 45 seconds or less remaining, the exchange returns `401`. Refresh the access token and repeat the exchange before resuming playback.
+
+### `DELETE /api/auth/media-session`
+
+Expire both browser cookies on logout. The server returns `204 No Content`, including when the access token has expired.
 
 ### `GET /api/auth/me`
 
@@ -178,7 +198,7 @@ Permanently delete the authenticated user's account and all associated data (GDP
 
 ## Setup
 
-These endpoints are used during initial instance configuration. They are always accessible (never gated by private mode).
+Setup status is public. Instance configuration and completion require an authenticated administrator.
 
 ### `GET /api/setup/status`
 
@@ -187,8 +207,9 @@ Check whether the instance has completed initial setup.
 **Response** `200 OK`
 ```json
 {
-  "setup_completed": false,
-  "has_admin": false
+  "setup_complete": false,
+  "has_admin": false,
+  "instance_private": false
 }
 ```
 
@@ -201,10 +222,11 @@ Create the first admin user during initial setup.
 {
   "username": "admin",
   "email": "admin@example.com",
-  "password": "securepassword",
-  "display_name": "Admin"
+  "password": "securepassword"
 }
 ```
+
+On success, the `201 Created` response contains the admin profile and token pair in the same shape as `/api/auth/register`.
 
 ### `POST /api/setup/instance`
 
@@ -216,16 +238,22 @@ Configure instance settings during setup.
 ```json
 {
   "instance_name": "My SoundTime",
-  "description": "A personal music server",
-  "private": false
+  "instance_description": "A personal music server"
 }
 ```
 
 ### `POST /api/setup/complete`
 
-Mark the setup wizard as complete.
+Save the final instance settings and mark setup complete in one transaction. Send the access token returned by account creation or administrator login. The optional `instance_private` field sets visibility. Omitting it preserves the current instance visibility.
 
-**Auth**: Required
+```json
+{
+  "p2p_enabled": false,
+  "open_registrations": false,
+  "max_upload_size_mb": 500,
+  "instance_private": true
+}
+```
 
 ---
 
@@ -285,9 +313,7 @@ Get track credits and contributors.
 
 ### `GET /api/tracks/{id}/stream`
 
-Stream the audio file. Returns the audio binary with appropriate `Content-Type` header.
-
-**Auth**: Conditional
+Stream the audio file with the appropriate `Content-Type`. On private instances, send a Bearer access token or a media cookie. Keep the track URL free of credentials. A satisfiable byte range such as `Range: bytes=64-191` returns `206 Partial Content` with `Content-Range`.
 
 ### `GET /api/tracks/{id}/lyrics`
 
@@ -396,9 +422,13 @@ Get a single artist with their albums and tracks.
 
 ### `GET /api/playlists`
 
-List all playlists (public playlists + user's own private playlists).
+Discover public playlists, ordered by last update. On a private instance this endpoint requires authentication.
 
 **Auth**: Conditional
+
+### `GET /api/me/playlists`
+
+List the authenticated member’s public and private playlists, with track counts. Accepts `page` (default 1) and `per_page` (default 20, maximum 100). Returns `data`, `page`, `per_page`, `total` and `total_pages`.
 
 ### `GET /api/playlists/{id}`
 
@@ -445,6 +475,8 @@ Add a track to a playlist.
   "track_id": "uuid"
 }
 ```
+
+Repeating a successful addition returns HTTP 204 and preserves the existing position.
 
 ### `DELETE /api/playlists/{id}/tracks/{track_id}`
 
@@ -593,7 +625,7 @@ Report a track for moderation.
 
 Serve JPEG, PNG, GIF and WebP cover images from the media directories. The response uses the image format detected from the file contents. Other file types return HTTP 404.
 
-**Auth**: Conditional
+Private instances accept a Bearer access token or a media cookie.
 
 ---
 

@@ -159,6 +159,7 @@ pub async fn run_integrity_check(
 ) -> Result<IntegrityReport, String> {
     // Filter out P2P tracks at DB level and paginate to avoid loading all rows
     let paginator = track::Entity::find()
+        .filter(crate::storage_catalog::reusable_track())
         .filter(track::Column::FilePath.not_like("p2p://%"))
         .paginate(&state.db, 500);
 
@@ -269,6 +270,7 @@ pub async fn run_sync(
 ) -> Result<SyncReport, String> {
     // Snapshot the catalog first. Rows created after this point cannot be pruned.
     let entries = track::Entity::find()
+        .filter(crate::storage_catalog::reusable_track())
         .filter(track::Column::FilePath.not_like("p2p://%"))
         .select_only()
         .columns([
@@ -319,6 +321,18 @@ pub async fn run_sync(
     }
     new_files.sort_unstable();
 
+    let absent_ids: HashSet<Uuid> = state
+        .db
+        .query_all(sea_orm::Statement::from_string(
+            sea_orm::DbBackend::Postgres,
+            "SELECT track_id FROM federation_missing_sources",
+        ))
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|r| r.try_get("", "track_id"))
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
     let mut missing = Vec::new();
     let mut present_by_size: HashMap<i64, Vec<Uuid>> = HashMap::new();
     let mut legacy_by_size: HashMap<i64, Vec<Uuid>> = HashMap::new();
@@ -332,6 +346,45 @@ pub async fn run_sync(
                     .push(row.id);
             }
         } else {
+            if absent_ids.contains(&row.id) {
+                let tx = crate::storage_catalog::begin_write(&state.db)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let restored = match &row.file_hash {
+                    Some(hash) => {
+                        state
+                            .storage
+                            .hash_file(&row.file_path)
+                            .await
+                            .map_err(|e| e.to_string())?
+                            == *hash
+                    }
+                    None => state
+                        .storage
+                        .file_exists(&row.file_path)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                };
+                if !restored {
+                    report.errors.push(format!(
+                        "{}: contents differ from the missing original",
+                        row.file_path
+                    ));
+                    continue;
+                }
+                if track::Entity::find_by_id(row.id)
+                    .filter(track::Column::FilePath.eq(&row.file_path))
+                    .count(&tx)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    == 1
+                {
+                    crate::storage_catalog::source_restored(&tx, row.id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                tx.commit().await.map_err(|e| e.to_string())?;
+            }
             present_by_size
                 .entry(row.file_size)
                 .or_default()
@@ -403,24 +456,21 @@ pub async fn run_sync(
                 if still_missing > 0 && !report.empty_sources.iter().any(|s| s == source) {
                     report.empty_sources.push(source.to_string());
                 }
-                continue;
             }
-            // Old releases inserted a second track after a move. Merge user
-            // references before the obsolete row's foreign keys cascade.
-            if let Some(ids) = present_by_size.get_mut(&row.file_size) {
+            // A second historical row may own these bytes. Keep both UUIDs and relink only a verified match.
+            if let Some(ids) = present_by_size.get(&row.file_size) {
                 if repair_previous_import(&tx, state, row, ids).await? {
-                    report.removed += 1;
+                    report.moved += 1;
                     continue;
                 }
             }
             // Moves and concurrent changes win over an earlier snapshot.
-            let result = track::Entity::delete_many()
-                .filter(track::Column::Id.eq(row.id))
-                .filter(track::Column::FilePath.eq(&row.file_path))
-                .exec(&tx)
-                .await
-                .map_err(|e| e.to_string())?;
-            report.removed += result.rows_affected;
+            let result = tx.execute(sea_orm::Statement::from_sql_and_values(sea_orm::DbBackend::Postgres,
+                "INSERT INTO federation_missing_sources(track_id) SELECT t.id FROM tracks t \
+                 WHERE t.id=$1 AND t.file_path=$2 AND NOT EXISTS(SELECT FROM track_publications p WHERE p.track_id=t.id AND p.state='withdrawn') \
+                 ON CONFLICT DO NOTHING",
+                [row.id.into(), row.file_path.as_str().into()])).await.map_err(|e|e.to_string())?;
+            report.removed += result.rows_affected();
         }
         tx.commit().await.map_err(|e| e.to_string())?;
     }
@@ -432,9 +482,10 @@ async fn repair_previous_import(
     tx: &DatabaseTransaction,
     state: &AppState,
     entry: &CatalogEntry,
-    present_ids: &mut [Uuid],
+    present_ids: &[Uuid],
 ) -> Result<bool, String> {
     let Some(missing) = track::Entity::find_by_id(entry.id)
+        .filter(crate::storage_catalog::reusable_track())
         .filter(track::Column::FilePath.eq(&entry.file_path))
         .lock_exclusive()
         .one(tx)
@@ -444,6 +495,7 @@ async fn repair_previous_import(
         return Ok(false);
     };
     let candidates = track::Entity::find()
+        .filter(crate::storage_catalog::reusable_track())
         .filter(track::Column::Id.is_in(present_ids.iter().copied()))
         .lock_exclusive()
         .all(tx)
@@ -453,14 +505,7 @@ async fn repair_previous_import(
         Some(hash) => r.file_hash.as_ref() == Some(hash),
         None => match (&missing.content_hash, &r.content_hash) {
             (Some(a), Some(b)) => a == b,
-            _ => {
-                missing.waveform_data.is_some()
-                    && missing.waveform_data == r.waveform_data
-                    && missing.duration_secs == r.duration_secs
-                    && (missing.title == r.title
-                        || Path::new(&missing.file_path).file_name()
-                            == Path::new(&r.file_path).file_name())
-            }
+            _ => false,
         },
     });
     let Some(present) = matches.next() else {
@@ -483,60 +528,22 @@ async fn repair_previous_import(
     if present.file_hash.as_deref() != Some(actual.as_str()) {
         return Ok(false);
     }
-    // Keep the UUID and metadata of the original, including edits made before the move.
-    let path = present.file_path.clone();
-    let hash = present.file_hash.clone();
-    let (kept, redundant) = if missing.created_at <= present.created_at {
-        (missing, present)
-    } else {
-        (present, missing)
-    };
-    for (table, key) in [
-        ("library_tracks", "library_id"),
-        ("playlist_tracks", "playlist_id"),
-        ("favorites", "user_id"),
-    ] {
-        let sql = format!("UPDATE {table} a SET track_id=$1 WHERE a.track_id=$2 AND NOT EXISTS (SELECT 1 FROM {table} b WHERE b.track_id=$1 AND b.{key}=a.{key})");
-        tx.execute(sea_orm::Statement::from_sql_and_values(
-            sea_orm::DbBackend::Postgres,
-            sql,
-            [kept.id.into(), redundant.id.into()],
-        ))
-        .await
-        .map_err(|e| e.to_string())?;
-    }
-    for sql in [
-        "UPDATE listen_history SET track_id=$1 WHERE track_id=$2",
-        "UPDATE track_report SET track_id=$1 WHERE track_id=$2",
-        "UPDATE remote_tracks SET local_track_id=$1 WHERE local_track_id=$2",
-        "UPDATE track_embeddings SET track_id=$1 WHERE track_id=$2 AND NOT EXISTS (SELECT 1 FROM track_embeddings WHERE track_id=$1)",
-    ] {
-        tx.execute(sea_orm::Statement::from_sql_and_values(sea_orm::DbBackend::Postgres, sql, [kept.id.into(), redundant.id.into()])).await.map_err(|e| e.to_string())?;
-    }
-    for id in present_ids {
-        if *id == redundant.id {
-            *id = kept.id;
-        }
-    }
-    track::Entity::delete_by_id(redundant.id)
-        .exec(tx)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Distinct publications may share a file. Relinking never transfers playlists,
+    // listens or ownership between their stable IDs.
     track::Entity::update_many()
         .col_expr(
             track::Column::FilePath,
-            sea_orm::sea_query::Expr::value(path),
+            sea_orm::sea_query::Expr::value(present.file_path),
         )
         .col_expr(
             track::Column::FileHash,
-            sea_orm::sea_query::Expr::value(hash),
+            sea_orm::sea_query::Expr::value(actual),
         )
-        .col_expr(
-            track::Column::PlayCount,
-            sea_orm::sea_query::Expr::col(track::Column::PlayCount).add(redundant.play_count),
-        )
-        .filter(track::Column::Id.eq(kept.id))
+        .filter(track::Column::Id.eq(missing.id))
         .exec(tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    crate::storage_catalog::source_restored(tx, missing.id)
         .await
         .map_err(|e| e.to_string())?;
     Ok(true)
@@ -572,7 +579,7 @@ async fn sync_file(
         return Ok(SyncOutcome::Present);
     }
     if let Some(row) =
-        crate::storage_catalog::existing_hash(&tx, &hash, state.storage.as_ref()).await?
+        crate::storage_catalog::existing_hash(&tx, &hash, state.storage.as_ref(), None).await?
     {
         if state
             .storage
@@ -584,6 +591,13 @@ async fn sync_file(
             return Ok(SyncOutcome::Present);
         }
         return relink_track(tx, row, path, hash).await;
+    }
+    let excluded: bool = tx.query_one(sea_orm::Statement::from_sql_and_values(sea_orm::DbBackend::Postgres,
+        "SELECT EXISTS(SELECT FROM tracks t JOIN track_publications p ON p.track_id=t.id WHERE p.state='withdrawn' \
+         AND (t.file_path=$1 OR t.file_hash=$2)) AS excluded", [path.into(), hash.as_str().into()]))
+        .await.map_err(|e|e.to_string())?.expect("EXISTS returns a row").try_get("", "excluded").map_err(|e|e.to_string())?;
+    if excluded {
+        return Ok(SyncOutcome::Present);
     }
     let local_path = soundtime_audio::ensure_local_file(state.storage.as_ref(), path)
         .await
@@ -599,6 +613,7 @@ async fn sync_file(
     // file size, duration and filename/tagged title. A title alone is ambiguous.
     if let Some(ids) = legacy_by_size.get(&(meta.file_size as i64)) {
         let candidates = track::Entity::find()
+            .filter(crate::storage_catalog::reusable_track())
             .filter(track::Column::Id.is_in(ids.clone()))
             .filter(track::Column::FileHash.is_null())
             .all(&tx)
@@ -649,6 +664,9 @@ async fn relink_track(
     path: &str,
     hash: String,
 ) -> Result<SyncOutcome, String> {
+    crate::storage_catalog::source_restored(&tx, row.id)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut update: track::ActiveModel = row.into();
     update.file_path = Set(path.to_string());
     update.file_hash = Set(Some(hash));
@@ -890,6 +908,13 @@ mod tests {
             .await
             .unwrap();
         let backend = DbBackend::Postgres;
+        db.execute_unprepared(
+            "CREATE TEMP TABLE track_publications(track_id uuid PRIMARY KEY, state text NOT NULL);
+            CREATE TEMP TABLE federation_missing_sources(track_id uuid PRIMARY KEY);
+            CREATE TEMP TABLE federation_managed_originals(file_path text PRIMARY KEY,sha256 text NOT NULL)",
+        )
+        .await
+        .unwrap();
         let schema = Schema::new(backend);
         for mut table in [
             schema.create_table_from_entity(artist::Entity),
@@ -972,8 +997,7 @@ mod tests {
         let moved = run_sync(&state, None, &[]).await.unwrap();
         assert_eq!((moved.moved, moved.removed), (1, 0));
 
-        // A previous release already imported a moved file. Keep the older
-        // track ID and the history/favorites accumulated on both records.
+        // Two historical publications retain their personal references while sharing a verified file.
         fs::rename(
             dir.path().join("copy.wav"),
             dir.path().join("duplicate.wav"),
@@ -1008,14 +1032,14 @@ mod tests {
             .await
             .unwrap();
         let repaired = run_sync(&state, None, &[]).await.unwrap();
-        assert_eq!(repaired.removed, 1);
+        assert_eq!((repaired.moved, repaired.removed), (1, 0));
         let kept = track::Entity::find_by_id(original_id)
             .one(&state.db)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(kept.file_path, "duplicate.wav");
-        assert_eq!(kept.play_count, 12);
+        assert_eq!(kept.play_count, 9);
         for table in ["favorites", "listen_history"] {
             let row = state
                 .db
@@ -1026,7 +1050,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(row.try_get::<Uuid>("", "track_id").unwrap(), original_id);
+            assert_eq!(row.try_get::<Uuid>("", "track_id").unwrap(), duplicate_id);
         }
         // An offline share must survive a scan even if local music is present.
         let share = dir.path().join("network-nfs");
@@ -1037,14 +1061,14 @@ mod tests {
         assert_eq!(run_sync(&state, None, &[]).await.unwrap().imported, 1);
         fs::remove_dir_all(&share).unwrap();
         let guarded = run_sync(&state, None, &["network-smb"]).await.unwrap();
-        assert_eq!(guarded.removed, 0);
+        assert_eq!(guarded.removed, 1);
         assert_eq!(guarded.empty_sources, ["network-nfs"]);
         assert_eq!(
             run_sync(&state, None, &["network-nfs"])
                 .await
                 .unwrap()
                 .removed,
-            1
+            0
         );
         let mut remote: track::ActiveModel = first.into();
         remote.id = Set(Uuid::new_v4());
@@ -1054,7 +1078,7 @@ mod tests {
             .await
             .unwrap()
             .0;
-        assert_eq!(stats.total_tracks, 1);
+        assert_eq!(stats.total_tracks, 2);
         assert_eq!(stats.total_size_bytes, wav.len() as i64);
         fs::remove_file(dir.path().join("duplicate.wav")).unwrap();
         fs::write(dir.path().join("unreadable.mp3"), b"bad audio").unwrap();
@@ -1068,8 +1092,8 @@ mod tests {
             .empty_sources
             .contains(&"/".to_string()));
         let cleaned = run_sync(&state, None, &["/"]).await.unwrap();
-        assert_eq!(cleaned.removed, 1);
-        assert_eq!(track::Entity::find().count(&state.db).await.unwrap(), 1);
+        assert_eq!(cleaned.removed, 0);
+        assert_eq!(track::Entity::find().count(&state.db).await.unwrap(), 4);
         assert_eq!(run_sync(&state, None, &["/"]).await.unwrap().removed, 0);
         let user_id = Uuid::new_v4();
         state

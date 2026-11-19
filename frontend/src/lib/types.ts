@@ -1,6 +1,10 @@
 // TypeScript interfaces for SoundTime
 
+export type TrackAvailability = "playable" | "withdrawn" | "temporarily_unavailable" | "unavailable_on_instance";
+
 export interface Track {
+  availability?: TrackAvailability;
+  position?: number;
   id: string;
   title: string;
   artist_id: string;
@@ -153,6 +157,11 @@ export interface SearchResults {
 
 /** A search result from a remote P2P peer. */
 export interface NetworkSearchResult {
+  authority_node?: string;
+  publication_id?: string;
+  revision?: number;
+  track_id?: string;
+  track?: Track;
   hash: string;
   title: string;
   artist_name: string;
@@ -386,6 +395,7 @@ export interface SetupInstanceRequest {
 }
 
 export interface SetupCompleteRequest {
+  instance_private?: boolean;
   open_registrations: boolean;
   max_upload_size_mb: number;
   p2p_enabled: boolean;

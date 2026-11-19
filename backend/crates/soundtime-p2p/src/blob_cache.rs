@@ -8,10 +8,11 @@
 //! provide bounded-size caching on top of the persistent `FsStore`.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::{Hash, HashAndFormat};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -42,6 +43,21 @@ pub struct BlobCache {
     max_size: u64,
     /// Set of hashes currently being fetched (prevents duplicate fetches).
     in_flight: Mutex<HashSet<Hash>>,
+}
+
+pub(crate) struct FetchLease<'a> {
+    cache: &'a BlobCache,
+    hash: Hash,
+}
+
+impl Drop for FetchLease<'_> {
+    fn drop(&mut self) {
+        self.cache
+            .in_flight
+            .lock()
+            .expect("in-flight fetch lock")
+            .remove(&self.hash);
+    }
 }
 
 impl BlobCache {
@@ -141,13 +157,21 @@ impl BlobCache {
     /// If not, marks it as in-flight and returns `true` (caller should fetch).
     /// If yes, returns `false` (caller should wait/retry).
     pub async fn try_start_fetch(&self, hash: Hash) -> bool {
-        let mut in_flight = self.in_flight.lock().await;
+        let mut in_flight = self.in_flight.lock().expect("in-flight fetch lock");
         in_flight.insert(hash)
+    }
+
+    pub(crate) async fn claim_fetch(&self, hash: Hash) -> Option<FetchLease<'_>> {
+        if self.try_start_fetch(hash).await {
+            Some(FetchLease { cache: self, hash })
+        } else {
+            None
+        }
     }
 
     /// Mark a fetch as completed (whether success or failure).
     pub async fn finish_fetch(&self, hash: Hash) {
-        let mut in_flight = self.in_flight.lock().await;
+        let mut in_flight = self.in_flight.lock().expect("in-flight fetch lock");
         in_flight.remove(&hash);
     }
 

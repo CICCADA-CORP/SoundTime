@@ -272,6 +272,11 @@ pub async fn refresh_all_peers(node: &Arc<P2pNode>, registry: &PeerRegistry) {
                 registry
                     .upsert_peer_versioned(&peer.node_id, peer.name.clone(), track_count, version)
                     .await;
+                if !peer.is_online {
+                    if let Err(error) = node.resume_subscription(node_id).await {
+                        warn!(peer = %peer.node_id, %error, "unable to resume catalogue subscription");
+                    }
+                }
             }
             _ => {
                 registry.mark_offline(&peer.node_id).await;

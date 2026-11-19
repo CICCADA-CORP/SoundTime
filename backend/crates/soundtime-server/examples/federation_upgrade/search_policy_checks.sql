@@ -1,0 +1,33 @@
+DO $$
+DECLARE f record; fallback text := repeat('f',64); state text; local_track uuid := '30000000-0000-4000-8000-000000000001';
+BEGIN
+    SELECT * INTO STRICT f FROM search_fixture WHERE i=1;
+    UPDATE federation_peer_policies SET is_followed=false WHERE node_id=f.provider;
+    SELECT availability INTO STRICT state FROM federation_track_availability(true,true) WHERE track_id=f.id;
+    IF state <> 'unavailable_on_instance' THEN RAISE EXCEPTION 'unfollowed %',state; END IF;
+    INSERT INTO federation_peer_policies(node_id,is_followed) VALUES(fallback,true);
+    INSERT INTO publication_offers VALUES(f.id,1,fallback,now()+interval '1 day');
+    UPDATE federation_peer_policies SET is_banned=true WHERE node_id=f.provider;
+    SELECT availability INTO STRICT state FROM federation_track_availability(true,true) WHERE track_id=f.id;
+    IF state <> 'playable' THEN RAISE EXCEPTION 'independent source %',state; END IF;
+    UPDATE publication_offers SET expires_at=now() WHERE track_id=f.id AND provider_node_id=fallback;
+    SELECT availability INTO STRICT state FROM federation_track_availability(true,true) WHERE track_id=f.id;
+    IF state='playable' THEN RAISE EXCEPTION 'expired offer playable'; END IF;
+    UPDATE publication_offers SET expires_at=now()+interval '1 day' WHERE track_id=f.id;
+    INSERT INTO federation_content_blocks(content_hash) VALUES(f.hash);
+    SELECT availability INTO STRICT state FROM federation_track_availability(true,true) WHERE track_id=f.id;
+    IF state<>'unavailable_on_instance' THEN RAISE EXCEPTION 'blocked asset playable'; END IF;
+    DELETE FROM federation_content_blocks WHERE content_hash=f.hash;
+    INSERT INTO federation_hidden_publications VALUES(f.id);
+    SELECT availability INTO STRICT state FROM federation_track_availability(true,true) WHERE track_id=f.id;
+    IF state<>'unavailable_on_instance' THEN RAISE EXCEPTION 'hidden publication playable'; END IF;
+    DELETE FROM federation_hidden_publications WHERE track_id=f.id;
+    UPDATE federation_peer_policies SET is_banned=false,is_followed=true WHERE node_id=f.provider;
+    UPDATE track_publications SET state='withdrawn' WHERE track_id=f.id;
+    SELECT availability INTO STRICT state FROM federation_track_availability(true,true) WHERE track_id=f.id;
+    IF state<>'withdrawn' THEN RAISE EXCEPTION 'withdrawn publication playable'; END IF;
+    INSERT INTO federation_missing_sources VALUES(local_track);
+    SELECT availability INTO STRICT state FROM federation_track_availability(false,false) WHERE track_id=local_track;
+    IF state<>'temporarily_unavailable' THEN RAISE EXCEPTION 'missing original playable'; END IF;
+END;
+$$;

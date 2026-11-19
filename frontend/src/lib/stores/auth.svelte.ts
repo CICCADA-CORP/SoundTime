@@ -1,8 +1,16 @@
-import { api, clearTokens, setTokens, apiFetch } from "$lib/api";
+import { api, clearTokens, setTokens, apiFetch, prepareMediaSession } from "$lib/api";
 import type { AuthResponse, User } from "$lib/types";
 
 let user = $state<User | null>(null);
 let loading = $state(true);
+let sessionRevision = 0;
+
+if (typeof window !== "undefined") {
+  window.addEventListener("soundtime:logout", () => {
+    sessionRevision++;
+    user = null;
+  });
+}
 
 function isAuthenticated(): boolean {
   return user !== null;
@@ -13,12 +21,15 @@ function isAdmin(): boolean {
 }
 
 async function login(username: string, password: string): Promise<void> {
+  const revision = ++sessionRevision;
   const data = await api.post<AuthResponse>("/auth/login", {
     username,
     password,
   });
+  if (revision !== sessionRevision) return;
   setTokens(data.tokens.access_token, data.tokens.refresh_token);
-  user = data.user;
+  await prepareMediaSession(true)?.catch(() => {});
+  if (revision === sessionRevision) user = data.user;
 }
 
 async function register(
@@ -26,16 +37,20 @@ async function register(
   username: string,
   password: string
 ): Promise<void> {
+  const revision = ++sessionRevision;
   const data = await api.post<AuthResponse>("/auth/register", {
     email,
     username,
     password,
   });
+  if (revision !== sessionRevision) return;
   setTokens(data.tokens.access_token, data.tokens.refresh_token);
-  user = data.user;
+  await prepareMediaSession(true)?.catch(() => {});
+  if (revision === sessionRevision) user = data.user;
 }
 
 function logout() {
+  sessionRevision++;
   clearTokens();
   user = null;
 }
@@ -62,10 +77,14 @@ async function updatePassword(currentPassword: string, newPassword: string): Pro
 }
 
 async function fetchMe(): Promise<void> {
+  const revision = sessionRevision;
   try {
-    user = await api.get<User>("/auth/me");
+    const member = await api.get<User>("/auth/me");
+    if (revision !== sessionRevision) return;
+    await prepareMediaSession()?.catch(() => {});
+    if (revision === sessionRevision) user = member;
   } catch {
-    user = null;
+    if (revision === sessionRevision) user = null;
   }
 }
 

@@ -16,9 +16,9 @@ describe('ArtistCard', () => {
     expect(screen.getByText('Cool Artist')).toBeInTheDocument();
   });
 
-  it('renders fallback emoji when no image_url', () => {
+  it('renders accessible artwork when no image_url', () => {
     render(ArtistCard, { props: { artist } });
-    expect(screen.getByText('🎤')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Cool Artist' })).toBeInTheDocument();
   });
 
   it('renders image when image_url is set', () => {
@@ -37,6 +37,6 @@ describe('ArtistCard', () => {
 
   it('shows Artist label', () => {
     render(ArtistCard, { props: { artist } });
-    expect(screen.getByText('Tracks')).toBeInTheDocument();
+    expect(screen.getByText('Artist')).toBeInTheDocument();
   });
 });

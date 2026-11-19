@@ -1,20 +1,24 @@
 <script lang="ts">
+  import { invalidateFavorites } from "$lib/catalog/favorites.svelte";
   import { api } from "$lib/api";
   import { getAuthStore } from "$lib/stores/auth.svelte";
   import { t } from "$lib/i18n/index.svelte";
 
-  let { trackId, size = 18, liked = $bindable(false) }: {
+  let { trackId, size = 18, disabled = false, liked = $bindable(false) }: {
     trackId: string;
     size?: number;
+    disabled?: boolean;
     liked?: boolean;
   } = $props();
 
   const auth = getAuthStore();
   let loading = $state(false);
+  let failed = $state(false);
 
   async function toggle() {
     if (!auth.isAuthenticated || loading) return;
     loading = true;
+    failed = false;
     try {
       if (liked) {
         await api.delete(`/favorites/${trackId}`);
@@ -23,8 +27,9 @@
         await api.post(`/favorites/${trackId}`);
         liked = true;
       }
+      invalidateFavorites();
     } catch {
-      // silently ignore
+      failed = true;
     } finally {
       loading = false;
     }
@@ -33,7 +38,9 @@
 
 {#if auth.isAuthenticated}
   <button
-    class="transition-all duration-200 hover:scale-110 {loading ? 'opacity-50 pointer-events-none' : ''}"
+    type="button" disabled={loading || disabled}
+    aria-pressed={liked}
+    class="grid min-h-8 min-w-8 place-items-center rounded-md hover:bg-secondary disabled:opacity-50"
     onclick={(e) => { e.stopPropagation(); toggle(); }}
     title={liked ? t('favorites.remove') : t('favorites.add')}
   >
@@ -47,4 +54,5 @@
       </svg>
     {/if}
   </button>
+  {#if failed}<span role="alert" class="absolute right-0 z-20 w-48 rounded-md border bg-popover p-2 text-xs text-destructive shadow">{t("favorites.updateFailed")}</span>{/if}
 {/if}

@@ -6,6 +6,7 @@ vi.mock('$lib/api', () => ({
     post: vi.fn().mockResolvedValue(undefined),
     get: vi.fn().mockResolvedValue(undefined),
   },
+  prepareMediaSession: vi.fn(),
   streamUrl: vi.fn((id: string) => `/api/tracks/${id}/stream`),
   API_BASE: '/api',
   lastfmApi: {
@@ -35,7 +36,8 @@ vi.mock('./queue.svelte', () => ({
 }));
 
 import { getPlayerStore } from './player.svelte';
-import { api } from '$lib/api';
+import { api, lastfmApi, prepareMediaSession, streamUrl } from '$lib/api';
+import { showcaseTracks } from '$lib/showcase';
 
 // Mock HTMLAudioElement — track instances for event triggering
 let lastAudioInstance: MockAudio | null = null;
@@ -57,6 +59,10 @@ class MockAudio {
     this.listeners[event].push(handler);
   }
 
+  removeAttribute(name: string) {
+    if (name === 'src') this.src = '';
+  }
+  load() {}
   removeEventListener() {}
 
   play() {
@@ -293,6 +299,17 @@ describe('Player Store', () => {
     });
   });
 
+  it('plays bundled previews without sending synthetic track IDs to the server', () => {
+    player.play(showcaseTracks[0]);
+    expect(lastAudioInstance?.src).toBe(showcaseTracks[0].file_path);
+    player.seek(8);
+    player.play(showcaseTracks[1]);
+    lastAudioInstance?.trigger('ended');
+    expect(streamUrl).not.toHaveBeenCalled();
+    expect(lastfmApi.nowPlaying).not.toHaveBeenCalled();
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
   describe('audio events', () => {
     const mockTrack = {
       id: 'track-audio', title: 'Audio Events', artist_id: 'a1', album_id: null,
@@ -301,6 +318,65 @@ describe('Player Store', () => {
       bitrate: 320, sample_rate: 44100, musicbrainz_id: null, waveform_data: null,
       uploaded_by: null, play_count: 0, created_at: '2025-01-01',
     };
+
+    it('keeps the selection and resumes from the failed position on retry', async () => {
+      player.play(mockTrack);
+      player.seek(24);
+      lastAudioInstance!.trigger('error');
+      expect(player.failed).toBe(true);
+      expect(player.isPlaying).toBe(false);
+      expect(player.currentTrack?.id).toBe(mockTrack.id);
+      vi.mocked(prepareMediaSession).mockReturnValueOnce(Promise.resolve());
+      player.togglePlay();
+      await Promise.resolve();
+      expect(prepareMediaSession).toHaveBeenLastCalledWith(true);
+      lastAudioInstance!.duration = 180;
+      lastAudioInstance!.currentTime = 0;
+      lastAudioInstance!.trigger('loadedmetadata');
+      expect(lastAudioInstance!.currentTime).toBe(24);
+      expect(player.isPlaying).toBe(true);
+      expect(player.failed).toBe(false);
+      expect(api.post).not.toHaveBeenCalledWith('/history', expect.anything());
+    });
+
+    it('keeps a stopped track retryable after a grant failure and browser gesture restriction', async () => {
+      vi.mocked(prepareMediaSession).mockRejectedValueOnce(new Error('Offline'));
+      player.play(mockTrack);
+      await Promise.resolve();
+      expect(player.failed).toBe(true);
+      expect(player.isPlaying).toBe(false);
+
+      const play = vi.spyOn(MockAudio.prototype, 'play').mockRejectedValueOnce(
+        new DOMException('A user gesture is required', 'NotAllowedError')
+      );
+      player.resume();
+      await Promise.resolve();
+      expect(player.failed).toBe(false);
+      expect(player.isPlaying).toBe(false);
+      player.resume();
+      expect(player.isPlaying).toBe(true);
+      expect(prepareMediaSession).toHaveBeenLastCalledWith(false);
+      play.mockRestore();
+    });
+
+    it('discards late grants when switching tracks or logging out', async () => {
+      let finish!: () => void;
+      vi.mocked(prepareMediaSession).mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve; }));
+      player.play(mockTrack);
+      player.play({ ...mockTrack, id: 'second' });
+      finish();
+      await Promise.resolve();
+      expect(lastAudioInstance!.src).toBe('/api/tracks/second/stream');
+
+      vi.mocked(prepareMediaSession).mockReturnValueOnce(new Promise<void>(resolve => { finish = resolve; }));
+      player.play(mockTrack);
+      window.dispatchEvent(new Event('soundtime:logout'));
+      finish();
+      await Promise.resolve();
+      expect(player.currentTrack).toBeNull();
+      expect(lastAudioInstance!.src).toBe('');
+      expect(player.isPlaying).toBe(false);
+    });
 
     it('logs history when switching tracks with progress > 5', () => {
       const track1 = { ...mockTrack, id: 'track-first' };
@@ -355,6 +431,15 @@ describe('Player Store', () => {
         completed: true,
         skipped: false,
       }));
+    });
+
+    it('logs one completion when the queue advances to the following track', () => {
+      player.play(mockTrack);
+      player.seek(28);
+      window.addEventListener('soundtime:trackended', () => player.play({ ...mockTrack, id: 'next' }), { once: true });
+      lastAudioInstance!.trigger('ended');
+      expect(api.post).toHaveBeenCalledTimes(1);
+      expect(api.post).toHaveBeenCalledWith('/history', expect.objectContaining({ completed: true }));
     });
 
     it('ended event with repeat=one restarts playback', () => {

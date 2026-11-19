@@ -31,45 +31,20 @@ Cypress.Commands.add('loginAsAdmin', () => {
 	cy.login('admin', 'Admin123!');
 });
 
-// Complete initial setup
+// Resume partial setup using the credentials that created the disposable instance.
 Cypress.Commands.add('setupInstance', (adminUser) => {
-	const user = adminUser ?? {
-		username: 'admin',
-		email: 'admin@soundtime.test',
-		password: 'Admin123!'
-	};
-
-	// Check setup status first
-	cy.request('/api/setup/status').then((res) => {
-		if (res.body.setup_complete) return;
-
-		// Step 1: Create admin
-		if (!res.body.has_admin) {
-			cy.request('POST', '/api/setup/admin', user);
-		}
-
-		// Step 2: Instance config
-		cy.request({
-			method: 'POST',
-			url: '/api/setup/instance',
-			headers: { Authorization: `Bearer ${window.localStorage.getItem('soundtime_access_token')}` },
-			body: {
-				instance_name: 'Test Instance',
-				instance_description: 'E2E test instance'
-			}
-		});
-
-		// Step 3: Complete setup
-		cy.request({
-			method: 'POST',
-			url: '/api/setup/complete',
-			headers: { Authorization: `Bearer ${window.localStorage.getItem('soundtime_access_token')}` },
-			body: {
-				federation_enabled: false,
-				open_registrations: true,
-				auto_accept_follows: true,
-				max_upload_size_mb: 50
-			}
+	const user = adminUser ?? { username: 'admin', email: 'admin@soundtime.test', password: 'Admin123!' };
+	cy.request('/api/setup/status').then(({ body: status }) => {
+		if (status.setup_complete) return;
+		const session = status.has_admin
+			? cy.request('POST', '/api/auth/login', { username: user.username, password: user.password })
+			: cy.request('POST', '/api/setup/admin', user);
+		session.then(({ body }) => {
+			const headers = { Authorization: 'Bearer ' + body.tokens.access_token };
+			cy.request({ method: 'POST', url: '/api/setup/instance', headers,
+				body: { instance_name: 'Test Instance', instance_description: 'E2E test instance' } });
+			cy.request({ method: 'POST', url: '/api/setup/complete', headers,
+				body: { p2p_enabled: false, open_registrations: true, max_upload_size_mb: 50 } });
 		});
 	});
 });

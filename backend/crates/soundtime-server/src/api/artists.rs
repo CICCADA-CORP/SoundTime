@@ -95,6 +95,7 @@ pub async fn get_artist(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     let tracks = track::Entity::find()
+        .filter(super::tracks::playable_filter(&state))
         .filter(track::Column::ArtistId.eq(id))
         .order_by_desc(track::Column::CreatedAt)
         .all(&state.db)
@@ -110,7 +111,7 @@ pub async fn get_artist(
         tracks: tracks
             .into_iter()
             .map(|t| {
-                let mut resp = super::tracks::TrackResponse::from(t);
+                let mut resp = super::tracks::TrackResponse::playable(t);
                 resp.artist_name = Some(artist_model.name.clone());
                 resp
             })
@@ -134,6 +135,7 @@ pub async fn list_top_artists(
     }
 
     let top_ids = track::Entity::find()
+        .filter(super::tracks::playable_filter(&state))
         .select_only()
         .column(track::Column::ArtistId)
         .group_by(track::Column::ArtistId)

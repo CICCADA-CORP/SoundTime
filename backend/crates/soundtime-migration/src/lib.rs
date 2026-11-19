@@ -34,8 +34,27 @@ mod m20240101_000031_add_track_embeddings;
 mod m20240101_000032_add_performance_indexes;
 mod m20240101_000033_refresh_collation_version;
 mod m20240101_000034_track_file_hash;
+mod m20240101_000035_federated_publications;
+mod m20240101_000036_publication_withdrawals;
+mod m20240101_000037_catalog_search;
+mod m20240101_000038_received_inventories;
 
 pub struct Migrator;
+
+impl Migrator {
+    /// Serialize startup upgrades across processes sharing the same database.
+    pub async fn up_locked(
+        db: &sea_orm_migration::sea_orm::DatabaseConnection,
+    ) -> Result<(), DbErr> {
+        use sea_orm_migration::sea_orm::TransactionTrait;
+
+        let tx = db.begin().await?;
+        tx.execute_unprepared("SELECT pg_advisory_xact_lock(1937011565, 2)")
+            .await?;
+        Self::up(&tx, None).await?;
+        tx.commit().await
+    }
+}
 
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
@@ -75,6 +94,10 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000032_add_performance_indexes::Migration),
             Box::new(m20240101_000033_refresh_collation_version::Migration),
             Box::new(m20240101_000034_track_file_hash::Migration),
+            Box::new(m20240101_000035_federated_publications::Migration),
+            Box::new(m20240101_000036_publication_withdrawals::Migration),
+            Box::new(m20240101_000037_catalog_search::Migration),
+            Box::new(m20240101_000038_received_inventories::Migration),
         ]
     }
 }

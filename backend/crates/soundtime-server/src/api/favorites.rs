@@ -59,7 +59,7 @@ pub async fn list_favorites(
     };
 
     // Preserve original favorite order (most recent first)
-    let data: Vec<super::tracks::TrackResponse> = favs
+    let mut data: Vec<super::tracks::TrackResponse> = favs
         .iter()
         .filter_map(|fav| {
             tracks_map
@@ -68,6 +68,7 @@ pub async fn list_favorites(
         })
         .collect();
 
+    super::tracks::attach_availability(&state, &mut data).await?;
     let total_pages = total.div_ceil(per_page);
 
     Ok(Json(super::tracks::PaginatedResponse {

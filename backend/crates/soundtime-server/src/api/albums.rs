@@ -134,6 +134,7 @@ pub async fn get_album(
         .map(|a| a.name);
 
     let tracks = track::Entity::find()
+        .filter(super::tracks::playable_filter(&state))
         .filter(track::Column::AlbumId.eq(id))
         .order_by_asc(track::Column::DiscNumber)
         .order_by_asc(track::Column::TrackNumber)
@@ -153,7 +154,7 @@ pub async fn get_album(
     let enriched_tracks = tracks
         .into_iter()
         .map(|t| {
-            let mut resp = super::tracks::TrackResponse::from(t);
+            let mut resp = super::tracks::TrackResponse::playable(t);
             resp.artist_name = artist_name.clone();
             resp.album_title = Some(album_model.title.clone());
             resp.cover_url = album_cover.clone();

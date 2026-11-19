@@ -1,0 +1,61 @@
+name: Federation integration
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - backend/**
+      - frontend/**
+      - docker/Dockerfile.*
+      - docker/nginx.conf
+      - scripts/federation/**
+      - scripts/test-p2p-federation.sh
+      - .github/workflows/federation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: federation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  three-instances:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: browser-actions/setup-chrome@v2
+        id: browser
+        with:
+          chrome-version: stable
+          install-dependencies: true
+
+      - name: Check isolated Compose topology
+        env:
+          FEDERATION_SECRET: ci-validation-only
+        run: docker compose --env-file /dev/null -p st-fed-validate -f scripts/federation/compose.yml config --quiet
+
+      - name: Capture baseline on a fresh project
+        env:
+          FEDERATION_ARTIFACT_DIR: ${{ runner.temp }}/soundtime-federation/baseline
+          CHROME_BIN: ${{ steps.browser.outputs.chrome-path }}
+        run: scripts/test-p2p-federation.sh baseline
+
+      - name: Check acceptance on a second fresh project
+        env:
+          FEDERATION_ARTIFACT_DIR: ${{ runner.temp }}/soundtime-federation/acceptance
+          CHROME_BIN: ${{ steps.browser.outputs.chrome-path }}
+        run: scripts/test-p2p-federation.sh acceptance
+
+      - name: Retain scenario reports and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: federation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/soundtime-federation/
+          if-no-files-found: warn
+          retention-days: 7

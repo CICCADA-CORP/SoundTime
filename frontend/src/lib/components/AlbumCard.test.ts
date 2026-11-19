@@ -58,9 +58,9 @@ describe('AlbumCard', () => {
     expect(screen.getByText('2024 · Test Artist')).toBeInTheDocument();
   });
 
-  it('renders fallback emoji when no cover_url', () => {
+  it('renders accessible artwork when no cover_url', () => {
     render(AlbumCard, { props: { album } });
-    expect(screen.getByText('💿')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Test Album' })).toBeInTheDocument();
   });
 
   it('renders cover image when cover_url is set', () => {

@@ -59,13 +59,17 @@ describe('Authentication', () => {
 	});
 
 	describe('Logout', () => {
-		it('clears tokens and redirects on logout', () => {
-			cy.login('admin', 'Admin123!');
-			cy.visit('/');
-			// Click on user menu or logout button
-			cy.get('[data-testid="user-menu"], [data-testid="logout"], button:contains("Logout"), button:contains("Déconnexion")').first().click({ force: true });
+		it('clears the session when signing out from account settings', () => {
+			cy.loginAsAdmin();
+			cy.visit('/', {
+				onBeforeLoad(win) { win.localStorage.setItem('soundtime_lang', 'en'); },
+			});
+			cy.get('a[href="/settings"]:visible').first().click();
+			cy.location('pathname').should('eq', '/settings');
+			cy.contains('main button', /^Logout$/).click();
 			cy.window().then((win) => {
 				expect(win.localStorage.getItem('soundtime_access_token')).to.be.null;
+				expect(win.localStorage.getItem('soundtime_refresh_token')).to.be.null;
 			});
 		});
 	});

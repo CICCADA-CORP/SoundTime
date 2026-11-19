@@ -479,16 +479,13 @@ async fn send_heartbeat(
 
     // Gather instance stats for richer listing
     let track_count = track::Entity::find().count(&state.db).await.unwrap_or(0);
-    let user_count = user::Entity::find().count(&state.db).await.unwrap_or(0);
-
-    let open_registration = instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq("instance_private"))
-        .one(&state.db)
+    let user_count = user::Entity::find()
+        .count(&state.db)
         .await
-        .ok()
-        .flatten()
-        .map(|s| s.value != "true")
-        .unwrap_or(true);
+        .map_err(|e| e.to_string())?;
+    let open_registration = crate::auth::registration::registrations_open(&state.db, user_count)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let params = HeartbeatParams {
         domain: domain.clone(),

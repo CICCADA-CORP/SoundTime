@@ -111,7 +111,7 @@ pub async fn list_history(
         HashMap::new()
     };
 
-    let data: Vec<HistoryEntry> = entries
+    let mut data: Vec<HistoryEntry> = entries
         .into_iter()
         .filter_map(|entry| {
             let t = tracks_map.get(&entry.track_id)?;
@@ -124,6 +124,7 @@ pub async fn list_history(
         })
         .collect();
 
+    super::tracks::attach_availability(&state, data.iter_mut().map(|item| &mut item.track)).await?;
     let total_pages = total.div_ceil(per_page);
 
     Ok(Json(super::tracks::PaginatedResponse {
@@ -360,7 +361,7 @@ pub async fn list_recent_history(
         HashMap::new()
     };
 
-    let data = entries
+    let mut data: Vec<HistoryEntry> = entries
         .into_iter()
         .filter_map(|entry| {
             let t = tracks_map.get(&entry.track_id)?;
@@ -396,6 +397,7 @@ pub async fn list_recent_history(
         })
         .collect();
 
+    super::tracks::attach_availability(&state, data.iter_mut().map(|item| &mut item.track)).await?;
     Ok(Json(data))
 }
 

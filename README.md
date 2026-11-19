@@ -1,8 +1,6 @@
-<p align="center">
-  <img src="docs/assets/logo-white.png" alt="SoundTime Logo" width="130" />
-</p>
-
-<h1 align="center">SoundTime</h1>
+<h1 align="center">
+  <img src="frontend/static/soundtime-signature.svg" alt="SoundTime" width="320" />
+</h1>
 
 <p align="center">
   <strong>Self-hosted music streaming with peer-to-peer sharing</strong>

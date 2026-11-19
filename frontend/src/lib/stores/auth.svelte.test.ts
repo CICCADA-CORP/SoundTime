@@ -12,6 +12,7 @@ vi.mock('$lib/api', () => {
     api: mockApi,
     apiFetch: vi.fn(),
     setTokens: vi.fn(),
+    prepareMediaSession: vi.fn(),
     clearTokens: vi.fn(),
   };
 });

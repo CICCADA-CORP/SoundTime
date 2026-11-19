@@ -1,9 +1,14 @@
 <script lang="ts">
+  import { ChevronUp, Disc3, Play, Pause, SkipBack, SkipForward, RotateCw, Repeat, Shuffle, Infinity as Autoplay, ListMusic, Volume1, Volume2, VolumeX, Square, Maximize2 } from "lucide-svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
   import { getRadioStore } from "$lib/stores/radio.svelte";
-  import { api, API_BASE } from "$lib/api";
+  import { showcaseAudio } from "$lib/showcase";
+  import { favoriteQuery } from "$lib/catalog/favorites.svelte";
+  import { api } from "$lib/api";
+  import { playerArtwork } from "./player/artwork";
+  import PlayerRange from "./player/PlayerRange.svelte";
   import { formatDuration } from "$lib/utils";
   import { t } from "$lib/i18n/index.svelte";
   import FavoriteButton from "./FavoriteButton.svelte";
@@ -13,188 +18,193 @@
   const queue = getQueueStore();
   const auth = getAuthStore();
   const radio = getRadioStore();
+  const track = $derived(player.currentTrack);
+  const demo = $derived(track && showcaseAudio(track.id));
+  const cover = $derived(track && playerArtwork(track));
+  const progress = $derived(player.duration > 0 ? Math.min(100, Math.max(0, player.progress / player.duration * 100)) : 0);
 
-  let liked = $state(false);
-  let lastCheckedTrackId = $state<string | null>(null);
+  const favorites = favoriteQuery(() => track && !demo && auth.isAuthenticated
+    ? api.get<string[]>("/favorites/check?track_ids=" + encodeURIComponent(track.id))
+    : null);
   let expanded = $state(false);
+  let panel = $state<"track" | "queue" | "lyrics">("track");
+  let lastAudibleVolume = 0.8;
 
-  // Check favorite status when track changes
-  $effect(() => {
-    const trackId = player.currentTrack?.id;
-    if (trackId && auth.isAuthenticated && trackId !== lastCheckedTrackId) {
-      lastCheckedTrackId = trackId;
-      api.get<string[]>(`/favorites/check?track_ids=${trackId}`)
-        .then((ids) => { liked = ids.includes(trackId); })
-        .catch(() => { liked = false; });
-    } else if (!trackId) {
-      liked = false;
-      lastCheckedTrackId = null;
+  function openPlayer(view: "track" | "queue") {
+    panel = view;
+    expanded = true;
+  }
+
+  function toggleMute() {
+    if (player.volume > 0) {
+      lastAudibleVolume = player.volume;
+      player.setVolume(0);
+    } else {
+      player.setVolume(lastAudibleVolume);
     }
-  });
-
-  function resolveMediaUrl(url: string): string {
-    // If already absolute, return as-is
-    if (url.startsWith("http")) return url;
-    // Strip /api prefix from API_BASE and prepend
-    const base = API_BASE.replace(/\/api$/, "");
-    return `${base}${url}`;
   }
 
-  function handleSeek(e: MouseEvent) {
-    const bar = e.currentTarget as HTMLElement;
-    const rect = bar.getBoundingClientRect();
-    const ratio = (e.clientX - rect.left) / rect.width;
-    player.seek(ratio * player.duration);
-  }
-
-  function handleVolume(e: MouseEvent) {
-    const bar = e.currentTarget as HTMLElement;
-    const rect = bar.getBoundingClientRect();
-    const ratio = (e.clientX - rect.left) / rect.width;
-    player.setVolume(ratio);
+  function adjustVolume(value: number) {
+    if (value > 0) lastAudibleVolume = value;
+    player.setVolume(value);
   }
 </script>
 
-{#if player.currentTrack}
-  <div class="fixed bottom-14 md:bottom-0 left-0 md:left-60 right-0 h-auto md:h-20 bg-[hsl(0,0%,10%)] border-t border-[hsl(var(--border))] z-[56] safe-area-bottom-player">
-    <!-- Mobile progress bar (thin, at top of player) -->
-    <div class="md:hidden h-0.5 bg-[hsl(var(--secondary))] relative">
-      <div class="h-full bg-[hsl(var(--primary))] transition-[width] duration-200"
-           style="width: {player.duration > 0 ? (player.progress / player.duration) * 100 : 0}%"></div>
-    </div>
-    <!-- Mobile: compact player -->
-    <div class="flex md:hidden items-center gap-3 px-3 py-2">
-      <button class="w-10 h-10 rounded bg-[hsl(var(--secondary))] flex items-center justify-center text-sm flex-shrink-0 cursor-pointer" onclick={() => expanded = true}>
-        {#if player.currentTrack.cover_url}
-          <img src={resolveMediaUrl(player.currentTrack.cover_url)} alt="" class="w-full h-full rounded object-cover" />
-        {:else}
-          🎵
-        {/if}
-      </button>
-      <div class="min-w-0 flex-1" role="button" tabindex="0" onclick={() => expanded = true} onkeydown={(e) => e.key === 'Enter' && (expanded = true)}>
-        <p class="text-sm font-medium truncate">{player.currentTrack.title}</p>
-        <p class="text-xs text-[hsl(var(--muted-foreground))] truncate">{player.currentTrack.artist_name ?? "Unknown"}</p>
-        {#if radio.active}
-          <span class="text-[10px] text-[hsl(var(--primary))] font-medium">
-            {radio.autoplayMode ? t('player.autoplayActive') : t('radio.label')}
+{#if track}
+  <section class="player" aria-label={t("player.nowPlaying")} data-testid="audio-player" style:--progress={progress + "%"}>
+    <div class="player-body">
+      <div class="identity">
+        <button type="button" class="open-player" onclick={() => openPlayer("track")} aria-haspopup="dialog"
+          aria-label={t("player.expand") + " · " + track.title}>
+          <span class="artwork">
+            {#if cover}<img src={cover} alt="" />{:else}<Disc3 size={25} strokeWidth={1.5} />{/if}
+          </span>
+          <span class="metadata">
+            <span class="song">{track.title}</span>
+            {#if player.failed}<span class="artist" role="alert">{t("player.playbackError")}</span>
+            {:else}<span class="artist">{track.artist_name ?? t("track.unknownArtist")}</span>{/if}
+            {#if radio.active}<span class="radio-status">{t(radio.autoplayMode ? "player.autoplayActive" : "radio.nowPlaying")}</span>{/if}
+          </span>
+          <ChevronUp size={15} class="mobile-chevron" />
+        </button>
+        {#if !demo && auth.isAuthenticated}
+          <span class="favorite">
+            {#if favorites.failed}
+              <button type="button" title={t("radio.tryAgain")} onclick={favorites.retry}><RotateCw size={16} /></button>
+            {:else}
+              <FavoriteButton trackId={track.id} liked={favorites.data?.includes(track.id) ?? false} disabled={favorites.loading} size={16} />
+            {/if}
           </span>
         {/if}
       </div>
-      <div class="flex items-center gap-1 flex-shrink-0">
-        <FavoriteButton trackId={player.currentTrack.id} bind:liked size={16} />
-        <button class="w-9 h-9 rounded-full bg-white text-black flex items-center justify-center" onclick={player.togglePlay}>
-          {#if player.isPlaying}
-            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-          {:else}
-            <svg class="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-          {/if}
-        </button>
-        <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition p-1.5" onclick={queue.next} title="Next">
-          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-        </button>
-      </div>
-    </div>
 
-    <!-- Desktop: full player -->
-    <div class="hidden md:flex items-center px-4 h-20">
-      <!-- Track Info -->
-      <div class="flex items-center gap-3 w-64 min-w-0">
-        <button class="w-12 h-12 rounded bg-[hsl(var(--secondary))] flex items-center justify-center text-lg flex-shrink-0 cursor-pointer hover:ring-2 hover:ring-[hsl(var(--primary))] transition" onclick={() => expanded = true} title="Vue étendue">
-          {#if player.currentTrack.cover_url}
-            <img src={resolveMediaUrl(player.currentTrack.cover_url)} alt="" class="w-full h-full rounded object-cover" />
-          {:else}
-            🎵
-          {/if}
-        </button>
-        <div class="min-w-0 flex-1">
-          <p class="text-sm font-medium truncate">{player.currentTrack.title}</p>
-          <p class="text-xs text-[hsl(var(--muted-foreground))] truncate">{player.currentTrack.artist_name ?? "Unknown"}</p>
-          {#if radio.active}
-            <div class="flex items-center gap-1 mt-0.5">
-              <div class="w-1.5 h-1.5 rounded-full bg-[hsl(var(--primary))] animate-pulse"></div>
-              <span class="text-[10px] text-[hsl(var(--primary))] font-medium">
-                {radio.autoplayMode ? t('player.autoplayActive') : t('radio.nowPlaying')}
-              </span>
-            </div>
-          {/if}
+      <div class="transport">
+        <div class="controls">
+          <button type="button" class="mode" aria-pressed={player.shuffle} title={t("player.shuffle")} onclick={player.toggleShuffle}><Shuffle size={16}/></button>
+          <button type="button" class="skip previous" title={t("player.previous")} onclick={queue.previous}><SkipBack size={19} fill="currentColor" /></button>
+          <button type="button" class="play" aria-label={t(player.failed ? "radio.tryAgain" : player.isPlaying ? "shell.pause" : "shell.play")} onclick={player.togglePlay}>
+            {#if player.failed}<RotateCw size={17} />{:else if player.isPlaying}<Pause size={17} fill="currentColor" />{:else}<Play size={17} fill="currentColor" />{/if}
+          </button>
+          <button type="button" class="skip" title={t("player.next")} onclick={queue.next}><SkipForward size={19} fill="currentColor" /></button>
+          <button type="button" class="mode relative" aria-pressed={player.repeat !== "none"} title={t("player.repeat") + " · " + player.repeat} onclick={player.cycleRepeat}>
+            <Repeat size={16}/>{#if player.repeat === "one"}<span class="repeat-count">1</span>{/if}
+          </button>
         </div>
-        <FavoriteButton trackId={player.currentTrack.id} bind:liked size={16} />
-      </div>
-
-      <!-- Controls -->
-      <div class="flex-1 flex flex-col items-center max-w-xl mx-auto">
-        <div class="flex items-center gap-4 mb-1">
-          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" class:text-[hsl(var(--primary))]={player.shuffle} onclick={player.toggleShuffle} title="Shuffle">
-            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
-          </button>
-          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" onclick={queue.previous} title="Previous">
-            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
-          </button>
-          <button class="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 transition" onclick={player.togglePlay}>
-            {#if player.isPlaying}
-              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-            {:else}
-              <svg class="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-            {/if}
-          </button>
-          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" onclick={queue.next} title="Next">
-            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-          </button>
-          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" class:text-[hsl(var(--primary))]={player.repeat !== 'none'} onclick={player.cycleRepeat} title="Repeat: {player.repeat}">
-            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
-            {#if player.repeat === 'one'}
-              <span class="absolute text-[8px] font-bold">1</span>
-            {/if}
-          </button>
-          <button 
-            class="text-[hsl(var(--muted-foreground))] hover:text-white transition" 
-            class:text-[hsl(var(--primary))]={queue.autoplay} 
-            onclick={queue.toggleAutoplay} 
-            title={t('player.autoplay')}
-          >
-            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M18.6 6.62c-1.44 0-2.8.56-3.77 1.53L12 10.66 10.48 12h.01L7.8 14.39c-.64.64-1.49.99-2.4.99-1.87 0-3.39-1.52-3.39-3.39S3.53 8.61 5.4 8.61c.91 0 1.76.35 2.44 1.03l1.13 1 1.51-1.34L9.22 8.2C8.2 7.18 6.84 6.62 5.4 6.62 2.42 6.62 0 9.04 0 12s2.42 5.38 5.4 5.38c1.44 0 2.8-.56 3.77-1.53l2.83-2.5.01.01L13.52 12h-.01l2.69-2.39c.64-.64 1.49-.99 2.4-.99 1.87 0 3.39 1.52 3.39 3.39s-1.52 3.38-3.39 3.38c-.9 0-1.76-.35-2.44-1.03l-1.14-1.01-1.51 1.34 1.27 1.12c1.02 1.01 2.37 1.57 3.82 1.57 2.98 0 5.4-2.41 5.4-5.38s-2.42-5.37-5.4-5.37z"/>
-            </svg>
-          </button>
-          {#if radio.active}
-            <button
-              class="text-[hsl(var(--primary))] hover:text-white transition ml-2"
-              onclick={() => radio.stopRadio()}
-              title={t('radio.stop')}
-            >
-              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm-4-4h8V8H8v8z"/>
-              </svg>
-            </button>
-          {/if}
-        </div>
-
-        <!-- Progress Bar -->
-        <div class="flex items-center gap-2 w-full">
-          <span class="text-xs text-[hsl(var(--muted-foreground))] w-10 text-right">{formatDuration(player.progress)}</span>
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="flex-1 h-1 bg-[hsl(var(--secondary))] rounded-full cursor-pointer group" onclick={handleSeek}>
-            <div class="h-full bg-white rounded-full group-hover:bg-[hsl(var(--primary))] transition relative"
-                 style="width: {player.duration > 0 ? (player.progress / player.duration) * 100 : 0}%">
-              <div class="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover:opacity-100 transition"></div>
-            </div>
-          </div>
-          <span class="text-xs text-[hsl(var(--muted-foreground))] w-10">{formatDuration(player.duration)}</span>
+        <div class="timeline">
+          <span>{formatDuration(player.progress)}</span>
+          <PlayerRange label={t("shell.seek")} valueText={formatDuration(player.progress)} max={player.duration || 1}
+            step="any" value={player.progress} disabled={!player.duration} onchange={player.seek} />
+          <span>{formatDuration(player.duration)}</span>
         </div>
       </div>
 
-      <!-- Volume -->
-      <div class="flex items-center gap-2 w-40 justify-end">
-        <svg class="w-4 h-4 text-[hsl(var(--muted-foreground))]" fill="currentColor" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="flex-1 h-1 bg-[hsl(var(--secondary))] rounded-full cursor-pointer" onclick={handleVolume}>
-          <div class="h-full bg-white rounded-full" style="width: {player.volume * 100}%"></div>
+      <div class="utilities">
+        {#if radio.active}<button type="button" title={t("radio.stop")} onclick={radio.stopRadio}><Square size={14} /></button>{/if}
+        {#if !demo}<button type="button" class="autoplay" title={t("player.autoplay")} aria-pressed={queue.autoplay} onclick={queue.toggleAutoplay}><Autoplay size={18} /></button>{/if}
+        <div class="volume">
+          <button type="button" title={t(player.volume > 0 ? "player.mute" : "player.unmute")} onclick={toggleMute}>
+            {#if player.volume === 0}<VolumeX size={17} />{:else if player.volume < .5}<Volume1 size={17} />{:else}<Volume2 size={17} />{/if}
+          </button>
+          <PlayerRange label={t("player.volume")} max={1} step={0.01} value={player.volume} onchange={adjustVolume} />
+        </div>
+        <div class="views">
+          <button type="button" title={t("player.queue")} aria-haspopup="dialog" onclick={() => openPlayer("queue")}><ListMusic size={19} /></button>
+          <button type="button" class="expand" title={t("player.expand")} aria-haspopup="dialog" onclick={() => openPlayer("track")}><Maximize2 size={16} /></button>
         </div>
       </div>
     </div>
-  </div>
+  </section>
 {/if}
 
-<ExpandedPlayer bind:open={expanded} onclose={() => expanded = false} />
+<ExpandedPlayer bind:open={expanded} bind:panel onclose={() => expanded = false} />
+
+<style>
+  .player {
+    --slider-fill: hsl(var(--foreground));
+    --slider-track: hsl(var(--border));
+    --slider-height: 3px;
+    --slider-thumb-size: 7px;
+    position: fixed;
+    z-index: 46;
+    inset: auto 0 0 var(--workspace-left, var(--rail-width));
+    container: player / inline-size;
+    border-top: 1px solid hsl(var(--border));
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+  .player-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 1.15fr) minmax(0, 1fr);
+    align-items: center;
+    gap: clamp(12px, 2cqi, 28px);
+    min-height: 75px;
+    padding: 7px clamp(16px, 3cqi, 40px);
+  }
+  .identity, .open-player, .controls, .utilities, .volume, .views { display: flex; align-items: center; }
+  .identity { min-width: 0; gap: 8px; }
+  .open-player { min-width: 0; gap: 12px; border-radius: 4px; text-align: left; }
+  .open-player:hover .song { text-decoration: underline; text-underline-offset: 3px; }
+  .artwork {
+    display: grid; flex: none; place-items: center; width: 48px; height: 48px;
+    overflow: hidden; border-radius: 5px; background: hsl(var(--muted)); color: hsl(var(--muted-foreground));
+  }
+  .artwork img { width: 100%; height: 100%; object-fit: cover; }
+  .metadata { min-width: 0; }
+  .metadata span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .song { font-size: 14px; line-height: 1.4; font-weight: 600; }
+  .artist, .radio-status { color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.5; }
+  .radio-status { font-size: 10px; }
+  .open-player :global(.mobile-chevron) { display: none; }
+  .favorite { display: grid; place-items: center; flex-shrink: 0; }
+  .transport { width: 100%; max-width: 376px; min-width: 0; justify-self: center; }
+  .controls { justify-content: center; gap: clamp(6px, 1cqi, 14px); }
+  .controls button, .utilities button {
+    display: grid; flex: none; place-items: center; width: 32px; height: 32px;
+    border-radius: 5px; color: hsl(var(--muted-foreground)); transition: background-color .15s, color .15s;
+  }
+  .controls button:hover, .utilities button:hover, .controls [aria-pressed="true"], .utilities [aria-pressed="true"] {
+    background: hsl(var(--secondary)); color: hsl(var(--foreground));
+  }
+  .controls .skip { color: hsl(var(--foreground)); }
+  .controls .play {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: hsl(var(--foreground)); color: hsl(var(--background));
+  }
+  .controls .play:hover { background: hsl(var(--foreground) / .83); color: hsl(var(--background)); }
+  .repeat-count { position: absolute; top: 7px; left: 13px; font-size: 9px; font-weight: 700; }
+  .timeline {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
+    gap: 8px; color: hsl(var(--muted-foreground)); font-size: 10px; font-variant-numeric: tabular-nums;
+  }
+  .utilities { justify-content: flex-end; gap: 2px; }
+  .volume { gap: 1px; min-width: 0; width: clamp(68px, 9cqi, 100px); }
+  .views { gap: 1px; border-left: 1px solid hsl(var(--border)); padding-left: 7px; margin-left: 7px; }
+
+  @container player (max-width: 825px) {
+    .player-body { grid-template-columns: minmax(0, 1fr) minmax(160px, 1.05fr) auto; }
+    .volume { width: 72px; }
+  }
+  @container player (max-width: 665px) {
+    .volume :global(input), .views .expand { display: none; }
+    .volume { width: auto; }
+    .views { margin: 0; padding: 0; border: 0; }
+  }
+  @media (max-width: 767px) {
+    .player { inset: auto 0 var(--mobile-nav); }
+    .player-body { grid-template-columns: minmax(0, 1fr) auto; gap: 7px; min-height: 61px; padding: 6px 12px; }
+    .player::after {
+      content: ""; position: absolute; inset: auto 0 0; height: 2px; pointer-events: none;
+      background: linear-gradient(to right, var(--slider-fill) var(--progress), var(--slider-track) var(--progress));
+    }
+    .artwork { width: 43px; height: 43px; }
+    .open-player { min-height: 44px; gap: 10px; }
+    .open-player :global(.mobile-chevron) { display: block; flex: none; color: hsl(var(--muted-foreground)); }
+    .transport { width: auto; }
+    .controls { gap: 0; }
+    .controls button { width: 44px; height: 44px; }
+    .controls .play {
+      width: 44px; height: 44px; border: 5px solid transparent; background-clip: padding-box;
+    }
+    .controls .mode, .timeline, .utilities { display: none; }
+  }
+</style>

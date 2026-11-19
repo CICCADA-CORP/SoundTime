@@ -1,44 +1,55 @@
 <script lang="ts">
   import { page } from "$app/state";
-  import { onMount } from "svelte";
+  import { Flag, Pause, Pencil, Play, Trash2 } from "lucide-svelte";
+  import { goto } from "$app/navigation";
+  import { catalogQuery } from "$lib/catalog/query.svelte";
+  import CatalogState from "$lib/components/catalog/CatalogState.svelte";
+  import ReleaseHeader from "$lib/components/catalog/ReleaseHeader.svelte";
+  import { availabilityLabel, canPlay } from "$lib/catalog/availability";
   import { api } from "$lib/api";
-  import type { TrackCredits } from "$lib/types";
-  import { getAuthStore } from "$lib/stores/auth.svelte";
+  import { getQueueStore } from "$lib/stores/queue.svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
+  import { Button } from "$lib/components/ui/button";
+  import CatalogArtwork from "$lib/components/catalog/CatalogArtwork.svelte";
+  import PlayerSaveActions from "$lib/components/player/PlayerSaveActions.svelte";
+  import TrackActions from "$lib/components/catalog/TrackActions.svelte";
+  import type { Track, TrackCredits } from "$lib/types";
+  import { getAuthStore } from "$lib/stores/auth.svelte";
   import { formatDuration } from "$lib/utils";
   import { t } from "$lib/i18n/index.svelte";
 
   const auth = getAuthStore();
+  const queue = getQueueStore();
   const player = getPlayerStore();
-  let credits = $state<TrackCredits | null>(null);
-  let loading = $state(true);
+  const track = catalogQuery(() => api.get<Track>(`/tracks/${page.params.id}`));
+  const result = catalogQuery(() => api.get<TrackCredits>(`/tracks/${page.params.id}/credits`));
+  const credits = $derived(result.data);
   let editing = $state(false);
   let deleting = $state(false);
   let editForm = $state({ title: "", genre: "", year: "" as string, track_number: "" as string, disc_number: "" as string });
   let error: string | null = $state(null);
   let success: string | null = $state(null);
   let showReportForm = $state(false);
-  let reportReason = $state("");
-  let reportError = $state("");
-  let reportSuccess = $state("");
 
   let isOwner = $derived(credits?.uploaded_by && auth.user?.id === credits.uploaded_by);
 
-  onMount(async () => {
-    const id = page.params.id;
-    try {
-      credits = await api.get<TrackCredits>(`/tracks/${id}/credits`);
-      if (credits) {
-        editForm = {
-          title: credits.title,
-          genre: credits.genre ?? "",
-          year: credits.year?.toString() ?? "",
-          track_number: credits.track_number?.toString() ?? "",
-          disc_number: credits.disc_number?.toString() ?? "",
-        };
-      }
-    } catch (e) { console.error('Failed to load track credits:', e); } finally { loading = false; }
+  $effect(() => {
+    void page.params.id;
+    editing = false;
+    deleting = false;
+    showReportForm = false;
+    error = success = null;
   });
+
+  function toggleEdit() {
+    if (!credits) return;
+    editForm = {
+      title: credits.title, genre: credits.genre ?? "", year: credits.year?.toString() ?? "",
+      track_number: credits.track_number?.toString() ?? "", disc_number: credits.disc_number?.toString() ?? "",
+    };
+    editing = !editing;
+    success = null;
+  }
 
   async function saveEdit() {
     if (!credits) return;
@@ -53,9 +64,9 @@
 
       await api.put(`/tracks/${credits.id}`, body);
       success = t('track.metadataUpdated');
+      track.retry();
       editing = false;
-      // Reload
-      credits = await api.get<TrackCredits>(`/tracks/${credits.id}/credits`);
+      result.retry();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -66,125 +77,60 @@
     deleting = true;
     try {
       await api.delete(`/tracks/${credits.id}`);
-      window.location.href = "/explore";
+      await goto("/explore");
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);
       deleting = false;
     }
   }
 
-  async function submitReport() {
-    if (!credits || !reportReason.trim()) return;
-    reportError = "";
-    try {
-      await api.post(`/tracks/${credits.id}/report`, { reason: reportReason.trim() });
-      reportSuccess = t('track.reportSuccess');
-      reportReason = "";
-      setTimeout(() => { showReportForm = false; reportSuccess = ""; }, 3000);
-    } catch (e: unknown) {
-      reportError = (e instanceof Error ? e.message : String(e)) ?? t('track.reportError');
-    }
+  function play(item: Track) {
+    if (player.currentTrack?.id === item.id) player.togglePlay();
+    else queue.playQueue([item], 0, "collection");
   }
 </script>
 
-<svelte:head><title>{credits?.title ?? "Track"} — Crédits — SoundTime</title></svelte:head>
+<svelte:head><title>{credits?.title ?? t("track.trackLabel")} — SoundTime</title></svelte:head>
 
-{#if loading}
-  <div class="flex justify-center py-20">
-    <div class="w-8 h-8 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full animate-spin"></div>
-  </div>
-{:else if credits}
-  <div class="max-w-3xl mx-auto space-y-8">
-    <!-- Header -->
-    <div class="flex items-end gap-6">
-      {#if credits.album_cover_url}
-        <img src={credits.album_cover_url} alt={credits.album_title ?? ""} class="w-48 h-48 rounded-lg shadow-xl object-cover flex-shrink-0" />
-      {:else}
-        <div class="w-48 h-48 rounded-lg bg-gradient-to-br from-[hsl(var(--primary))]/40 to-[hsl(var(--secondary))] flex items-center justify-center text-6xl shadow-xl flex-shrink-0">🎵</div>
-      {/if}
-      <div class="min-w-0">
-        <p class="text-xs uppercase tracking-wider text-[hsl(var(--muted-foreground))]">{t('track.trackLabel')}</p>
-        <h1 class="text-3xl font-bold mt-1 truncate">{credits.title}</h1>
-        <a href="/artists/{credits.artist_id}" class="text-lg text-[hsl(var(--muted-foreground))] hover:text-white transition">{credits.artist_name}</a>
-        {#if credits.album_title}
-          <p class="text-sm text-[hsl(var(--muted-foreground))] mt-1">
-            Album: <a href="/albums/{credits.album_id}" class="hover:text-white transition">{credits.album_title}</a>
-          </p>
+{#if credits}
+  <div class="max-w-4xl space-y-8">
+    <ReleaseHeader kind="album" title={credits.title} image={credits.album_cover_url} label={t("track.trackLabel")}>
+      {#snippet info()}
+        <a href="/artists/{credits.artist_id}" class="hover:underline">{credits.artist_name}</a>
+        {#if credits.album_title && credits.album_id}
+          · <a href="/albums/{credits.album_id}" class="hover:underline">{credits.album_title}</a>
         {/if}
-        <p class="text-xs text-[hsl(var(--muted-foreground))] mt-2">
-          {credits.play_count} {credits.play_count !== 1 ? t('track.plays').toLowerCase() : t('track.play')}
-        </p>
-      </div>
-    </div>
-
-    <!-- Actions -->
-    {#if error}
-      <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-sm">{error}</div>
-    {/if}
-    {#if success}
-      <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-green-400 text-sm">{success}</div>
-    {/if}
-
-    {#if isOwner}
-      <div class="flex gap-3">
-        <button
-          class="px-4 py-2 bg-[hsl(var(--secondary))] hover:opacity-90 rounded-lg text-sm font-medium transition"
-          onclick={() => { editing = !editing; success = null; }}
-        >
-          {editing ? t('track.cancelEdit') : t('track.editMetadata')}
-        </button>
-        <button
-          class="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg text-sm font-medium transition"
-          onclick={deleteTrack}
-          disabled={deleting}
-        >
-          {deleting ? t('track.deleting') : t('track.deleteTrack')}
-        </button>
-      </div>
-    {/if}
-
-    <!-- Report button (for any authenticated user) -->
-    {#if auth.user && !isOwner}
-      <div>
-        {#if reportSuccess}
-          <p class="text-green-400 text-sm bg-green-500/10 border border-green-500/30 rounded-lg p-3">{reportSuccess}</p>
-        {:else if showReportForm}
-          <div class="bg-[hsl(var(--card))] rounded-lg p-5 space-y-3 border border-[hsl(var(--border))]">
-            <h3 class="text-sm font-semibold">{t('track.reportTitle')}</h3>
-            {#if reportError}
-              <p class="text-red-400 text-sm">{reportError}</p>
-            {/if}
-            <textarea
-              bind:value={reportReason}
-              placeholder={t('track.reportDescPlaceholder')}
-              class="w-full px-3 py-2 rounded-lg bg-[hsl(var(--secondary))] text-sm resize-none h-24 border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]"
-              maxlength="500"
-            ></textarea>
-            <p class="text-xs text-[hsl(var(--muted-foreground))] text-right">{reportReason.length}/500</p>
-            <div class="flex gap-3">
-              <button class="px-4 py-2 text-sm rounded-lg bg-[hsl(var(--secondary))] hover:opacity-80 transition" onclick={() => showReportForm = false}>{t('common.cancel')}</button>
-              <button
-                class="px-4 py-2 text-sm rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 font-medium transition disabled:opacity-50"
-                disabled={!reportReason.trim()}
-                onclick={submitReport}
-              >{t('track.send')}</button>
-            </div>
-          </div>
-        {:else}
-          <button
-            class="px-4 py-2 text-sm rounded-lg border border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:text-red-400 hover:border-red-400/30 transition flex items-center gap-2"
-            onclick={() => showReportForm = true}
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3v18m0-18l9 6-9 6"/></svg>
-            {t('track.reportTitle')}
-          </button>
+        · {credits.play_count} {credits.play_count === 1 ? t("track.play") : t("track.plays")}
+      {/snippet}
+      {#snippet actions()}
+        {#if track.data}
+          {@const item = track.data}
+          {@const playing = player.currentTrack?.id === item.id && player.isPlaying}
+          <Button disabled={!canPlay(item)} onclick={() => play(item)}>
+            {#if playing}<Pause size={16} fill="currentColor" />{t("shell.pause")}
+            {:else}<Play size={16} fill="currentColor" />{t("track.play")}{/if}
+          </Button>
+          {#if !canPlay(item)}<span class="text-sm text-muted-foreground">{availabilityLabel(item)}</span>{/if}
+          {#if auth.isAuthenticated}<PlayerSaveActions track={item} />{/if}
+        {:else if track.failed}
+          <Button variant="outline" onclick={track.retry}>{t("radio.tryAgain")}</Button>
         {/if}
-      </div>
-    {/if}
+        {#if isOwner}
+          <Button variant="outline" onclick={toggleEdit}><Pencil size={15} />{t(editing ? "track.cancelEdit" : "track.editMetadata")}</Button>
+          <Button variant="ghost" class="text-destructive" onclick={deleteTrack} disabled={deleting}><Trash2 size={15} />{t(deleting ? "track.deleting" : "track.deleteTrack")}</Button>
+        {:else if auth.isAuthenticated && track.data}
+          <Button variant="ghost" onclick={() => showReportForm = true}><Flag size={15} />{t("track.reportTitle")}</Button>
+        {/if}
+      {/snippet}
+    </ReleaseHeader>
+
+    {#if showReportForm && track.data}<TrackActions track={track.data} action="report" close={() => showReportForm = false} />{/if}
+    {#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
+    {#if success}<p role="status" class="text-sm">{success}</p>{/if}
 
     <!-- Edit Form -->
     {#if editing && isOwner}
-      <form class="bg-[hsl(var(--card))] rounded-lg p-6 space-y-4" onsubmit={(e) => { e.preventDefault(); saveEdit(); }}>
+      <form class="space-y-4 rounded-xl border bg-card p-6" onsubmit={(e) => { e.preventDefault(); saveEdit(); }}>
         <div>
           <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-title">{t('track.title')}</label>
           <input id="edit-title" type="text" bind:value={editForm.title} class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />
@@ -209,14 +155,12 @@
             <input id="edit-disc" type="number" bind:value={editForm.disc_number} class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />
           </div>
         </div>
-        <button type="submit" class="px-6 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition">
-          {t('common.save')}
-        </button>
+        <Button type="submit">{t("common.save")}</Button>
       </form>
     {/if}
 
     <!-- Metadata Table -->
-    <div class="bg-[hsl(var(--card))] rounded-lg overflow-hidden">
+    <div class="overflow-hidden rounded-xl border bg-card">
       <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">{t('track.technicalInfo')}</h2>
       <div class="divide-y divide-[hsl(var(--border))]">
         <div class="grid grid-cols-2 p-4">
@@ -271,14 +215,10 @@
     </div>
 
     <!-- Artist Info -->
-    <div class="bg-[hsl(var(--card))] rounded-lg overflow-hidden">
+    <div class="overflow-hidden rounded-xl border bg-card">
       <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">{t('track.artistSection')}</h2>
       <div class="p-5 flex items-center gap-4">
-        {#if credits.artist_image}
-          <img src={credits.artist_image} alt={credits.artist_name} class="w-16 h-16 rounded-full object-cover" />
-        {:else}
-          <div class="w-16 h-16 rounded-full bg-[hsl(var(--secondary))] flex items-center justify-center text-2xl">🎤</div>
-        {/if}
+        <div class="size-16 shrink-0"><CatalogArtwork kind="artist" source={credits.artist_image} title={credits.artist_name} /></div>
         <div>
           <a href="/artists/{credits.artist_id}" class="font-medium hover:text-[hsl(var(--primary))] transition">{credits.artist_name}</a>
           {#if credits.artist_bio}
@@ -293,14 +233,10 @@
 
     <!-- Album Info -->
     {#if credits.album_id}
-      <div class="bg-[hsl(var(--card))] rounded-lg overflow-hidden">
+      <div class="overflow-hidden rounded-xl border bg-card">
         <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">{t('track.albumSection')}</h2>
         <div class="p-5 flex items-center gap-4">
-          {#if credits.album_cover_url}
-            <img src={credits.album_cover_url} alt={credits.album_title ?? ""} class="w-16 h-16 rounded object-cover" />
-          {:else}
-            <div class="w-16 h-16 rounded bg-[hsl(var(--secondary))] flex items-center justify-center text-2xl">💿</div>
-          {/if}
+          <div class="size-16 shrink-0"><CatalogArtwork kind="album" source={credits.album_cover_url} title={credits.album_title ?? ""} /></div>
           <div>
             <a href="/albums/{credits.album_id}" class="font-medium hover:text-[hsl(var(--primary))] transition">{credits.album_title}</a>
             {#if credits.album_genre}
@@ -318,5 +254,5 @@
     {/if}
   </div>
 {:else}
-  <p class="text-center py-20 text-[hsl(var(--muted-foreground))]">{t('track.notFound')}</p>
+  <CatalogState loading={result.loading} failed={result.failed} status={result.status} retry={result.retry} message={t("track.notFound")} />
 {/if}

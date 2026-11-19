@@ -28,6 +28,11 @@ with Path(os.environ["GITHUB_OUTPUT"]).open("a") as outputs:
     config = shared or "install.sh" in paths or any(
         path == "docker-compose.yml" or path.startswith("docker/compose.") for path in paths
     )
+    private_listening = shared or bool(paths & {"docker/nginx.conf", "scripts/test-private-listening.sh"}) or any(
+        path.startswith(("backend/", "frontend/", "docker/Dockerfile.", "scripts/private-listening/"))
+        for path in paths
+    )
+    print(f"private-listening={str(private_listening).lower()}", file=outputs)
     print(f"config={str(config).lower()}", file=outputs)
     print(f"images={str(bool(matrix)).lower()}", file=outputs)
     print("matrix=" + json.dumps({"include": matrix}, separators=(",", ":")), file=outputs)

@@ -363,11 +363,22 @@ curl -X POST http://localhost:8080/api/admin/blocked-domains \
 | `P2P_BIND_PORT` | `11204` | Bind port (0 = random) |
 | `P2P_BLOBS_DIR` | `data/p2p/blobs` | iroh-blobs persistent storage path |
 | `P2P_SECRET_KEY_PATH` | `data/p2p/secret_key` | Path to the Ed25519 secret key |
+| `P2P_PUBLIC_DISCOVERY` | `true` | Use the public iroh lookups and relays. Turning it off also disables Mainline DHT. LAN discovery and explicitly configured rendezvous are independent. |
+| `P2P_EXPLICIT_CATALOG` | `false` | Opt in to the control protocol which separates presence and catalogue subscription. |
+| `P2P_SHARE_IDENTITY` | `false` | Give compatible peers permission to include this node's identity in their peer-exchange sample. |
 | `P2P_DHT_DISCOVERY` | `true` | Resolve known NodeIds via Pkarr on the Mainline DHT |
 | `P2P_RENDEZVOUS_URL` | — | Shared endpoint for opt-in discovery of SoundTime NodeIds |
 | `P2P_RENDEZVOUS_SERVER` | `false` | Host the signed, expiring rendezvous directory |
 | `P2P_LOCAL_DISCOVERY` | `true` | Enable mDNS local network discovery |
 | `P2P_SEED_PEERS` | — | Comma-separated NodeIds for auto-connect |
+
+### Verified range streaming pilot
+
+Set `P2P_RANGE_STREAMING=true` on participants to advertise `soundtime/range/2` alongside the existing control protocol. The default is `false`. The receiver needs a current catalogue entry with the origin, publication UUID, revision, BLAKE3 hash and size, and an unexpired provider offer. When the option is enabled, an identified publication requires this range protocol. A provider error returns HTTP 503 before the first verified window, or terminates an already started response if all providers fail later. Historical records without an identified publication use the legacy path.
+
+The receiver validates Bao proofs for aligned 64 KiB windows before emitting any bytes. Concurrent requests for an overlapping window of the same publication share its in-flight QUIC stream. A slow or unavailable provider can be replaced at the current window. The pilot admits 32 active downloads and 32 uploads per process, with four per peer in each direction. Waiting windows are bounded at 512. Cancelling the last reader cancels the upstream operation. A range read alone creates no durable cache or offer.
+
+The authenticated transport statistics expose `range_windows_verified` and `range_proof_bytes_received`. The latter includes excess Bao leaf bytes outside a short requested window and framing in the Bao response. QUIC packet headers and retransmissions are excluded.
 
 ## Monitoring
 
@@ -401,6 +412,12 @@ curl http://localhost:8080/api/p2p/network-graph
 ```
 
 ### Peer Management
+
+The optional catalogue pilot negotiates `soundtime/control/2` through QUIC. Two pilot nodes can exchange an authenticated presence message without sending track announcements. To discover without following, call `POST /api/admin/p2p/peers` with the node ID and `"follow_catalog": false`. To start or stop following, send `{"followed": true}` or `{"followed": false}` with `PUT /api/admin/p2p/peers/{node_id}/subscription`. The local subscription survives a restart. The admin transport status includes `explicit_catalog` and the process-wide `catalog_entries_received` counter.
+
+The historic mode still sends its original ping and catalogues. A pilot connecting to an older host negotiates the original ALPN and requires an explicit local follow before sending its catalogue-producing ping. A pilot answering a legacy ping sends its catalogue only when it follows the caller. A separate legacy catalogue request remains supported. Compatible peers sample up to eight identities. Third-party entries need the owner's consent from authenticated presence and are filtered against the local bans. Older software can retain and forward identifiers it already learned.
+
+The admin endpoint `GET /api/admin/p2p/transport` reports the local transport's numeric addresses and cumulative audio payload bytes written to and read from QUIC since process startup. A partially transferred file contributes its accepted bytes. Covers, protocol headers and retransmissions are excluded. On a private network, an admin can pass a `direct_addresses` list (for example `["10.0.0.2:11204"]`) alongside the peer's `node_id`. The endpoint verifies the remote identity when establishing the connection. The explicit address list is kept in memory.
 
 From the admin panel or API:
 

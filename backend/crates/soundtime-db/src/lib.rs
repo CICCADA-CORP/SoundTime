@@ -4,6 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub mod entities;
+pub mod federation;
+pub mod media_access;
 
 /// Re-export for convenience
 pub use sea_orm;

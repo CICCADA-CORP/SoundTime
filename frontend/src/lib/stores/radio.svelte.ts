@@ -1,3 +1,4 @@
+import { canPlay } from "$lib/catalog/availability";
 import type { RadioSeedType } from "$lib/types";
 import { radioApi } from "$lib/api";
 import { getQueueStore } from "./queue.svelte";
@@ -14,6 +15,7 @@ let loading = $state(false);
 let exhausted = $state(false);
 let error = $state<string | null>(null);
 let autoplayMode = $state(false);
+let session = 0;
 
 // ─── Functions ──────────────────────────────────────────────────────
 
@@ -25,7 +27,7 @@ async function startRadio(
   type: RadioSeedType,
   opts: { seedId?: string; genre?: string; label: string; autoplay?: boolean }
 ) {
-  // Reset state
+  const current = ++session;
   active = true;
   error = null;
   seedType = type;
@@ -45,8 +47,10 @@ async function startRadio(
       count: 5,
       exclude: [],
     });
+    if (session !== current) return;
 
-    if (res.tracks.length === 0) {
+    const playable = res.tracks.filter(canPlay);
+    if (playable.length === 0) {
       exhausted = true;
       active = false;
       return;
@@ -55,18 +59,19 @@ async function startRadio(
     exhausted = res.exhausted;
 
     // Add fetched track IDs to played set
-    for (const track of res.tracks) {
+    for (const track of playable) {
       playedIds = new Set([...playedIds, track.id]);
     }
 
     // Start playback through queue
     const queue = getQueueStore();
-    queue.playQueue(res.tracks, 0, autoplayMode ? "autoplay" : "radio");
+    queue.playQueue(playable, 0, autoplayMode ? "autoplay" : "radio");
   } catch (e) {
+    if (session !== current) return;
     active = false;
     error = e instanceof Error ? e.message : "Failed to start radio";
   } finally {
-    loading = false;
+    if (session === current) loading = false;
   }
 }
 
@@ -74,6 +79,8 @@ async function startRadio(
  * Stop the radio. Preserves the current queue (user can keep listening).
  */
 function stopRadio() {
+  session++;
+  loading = false;
   active = false;
   seedType = null;
   seedId = null;
@@ -82,6 +89,17 @@ function stopRadio() {
   exhausted = false;
   error = null;
   autoplayMode = false;
+  playedIds = new Set();
+}
+
+function retry() {
+  if (!seedType || !error) return;
+  return startRadio(seedType, {
+    seedId: seedId ?? undefined,
+    genre: seedGenre ?? undefined,
+    label: seedLabel,
+    autoplay: autoplayMode,
+  });
 }
 
 /**
@@ -91,6 +109,7 @@ function stopRadio() {
 async function fetchMoreTracks(retrying = false) {
   if (!active || exhausted || loading || !seedType) return;
 
+  const current = session;
   loading = true;
   try {
     // Limit exclude to 2000 most recent IDs
@@ -106,16 +125,18 @@ async function fetchMoreTracks(retrying = false) {
       count: 5,
       exclude,
     });
+    if (session !== current) return;
 
-    if (res.tracks.length === 0) {
+    const playable = res.tracks.filter(canPlay);
+    if (playable.length === 0) {
       exhausted = true;
       // If the server didn't explicitly signal exhaustion and tracks were played,
       // reset the exclude list and retry once to find previously-excluded tracks
-      if (!res.exhausted && playedIds.size > 0 && !retrying) {
+      if (res.tracks.length === 0 && !res.exhausted && playedIds.size > 0 && !retrying) {
         playedIds = new Set();
         exhausted = false;
         loading = false;
-        return fetchMoreTracks(true);
+        return await fetchMoreTracks(true);
       }
       return;
     }
@@ -129,19 +150,19 @@ async function fetchMoreTracks(retrying = false) {
     }
 
     // Add new track IDs to played set
-    for (const track of res.tracks) {
+    for (const track of playable) {
       playedIds = new Set([...playedIds, track.id]);
     }
 
     // Append to queue
     const queue = getQueueStore();
-    for (const track of res.tracks) {
+    for (const track of playable) {
       queue.addToQueue(track);
     }
   } catch {
     // Silent failure — will retry on next track change
   } finally {
-    loading = false;
+    if (session === current) loading = false;
   }
 }
 
@@ -170,6 +191,7 @@ export function getRadioStore() {
     get playedCount() { return playedIds.size; },
     get autoplayMode() { return autoplayMode; },
     startRadio,
+    retry,
     stopRadio,
     fetchMoreTracks,
     markPlayed,

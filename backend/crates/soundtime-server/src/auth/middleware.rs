@@ -125,65 +125,68 @@ pub async fn require_admin(
 /// If the instance is public, allows the request through without auth.
 pub async fn require_auth_if_private(
     State(state): State<Arc<AppState>>,
-    mut request: Request,
+    request: Request,
     next: Next,
 ) -> Response {
-    // Check if instance is private
-    let is_private = soundtime_db::entities::instance_setting::Entity::find()
+    private_access(&state, request, next, false).await
+}
+
+pub async fn require_media_if_private(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    private_access(&state, request, next, true).await
+}
+
+async fn private_access(
+    state: &AppState,
+    mut request: Request,
+    next: Next,
+    media: bool,
+) -> Response {
+    let setting = soundtime_db::entities::instance_setting::Entity::find()
         .filter(soundtime_db::entities::instance_setting::Column::Key.eq("instance_private"))
         .one(&state.db)
-        .await
-        .ok()
-        .flatten()
-        .map(|s| s.value == "true")
-        .unwrap_or(false);
-
-    if !is_private {
-        // Public instance — let everyone through, but still attach user if token present
-        if let Some(auth_header) = request
-            .headers()
-            .get("Authorization")
-            .and_then(|v| v.to_str().ok())
-        {
-            if let Some(token) = auth_header.strip_prefix("Bearer ") {
-                if let Ok(claims) = validate_token(token, &state.jwt_secret) {
-                    if claims.token_type == TokenType::Access {
-                        request.extensions_mut().insert(AuthUser(claims));
-                    }
-                }
-            }
-        }
-        return next.run(request).await;
-    }
-
-    // Private instance — require auth
-    let auth_header = request
-        .headers()
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok());
-
-    let token = match auth_header {
-        Some(header) if header.starts_with("Bearer ") => &header[7..],
-        _ => {
+        .await;
+    let is_private = match setting {
+        Ok(value) => value.is_some_and(|row| row.value == "true"),
+        Err(_) => {
             return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "This instance is private. Authentication required." })),
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error":"Instance settings unavailable"})),
             )
-                .into_response();
+                .into_response()
         }
     };
+    let claims = request
+        .headers()
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(|token| validate_token(token, &state.jwt_secret).ok())
+        .filter(|claims| claims.token_type == TokenType::Access);
 
-    match validate_token(token, &state.jwt_secret) {
-        Ok(claims) if claims.token_type == TokenType::Access => {
-            request.extensions_mut().insert(AuthUser(claims));
-            next.run(request).await
-        }
-        _ => (
+    if let Some(claims) = claims {
+        request.extensions_mut().insert(AuthUser(claims));
+    } else if is_private
+        && !(media && super::media::authorized(request.headers(), &state.jwt_secret))
+    {
+        return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "Invalid or expired token" })),
+            Json(json!({"error":"This instance is private. Authentication required."})),
         )
-            .into_response(),
+            .into_response();
     }
+
+    let mut response = next.run(request).await;
+    if is_private && media {
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("private, no-store"),
+        );
+    }
+    response
 }
 
 #[cfg(test)]

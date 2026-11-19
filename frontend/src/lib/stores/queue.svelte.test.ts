@@ -6,7 +6,7 @@ const localStorageMock = {
   setItem: vi.fn(),
   removeItem: vi.fn(),
 };
-Object.defineProperty(global, 'localStorage', {
+Object.defineProperty(globalThis, 'localStorage', {
   value: localStorageMock,
   writable: true,
 });
@@ -19,6 +19,7 @@ const mockPlayerStore = {
   repeat: 'none' as 'none' | 'one' | 'all',
   progress: 0,
   play: vi.fn(),
+  pause: vi.fn(),
   seek: vi.fn(),
 };
 
@@ -42,6 +43,7 @@ vi.mock('./radio.svelte', () => ({
 }));
 
 import { getQueueStore } from './queue.svelte';
+import { showcaseTracks } from '$lib/showcase';
 
 describe('Queue Store', () => {
   let queue: ReturnType<typeof getQueueStore>;
@@ -106,6 +108,15 @@ describe('Queue Store', () => {
   });
 
   describe('playQueue', () => {
+    it('keeps a station running for radio and autoplay batches and stops it for a manual selection', () => {
+      mockRadioStore.active = true;
+      queue.playQueue([track1], 0, 'radio');
+      queue.playQueue([track2], 0, 'autoplay');
+      expect(mockRadioStore.stopRadio).not.toHaveBeenCalled();
+      queue.playQueue([track3], 0, 'album');
+      expect(mockRadioStore.stopRadio).toHaveBeenCalledOnce();
+    });
+
     it('sets queue and plays first track', () => {
       queue.playQueue([track1, track2, track3]);
 
@@ -130,6 +141,31 @@ describe('Queue Store', () => {
       queue.playQueue([track1, track2]);
       expect(queue.hasPrevious).toBe(false);
     });
+  });
+
+  it('skips unavailable rows in both directions and in shuffle', () => {
+    queue.playQueue([track1, { ...track2, availability: 'withdrawn' }, track3]);
+    queue.next();
+    expect(mockPlayerStore.play).toHaveBeenLastCalledWith(track3);
+    queue.previous();
+    expect(mockPlayerStore.play).toHaveBeenLastCalledWith(track1);
+    mockPlayerStore.shuffle = true;
+    queue.next();
+    expect(mockPlayerStore.play).toHaveBeenLastCalledWith(track3);
+  });
+
+  it('stops when the last source disappears even with repeat, shuffle and autoplay', () => {
+    queue.playQueue([{ ...track1, availability: 'temporarily_unavailable' }, track2]);
+    mockPlayerStore.shuffle = true;
+    mockPlayerStore.repeat = 'all';
+    queue.toggleAutoplay();
+    mockPlayerStore.play.mockClear();
+    queue.markUnavailable({ ...track2, availability: 'unavailable_on_instance' });
+    queue.next();
+    expect(queue.currentIndex).toBe(-1);
+    expect(mockPlayerStore.play).not.toHaveBeenCalled();
+    expect(mockPlayerStore.pause).toHaveBeenCalled();
+    expect(mockRadioStore.startRadio).not.toHaveBeenCalled();
   });
 
   describe('addToQueue', () => {
@@ -413,6 +449,13 @@ describe('Queue Store', () => {
   });
 
   describe('autoplay', () => {
+    it('finishes local previews without requesting a station for a demo track', () => {
+      queue.toggleAutoplay();
+      queue.playQueue(showcaseTracks, showcaseTracks.length - 1);
+      queue.next();
+      expect(mockRadioStore.startRadio).not.toHaveBeenCalled();
+    });
+
     it('autoplay is false by default', () => {
       expect(queue.autoplay).toBe(false);
     });

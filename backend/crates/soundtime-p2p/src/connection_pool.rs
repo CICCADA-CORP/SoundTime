@@ -31,6 +31,7 @@ struct PoolEntry {
 pub struct ConnectionPool {
     endpoint: Endpoint,
     alpn: &'static [u8],
+    fallback: Option<&'static [u8]>,
     entries: Mutex<HashMap<EndpointId, PoolEntry>>,
 }
 
@@ -40,8 +41,14 @@ impl ConnectionPool {
         Self {
             endpoint,
             alpn,
+            fallback: None,
             entries: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn with_fallback(mut self, fallback: &'static [u8]) -> Self {
+        self.fallback = Some(fallback);
+        self
     }
 
     /// Get a reusable connection to a peer, or establish a new one.
@@ -70,9 +77,13 @@ impl ConnectionPool {
 
         // Establish new connection
         let peer_addr = EndpointAddr::new(node_id);
+        let options = iroh::endpoint::ConnectOptions::new()
+            .with_additional_alpns(self.fallback.iter().map(|v| v.to_vec()).collect());
         let conn = self
             .endpoint
-            .connect(peer_addr, self.alpn)
+            .connect_with_opts(peer_addr, self.alpn, options)
+            .await
+            .map_err(|e| P2pError::Connection(e.to_string()))?
             .await
             .map_err(|e| P2pError::Connection(e.to_string()))?;
 

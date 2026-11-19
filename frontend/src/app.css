@@ -4,52 +4,51 @@
 
 @layer base {
   :root {
-    --background: 0 0% 7%;
-    --foreground: 0 0% 95%;
-    --card: 0 0% 10%;
-    --card-foreground: 0 0% 95%;
-    --popover: 0 0% 10%;
-    --popover-foreground: 0 0% 95%;
-    --primary: 142 71% 45%;
+    --background: 0 0% 100%;
+    --foreground: 210 9% 8%;
+    --card: 0 0% 100%;
+    --card-foreground: var(--foreground);
+    --popover: var(--background);
+    --popover-foreground: var(--foreground);
+    --sidebar: 210 7% 94.5%;
+    --primary: 0 0% 7%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 0 0% 15%;
-    --secondary-foreground: 0 0% 95%;
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 64%;
-    --accent: 142 71% 45%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 84% 60%;
+    --secondary: 210 8% 94%;
+    --secondary-foreground: var(--foreground);
+    --muted: 210 8% 95%;
+    --muted-foreground: 208 10% 37%;
+    --accent: 210 7% 87.5%;
+    --accent-foreground: 210 9% 8%;
+    --destructive: 2 67% 44%;
     --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 18%;
-    --input: 0 0% 18%;
-    --ring: 142 71% 45%;
-    --radius: 0.5rem;
+    --border: 210 9% 89%;
+    --input: 210 10% 81%;
+    --ring: 211 26% 40%;
+    --radius: 0.6rem;
+    --rail-width: clamp(204px, 16.7vw, 248px);
+    --mobile-nav: calc(3.75rem + env(safe-area-inset-bottom, 0px));
   }
-}
-
-@layer base {
-  * {
-    @apply border-[hsl(var(--border))];
-  }
+  * { @apply border-border; }
   body {
-    @apply bg-[hsl(var(--background))] text-[hsl(var(--foreground))];
-    font-family: "Inter", system-ui, -apple-system, sans-serif;
+    @apply bg-background text-foreground antialiased;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  :focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 3px; }
+  ::selection { background: hsl(var(--accent)); color: hsl(var(--accent-foreground)); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   }
 }
 
-::-webkit-scrollbar { width: 8px; }
-::-webkit-scrollbar-track { background: hsl(var(--background)); }
-::-webkit-scrollbar-thumb { background: hsl(var(--muted)); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground)); }
-
-/* Safe area for iOS notch / gesture bar */
-.safe-area-bottom {
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+.skip-link {
+  position: fixed;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 100;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  transform: translateY(calc(-100% - 1rem));
 }
-
-/* Player safe area — only on mobile when no bottom nav below */
-@media (min-width: 768px) {
-  .safe-area-bottom-player {
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-  }
-}
+.skip-link:focus { transform: translateY(0); }

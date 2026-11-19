@@ -5,12 +5,14 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
+use futures_util::{stream, StreamExt};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use soundtime_audio::extract_metadata_from_file;
 use soundtime_audio::metadata::normalize_genre;
 use soundtime_db::entities::{album, artist, remote_track, track};
+use soundtime_db::media_access::{self, PlaybackState, ReadGuard};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
@@ -135,6 +137,7 @@ pub async fn stream_track(
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let grant = ReadGuard::track(id);
     let track_record = track::Entity::find_by_id(id)
         .one(&state.db)
         .await
@@ -165,14 +168,43 @@ pub async fn stream_track(
         _ => "application/octet-stream",
     };
 
-    // Parse Range header
-    let range = headers
-        .get(header::RANGE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_range_header);
-
-    // P2P tracks: file_path starts with "p2p://<hash>"
-    if let Some(hash_str) = file_path_str.strip_prefix("p2p://") {
+    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+    let hash_hint = file_path_str
+        .strip_prefix("p2p://")
+        .or(track_record.content_hash.as_deref());
+    let access = media_access::playback_state(&state.db, id, hash_hint)
+        .await
+        .map_err(|e| {
+            tracing::error!(%id, error=%e, "could not evaluate playback policy");
+            stream_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Publication policy unavailable",
+            )
+        })?;
+    match access {
+        PlaybackState::Withdrawn => {
+            return Err(stream_error(StatusCode::GONE, "Publication withdrawn"))
+        }
+        PlaybackState::Blocked => {
+            return Err(stream_error(
+                StatusCode::FORBIDDEN,
+                "Unavailable on this instance",
+            ))
+        }
+        PlaybackState::SourceMissing if hash_hint.is_none() => {
+            return Err(stream_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Audio source unavailable",
+            ));
+        }
+        _ => {}
+    }
+    let remote_hash = if access == PlaybackState::SourceMissing {
+        hash_hint
+    } else {
+        file_path_str.strip_prefix("p2p://")
+    };
+    if let Some(hash_str) = remote_hash {
         let p2p_node = get_p2p_node(&state).ok_or_else(|| {
             (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -180,7 +212,21 @@ pub async fn stream_track(
             )
         })?;
 
-        // FIX-16: Check if the remote track is marked unavailable before attempting fetch
+        if p2p_node.range_streaming() {
+            let manifest = p2p_node.range_manifest(id).await.map_err(|error| {
+                tracing::debug!(%id, %error, "publication manifest unavailable");
+                stream_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Publication version unavailable",
+                )
+            })?;
+            if let Some(manifest) = manifest {
+                return remote_media_response(p2p_node, id, manifest, content_type, range, grant)
+                    .await;
+            }
+        }
+
+        // Keep the last known supplier available to the health monitor.
         let remote_record = remote_track::Entity::find()
             .filter(remote_track::Column::RemoteUri.ends_with(format!("/{hash_str}")))
             .one(&state.db)
@@ -193,16 +239,6 @@ pub async fn stream_track(
                 )
             })?;
 
-        if let Some(ref rt) = remote_record {
-            if !rt.is_available {
-                tracing::warn!(%hash_str, "P2P track marked unavailable, returning 410 Gone");
-                return Err((
-                    StatusCode::GONE,
-                    Json(serde_json::json!({ "error": "P2P track is no longer available" })),
-                ));
-            }
-        }
-
         let hash: soundtime_p2p::BlobHash = hash_str.parse().map_err(|_| {
             (
                 StatusCode::BAD_REQUEST,
@@ -211,7 +247,17 @@ pub async fn stream_track(
         })?;
 
         // FIX-15: When fetch fails, trigger auto_repair_on_failure for health tracking
-        let data = match p2p_node.get_or_fetch_track(hash).await {
+        let received = grant
+            .during(async {
+                if remote_record.as_ref().is_some_and(|r| !r.is_available) {
+                    p2p_node.get_local_track(hash).await
+                } else {
+                    p2p_node.get_or_fetch_track(hash).await
+                }
+            })
+            .await
+            .map_err(|_| stream_error(StatusCode::GONE, "Playback authorization revoked"))?;
+        let data = match received {
             Ok(data) => data,
             Err(e) => {
                 tracing::warn!(%hash, error = %e, "failed to fetch P2P track");
@@ -243,140 +289,204 @@ pub async fn stream_track(
                 }
 
                 return Err((
-                    StatusCode::NOT_FOUND,
+                    StatusCode::SERVICE_UNAVAILABLE,
                     Json(serde_json::json!({ "error": "P2P track data not available" })),
                 ));
             }
         };
 
-        let file_size = data.len() as u64;
-
-        let (start, end) = match range {
-            Some((s, e)) => {
-                let end = e.unwrap_or(file_size - 1).min(file_size - 1);
-                (s, end)
-            }
-            None => (0, file_size - 1),
-        };
-
-        let content_length = end - start + 1;
-        let slice = data.slice(start as usize..(start + content_length) as usize);
-        let body = Body::from(slice);
-
-        let status = if range.is_some() {
-            StatusCode::PARTIAL_CONTENT
-        } else {
-            StatusCode::OK
-        };
-
-        let mut response_headers = HeaderMap::new();
-        response_headers.insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_str(content_type)
-                .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-        );
-        response_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(content_length));
-        response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-
-        if range.is_some() {
-            response_headers.insert(
-                header::CONTENT_RANGE,
-                HeaderValue::from_str(&format!("bytes {start}-{end}/{file_size}"))
-                    .unwrap_or_else(|_| HeaderValue::from_static("bytes */*")),
-            );
-        }
-
-        return Ok((status, response_headers, body));
+        let size = data.len() as u64;
+        return media_response(std::io::Cursor::new(data), size, content_type, range, grant).await;
     }
 
-    // Regular filesystem track
-    let file_path = soundtime_audio::ensure_local_file(state.storage.as_ref(), file_path_str)
+    let path = soundtime_audio::ensure_local_file(state.storage.as_ref(), file_path_str)
+        .await
+        .map_err(|_| stream_error(StatusCode::SERVICE_UNAVAILABLE, "Audio source unavailable"))?;
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| stream_error(StatusCode::SERVICE_UNAVAILABLE, "Cannot open audio file"))?;
+    let size = file
+        .metadata()
         .await
         .map_err(|_| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "Audio file not found" })),
-            )
-        })?;
-
-    let file_size = tokio::fs::metadata(&file_path)
-        .await
-        .map_err(|_| {
-            (
+            stream_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Cannot read file" })),
+                "Cannot read audio file size",
             )
         })?
         .len();
-
-    let (start, end) = match range {
-        Some((s, e)) => {
-            let end = e.unwrap_or(file_size - 1).min(file_size - 1);
-            (s, end)
-        }
-        None => (0, file_size - 1),
-    };
-
-    let content_length = end - start + 1;
-
-    let mut file = tokio::fs::File::open(&file_path).await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Cannot open file" })),
-        )
-    })?;
-
-    if start > 0 {
-        use tokio::io::AsyncSeekExt;
-        file.seek(std::io::SeekFrom::Start(start))
-            .await
-            .map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": "Seek error" })),
-                )
-            })?;
-    }
-
-    let limited = file.take(content_length);
-    let stream = ReaderStream::new(limited);
-    let body = Body::from_stream(stream);
-
-    let status = if range.is_some() {
-        StatusCode::PARTIAL_CONTENT
-    } else {
-        StatusCode::OK
-    };
-
-    let mut response_headers = HeaderMap::new();
-    response_headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(content_type)
-            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-    );
-    response_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(content_length));
-    response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-
-    if range.is_some() {
-        response_headers.insert(
-            header::CONTENT_RANGE,
-            HeaderValue::from_str(&format!("bytes {start}-{end}/{file_size}"))
-                .unwrap_or_else(|_| HeaderValue::from_static("bytes */*")),
-        );
-    }
-
-    Ok((status, response_headers, body))
+    media_response(file, size, content_type, range, grant).await
 }
 
-/// Parse "bytes=start-end" range header
-fn parse_range_header(header: &str) -> Option<(u64, Option<u64>)> {
-    let range = header.strip_prefix("bytes=")?;
-    let mut parts = range.splitn(2, '-');
-    let start: u64 = parts.next()?.parse().ok()?;
-    let end: Option<u64> = parts
+type StreamError = (StatusCode, Json<serde_json::Value>);
+
+fn stream_error(status: StatusCode, text: &'static str) -> StreamError {
+    (status, Json(serde_json::json!({"error": text})))
+}
+
+async fn media_response<R>(
+    mut reader: R,
+    size: u64,
+    content_type: &'static str,
+    range: Option<&str>,
+    grant: ReadGuard,
+) -> Result<(StatusCode, HeaderMap, Body), StreamError>
+where
+    R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin + Send + 'static,
+{
+    use tokio::io::AsyncSeekExt;
+
+    let (status, headers, start, length) = media_headers(size, content_type, range);
+    if length == 0 {
+        return Ok((status, headers, Body::empty()));
+    }
+    if start != 0 {
+        reader
+            .seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(|_| {
+                stream_error(StatusCode::INTERNAL_SERVER_ERROR, "Cannot seek audio file")
+            })?;
+    }
+    let reader = ReaderStream::with_capacity(reader.take(length), 64 * 1024);
+    let chunks = stream::try_unfold((reader, grant), |(mut reader, grant)| async move {
+        let next = grant.during(reader.next()).await?.transpose()?;
+        Ok::<_, std::io::Error>(next.map(|chunk| (chunk, (reader, grant))))
+    });
+    Ok((status, headers, Body::from_stream(chunks)))
+}
+
+fn media_headers(
+    size: u64,
+    content_type: &'static str,
+    range: Option<&str>,
+) -> (StatusCode, HeaderMap, u64, u64) {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
+
+    let span = match byte_range(range, size) {
+        Ok(span) => span,
+        Err(()) => {
+            headers.insert(
+                header::CONTENT_RANGE,
+                format!("bytes */{size}").parse().unwrap(),
+            );
+            return (StatusCode::RANGE_NOT_SATISFIABLE, headers, 0, 0);
+        }
+    };
+    let (status, start, length) = if let Some((start, end)) = span {
+        headers.insert(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{size}").parse().unwrap(),
+        );
+        (StatusCode::PARTIAL_CONTENT, start, end - start + 1)
+    } else {
+        (StatusCode::OK, 0, size)
+    };
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    (status, headers, start, length)
+}
+
+async fn remote_media_response(
+    node: Arc<soundtime_p2p::P2pNode>,
+    id: Uuid,
+    manifest: soundtime_p2p::range_transport::WindowRequest,
+    content_type: &'static str,
+    range: Option<&str>,
+    grant: ReadGuard,
+) -> Result<(StatusCode, HeaderMap, Body), StreamError> {
+    let (status, headers, start, length) = media_headers(manifest.file_size, content_type, range);
+    if length == 0 {
+        return Ok((status, headers, Body::empty()));
+    }
+    let end = start + length;
+    let next_window = move |(offset, node, grant, manifest): (
+        u64,
+        Arc<soundtime_p2p::P2pNode>,
+        ReadGuard,
+        soundtime_p2p::range_transport::WindowRequest,
+    )| async move {
+        if offset >= end {
+            return Ok::<_, std::io::Error>(None);
+        }
+        let step = u64::from(soundtime_p2p::range_transport::WINDOW_BYTES);
+        let aligned = offset / step * step;
+        let mut request = manifest.clone();
+        request.offset = aligned;
+        request.length = (manifest.file_size - aligned).min(step) as u32;
+        let bytes = grant
+            .during(node.verified_range(id, request))
+            .await?
+            .map_err(std::io::Error::other)?;
+        let next = (aligned + bytes.len() as u64).min(end);
+        let clipped = bytes.slice((offset - aligned) as usize..(next - aligned) as usize);
+        Ok(Some((clipped, (next, node, grant, manifest))))
+    };
+    // Complete one verified window before committing 200/206 so denial or an
+    // unreachable supplier can still produce a retryable HTTP response.
+    let first_grant = ReadGuard::track(id);
+    let mut chunks = Box::pin(stream::try_unfold(
+        (start, node, grant, manifest),
+        next_window,
+    ));
+    let first = chunks
         .next()
-        .and_then(|s| if s.is_empty() { None } else { s.parse().ok() });
-    Some((start, end))
+        .await
+        .expect("nonempty byte range")
+        .map_err(|e| {
+            tracing::debug!(%id, error=%e, "first range unavailable");
+            stream_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "No authorized audio provider available",
+            )
+        })?;
+    let body = stream::once(async move { first_grant.during(std::future::ready(first)).await })
+        .chain(chunks);
+    Ok((status, headers, Body::from_stream(body)))
+}
+
+fn parse_range_header(header: &str) -> Option<(u64, Option<u64>)> {
+    let (start, end) = header.strip_prefix("bytes=")?.split_once('-')?;
+    Some((
+        start.parse().ok()?,
+        if end.is_empty() {
+            None
+        } else {
+            Some(end.parse().ok()?)
+        },
+    ))
+}
+
+// An unsupported or malformed range is ignored. A valid but unsatisfiable range yields 416.
+fn byte_range(header: Option<&str>, size: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some(header) = header else {
+        return Ok(None);
+    };
+    if let Some(suffix) = header
+        .strip_prefix("bytes=-")
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        if size == 0 || suffix == 0 {
+            return Err(());
+        }
+        return Ok(Some((size.saturating_sub(suffix), size - 1)));
+    }
+    let Some((start, end)) = parse_range_header(header) else {
+        return Ok(None);
+    };
+    if end.is_some_and(|end| end < start) {
+        return Ok(None);
+    }
+    if start >= size {
+        return Err(());
+    }
+    Ok(Some((start, end.unwrap_or(size - 1).min(size - 1))))
 }
 
 /// GET /api/media/*path — Serve static media files (covers, etc.)
@@ -584,16 +694,20 @@ fn upload_error(err: impl std::fmt::Display) -> UploadError {
 async fn find_uploaded_file(
     state: &AppState,
     tx: &sea_orm::DatabaseTransaction,
+    owner: Uuid,
     hash: &str,
     size: i64,
 ) -> Result<Option<track::Model>, UploadError> {
-    if let Some(row) = crate::storage_catalog::existing_hash(tx, hash, state.storage.as_ref())
-        .await
-        .map_err(upload_error)?
+    if let Some(row) =
+        crate::storage_catalog::existing_hash(tx, hash, state.storage.as_ref(), Some(owner))
+            .await
+            .map_err(upload_error)?
     {
         return Ok(Some(row));
     }
     let candidates = track::Entity::find()
+        .filter(crate::storage_catalog::reusable_track())
+        .filter(track::Column::UploadedBy.eq(owner))
         .filter(track::Column::FileHash.is_null())
         .filter(track::Column::FileSize.eq(size))
         .filter(track::Column::FilePath.not_like("p2p://%"))
@@ -679,7 +793,7 @@ async fn process_single_upload(
     let tx = crate::storage_catalog::begin_write(&state.db)
         .await
         .map_err(upload_error)?;
-    let existing = find_uploaded_file(state, &tx, &hash, data.len() as i64).await?;
+    let existing = find_uploaded_file(state, &tx, user_id, &hash, data.len() as i64).await?;
     if let Some(original) = existing {
         if state
             .storage
@@ -703,6 +817,10 @@ async fn process_single_upload(
             )
             .await
             .map_err(upload_error)?;
+        if let Err(e) = crate::storage_catalog::record_managed(&tx, &path, &hash).await {
+            let _ = state.storage.delete_file(&path).await;
+            return Err(upload_error(e));
+        }
         let response = UploadResponse {
             id: original.id,
             title: original.title.clone(),
@@ -718,6 +836,9 @@ async fn process_single_upload(
             }
             return Err(upload_error(e));
         }
+        crate::storage_catalog::source_restored(&tx, response.id)
+            .await
+            .map_err(upload_error)?;
         tx.commit().await.map_err(upload_error)?;
         return Ok(response);
     }
@@ -834,16 +955,30 @@ async fn process_single_upload(
             .to_string()
     });
 
-    let relative_path = state
-        .storage
-        .store_file(
-            user_id,
-            tags.album.as_deref(),
-            &stored_name.to_string_lossy(),
-            &data,
-        )
+    let shared = crate::storage_catalog::shared_original(&tx, &hash, state.storage.as_ref())
         .await
         .map_err(upload_error)?;
+    let created = shared.is_none();
+    let relative_path = match shared {
+        Some(path) => path,
+        None => {
+            let path = state
+                .storage
+                .store_file(
+                    user_id,
+                    tags.album.as_deref(),
+                    &stored_name.to_string_lossy(),
+                    &data,
+                )
+                .await
+                .map_err(upload_error)?;
+            if let Err(e) = crate::storage_catalog::record_managed(&tx, &path, &hash).await {
+                let _ = state.storage.delete_file(&path).await;
+                return Err(upload_error(e));
+            }
+            path
+        }
+    };
     let track_id = Uuid::new_v4();
     let new_track = track::ActiveModel {
         id: Set(track_id),
@@ -874,8 +1009,10 @@ async fn process_single_upload(
     };
 
     if let Err(e) = new_track.insert(&tx).await {
-        if let Err(cleanup) = state.storage.delete_file(&relative_path).await {
-            tracing::warn!(%relative_path, %cleanup, "could not remove rejected upload");
+        if created {
+            if let Err(cleanup) = state.storage.delete_file(&relative_path).await {
+                tracing::warn!(%relative_path, %cleanup, "could not remove rejected upload");
+            }
         }
         return Err(upload_error(e));
     }
@@ -1210,6 +1347,24 @@ pub async fn upload_album_cover(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn withdrawn_http_body_stops_before_the_next_window() {
+        let id = Uuid::new_v4();
+        let source = std::io::Cursor::new(vec![0x77; 192 * 1024]);
+        let (status, headers, body) =
+            media_response(source, 192 * 1024, "audio/wav", None, ReadGuard::track(id))
+                .await
+                .unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+        let mut reader = body.into_data_stream();
+        let first = reader.next().await.unwrap().unwrap();
+        assert_eq!(first.len(), 64 * 1024);
+        media_access::revoke_track(id);
+        assert!(reader.next().await.unwrap().is_err());
+        assert!(reader.next().await.is_none());
+    }
+
     #[test]
     fn artwork_uses_the_image_signature() {
         assert_eq!(
@@ -1339,6 +1494,18 @@ mod tests {
     }
 
     // ─── parse_range_header tests ──────────────────────────────────
+
+    #[test]
+    fn byte_range_resolves_suffixes_and_empty_files() {
+        assert_eq!(byte_range(Some("bytes=-3"), 10), Ok(Some((7, 9))));
+        assert_eq!(byte_range(Some("bytes=-300"), 10), Ok(Some((0, 9))));
+        assert_eq!(byte_range(Some("bytes=2-99"), 10), Ok(Some((2, 9))));
+        assert_eq!(byte_range(Some("bytes=10-"), 10), Err(()));
+        assert_eq!(byte_range(None, 0), Ok(None));
+        assert_eq!(byte_range(Some("bytes=0-"), 0), Err(()));
+        assert_eq!(byte_range(Some("bytes=2-1"), 10), Ok(None));
+        assert_eq!(byte_range(Some("bytes=2-4,6-7"), 10), Ok(None));
+    }
 
     #[test]
     fn test_parse_range_open_end() {

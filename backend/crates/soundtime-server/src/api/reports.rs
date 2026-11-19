@@ -18,9 +18,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::auth::middleware::AuthUser;
-use soundtime_db::entities::{
-    artist, instance_setting, playlist_track, remote_track, track, track_report, user,
-};
+use soundtime_db::entities::{artist, instance_setting, track, track_report, user};
 use soundtime_db::AppState;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -163,10 +161,12 @@ pub async fn list_reports(
                     .flatten()
                     .map(|a| a.name)
                     .unwrap_or_else(|| "Unknown".to_string());
-                let is_local = true;
+                let is_local = crate::publications::local(&state.db, trk.id)
+                    .await
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
                 (trk.title.clone(), artist_name, is_local)
             }
-            None => ("[Deleted]".to_string(), "".to_string(), true),
+            None => ("[Deleted]".to_string(), "".to_string(), false),
         };
 
         let reporter = user::Entity::find_by_id(r.user_id)
@@ -204,6 +204,16 @@ pub struct ResolveReportRequest {
     pub admin_note: Option<String>,
 }
 
+type ModerationError = (StatusCode, Json<serde_json::Value>);
+
+fn moderation_db_error(e: sea_orm::DbErr) -> ModerationError {
+    tracing::error!(%e, "moderation database error");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({"error": "Moderation database error"})),
+    )
+}
+
 /// PUT /api/admin/reports/:id — resolve/dismiss a report
 pub async fn resolve_report(
     State(state): State<Arc<AppState>>,
@@ -211,8 +221,11 @@ pub async fn resolve_report(
     Path(report_id): Path<Uuid>,
     Json(body): Json<ResolveReportRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let tx = crate::storage_catalog::begin_write(&state.db)
+        .await
+        .map_err(moderation_db_error)?;
     let report = track_report::Entity::find_by_id(report_id)
-        .one(&state.db)
+        .one(&tx)
         .await
         .map_err(|e| {
             (
@@ -239,87 +252,39 @@ pub async fn resolve_report(
         }
     };
 
-    // Apply track action if the report is being resolved
-    let track_action = body.track_action.as_deref().unwrap_or("none");
-    let mut track_action_msg = String::new();
-
-    if status == "resolved" {
-        let track_model = track::Entity::find_by_id(report.track_id)
-            .one(&state.db)
+    let action = body.track_action.as_deref().unwrap_or("none");
+    let mut change = None;
+    let mut track_action_msg = "";
+    if status == "resolved" && action != "none" {
+        let trk = track::Entity::find_by_id(report.track_id)
+            .one(&tx)
             .await
-            .unwrap_or(None);
-
-        if let Some(trk) = track_model {
-            let is_local = true;
-
-            match track_action {
-                "delete" if is_local => {
-                    // Delete local track: remove from playlists first, then delete
-                    if let Err(e) = playlist_track::Entity::delete_many()
-                        .filter(playlist_track::Column::TrackId.eq(trk.id))
-                        .exec(&state.db)
-                        .await
-                    {
-                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete playlist tracks for reported track");
-                    }
-                    if let Err(e) = track::Entity::delete_by_id(trk.id).exec(&state.db).await {
-                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete reported track");
-                    }
-                    // Delete file
-                    if let Err(e) = tokio::fs::remove_file(&trk.file_path).await {
-                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete track file");
-                    }
-                    track_action_msg = "Local track deleted.".to_string();
-                    tracing::info!(track_id = %trk.id, "Local track deleted via report");
-                }
-                "unlist" if !is_local => {
-                    // Unlist remote track: remove from remote_tracks table
-                    if let Err(e) = remote_track::Entity::delete_many()
-                        .filter(remote_track::Column::LocalTrackId.eq(Some(trk.id)))
-                        .exec(&state.db)
-                        .await
-                    {
-                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete remote track reference");
-                    }
-                    // Delete the track entry (unlist it from this instance)
-                    if let Err(e) = playlist_track::Entity::delete_many()
-                        .filter(playlist_track::Column::TrackId.eq(trk.id))
-                        .exec(&state.db)
-                        .await
-                    {
-                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete playlist tracks for unlisted track");
-                    }
-                    if let Err(e) = track::Entity::delete_by_id(trk.id).exec(&state.db).await {
-                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete unlisted track");
-                    }
-                    track_action_msg = "Remote track dereferenced.".to_string();
-                    tracing::info!(track_id = %trk.id, "Remote track unlisted via report");
-                }
-                "delete" if !is_local => {
-                    // Can't delete remote — unlist instead
-                    if let Err(e) = remote_track::Entity::delete_many()
-                        .filter(remote_track::Column::LocalTrackId.eq(Some(trk.id)))
-                        .exec(&state.db)
-                        .await
-                    {
-                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete remote track reference");
-                    }
-                    if let Err(e) = playlist_track::Entity::delete_many()
-                        .filter(playlist_track::Column::TrackId.eq(trk.id))
-                        .exec(&state.db)
-                        .await
-                    {
-                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete playlist tracks for remote track");
-                    }
-                    if let Err(e) = track::Entity::delete_by_id(trk.id).exec(&state.db).await {
-                        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete remote track");
-                    }
-                    track_action_msg =
-                        "Remote track dereferenced (deletion not possible).".to_string();
-                }
-                _ => {}
-            }
+            .map_err(moderation_db_error)?
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error":"Track not found"})),
+                )
+            })?;
+        let local = crate::publications::local(&tx, trk.id)
+            .await
+            .map_err(moderation_db_error)?;
+        if action != "delete" && (action != "unlist" || local) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":"Invalid action for this publication"})),
+            ));
         }
+        change = Some(
+            crate::publications::remove(&tx, &state, &trk, local)
+                .await
+                .map_err(moderation_db_error)?,
+        );
+        track_action_msg = if local {
+            "Local publication withdrawn."
+        } else {
+            "Remote publication hidden."
+        };
     }
 
     // Update report
@@ -328,12 +293,11 @@ pub async fn resolve_report(
     active.admin_note = Set(body.admin_note);
     active.resolved_by = Set(Some(admin.0.sub));
     active.resolved_at = Set(Some(now));
-    active.update(&state.db).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("DB error: {e}") })),
-        )
-    })?;
+    active.update(&tx).await.map_err(moderation_db_error)?;
+    tx.commit().await.map_err(moderation_db_error)?;
+    if let Some(change) = change {
+        change.committed(&state).await;
+    }
 
     Ok(Json(serde_json::json!({
         "message": format!("Report {}. {}", status, track_action_msg),
@@ -435,11 +399,14 @@ pub async fn browse_tracks(
             .await
             .unwrap_or(0);
 
+        let is_local = crate::publications::local(&state.db, t.id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         results.push(AdminTrackResponse {
             id: t.id,
             title: t.title,
             artist_name,
-            is_local: true,
+            is_local,
             format: t.format,
             play_count: t.play_count,
             report_count,
@@ -463,86 +430,46 @@ pub async fn moderate_track(
     State(state): State<Arc<AppState>>,
     Path(track_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let trk = track::Entity::find_by_id(track_id)
-        .one(&state.db)
+    use sea_orm::sea_query::Expr;
+    let tx = crate::storage_catalog::begin_write(&state.db)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("DB error: {e}") })),
-            )
-        })?
+        .map_err(moderation_db_error)?;
+    let trk = track::Entity::find_by_id(track_id)
+        .one(&tx)
+        .await
+        .map_err(moderation_db_error)?
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "Track not found." })),
+                Json(serde_json::json!({"error":"Track not found"})),
             )
         })?;
-
-    let is_local = true;
-
-    // Remove from playlists
-    if let Err(e) = playlist_track::Entity::delete_many()
-        .filter(playlist_track::Column::TrackId.eq(trk.id))
-        .exec(&state.db)
+    let local = crate::publications::local(&tx, trk.id)
         .await
-    {
-        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete playlist tracks during moderation");
-    }
-
-    if !is_local {
-        // Unlist remote
-        if let Err(e) = remote_track::Entity::delete_many()
-            .filter(remote_track::Column::LocalTrackId.eq(Some(trk.id)))
-            .exec(&state.db)
-            .await
-        {
-            tracing::warn!(error = %e, track_id = %trk.id, "failed to delete remote track reference during moderation");
-        }
-    }
-
-    // Delete track entry
-    if let Err(e) = track::Entity::delete_by_id(trk.id).exec(&state.db).await {
-        tracing::warn!(error = %e, track_id = %trk.id, "failed to delete track during moderation");
-    }
-
-    // Delete file if local
-    if is_local {
-        if let Err(e) = tokio::fs::remove_file(&trk.file_path).await {
-            tracing::warn!(error = %e, track_id = %trk.id, "failed to delete track file during moderation");
-        }
-    }
-
-    // Auto-resolve any pending reports for this track
-    let pending_reports = track_report::Entity::find()
+        .map_err(moderation_db_error)?;
+    let change = crate::publications::remove(&tx, &state, &trk, local)
+        .await
+        .map_err(moderation_db_error)?;
+    let msg = if local {
+        "Local publication withdrawn."
+    } else {
+        "Remote publication hidden."
+    };
+    track_report::Entity::update_many()
+        .col_expr(track_report::Column::Status, Expr::value("resolved"))
+        .col_expr(track_report::Column::AdminNote, Expr::value(msg))
+        .col_expr(
+            track_report::Column::ResolvedAt,
+            Expr::value(chrono::Utc::now().fixed_offset()),
+        )
         .filter(track_report::Column::TrackId.eq(track_id))
         .filter(track_report::Column::Status.eq("pending"))
-        .all(&state.db)
+        .exec(&tx)
         .await
-        .unwrap_or_default();
-
-    let now = chrono::Utc::now().fixed_offset();
-    for r in pending_reports {
-        let mut active: track_report::ActiveModel = r.into();
-        active.status = Set("resolved".to_string());
-        active.admin_note = Set(Some(
-            "Track deleted/dereferenced by the administrator.".to_string(),
-        ));
-        active.resolved_at = Set(Some(now));
-        if let Err(e) = active.update(&state.db).await {
-            tracing::warn!(error = %e, "failed to auto-resolve pending report during moderation");
-        }
-    }
-
-    let msg = if is_local {
-        "Local track deleted."
-    } else {
-        "Remote track dereferenced."
-    };
-
-    tracing::info!(track_id = %track_id, is_local, "Track moderated by admin");
-
-    Ok(Json(serde_json::json!({ "message": msg })))
+        .map_err(moderation_db_error)?;
+    tx.commit().await.map_err(moderation_db_error)?;
+    change.committed(&state).await;
+    Ok(Json(serde_json::json!({"message":msg})))
 }
 
 // ═══════════════════════════════════════════════════════════════════

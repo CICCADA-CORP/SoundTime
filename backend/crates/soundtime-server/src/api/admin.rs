@@ -5,10 +5,9 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use sea_orm::sea_query::Expr;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, FromQueryResult, PaginatorTrait, QueryFilter,
-    QueryOrder, QuerySelect, Set,
+    QueryOrder, Set,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -198,6 +197,7 @@ pub async fn block_domain(
         )
     })?;
 
+    soundtime_db::media_access::revoke_peer(&body.domain);
     Ok((
         StatusCode::CREATED,
         Json(BlockedDomainResponse {
@@ -287,7 +287,7 @@ pub async fn import_blocked_domains(
         let now = chrono::Utc::now();
         blocked_domain::ActiveModel {
             id: Set(Uuid::new_v4()),
-            domain: Set(domain),
+            domain: Set(domain.clone()),
             reason: Set(entry.reason),
             blocked_by: Set(Some(user.0.sub)),
             created_at: Set(now.into()),
@@ -301,6 +301,7 @@ pub async fn import_blocked_domains(
             )
         })?;
 
+        soundtime_db::media_access::revoke_peer(&domain);
         imported += 1;
     }
 
@@ -367,9 +368,15 @@ pub struct NodeInfo {
 
 /// GET /api/nodeinfo — public instance info consumed by the listing server
 pub async fn nodeinfo(State(state): State<Arc<AppState>>) -> Result<Json<NodeInfo>, StatusCode> {
-    let total_tracks = track::Entity::find().count(&state.db).await.unwrap_or(0);
+    let total_tracks = track::Entity::find()
+        .count(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let total_users = user::Entity::find().count(&state.db).await.unwrap_or(0);
+    let total_users = user::Entity::find()
+        .count(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let p2p_node = get_p2p_node(&state);
     let p2p_enabled = p2p_node.is_some();
@@ -379,7 +386,7 @@ pub async fn nodeinfo(State(state): State<Arc<AppState>>) -> Result<Json<NodeInf
     let settings = instance_setting::Entity::find()
         .all(&state.db)
         .await
-        .unwrap_or_default();
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let name = settings
         .iter()
@@ -393,11 +400,7 @@ pub async fn nodeinfo(State(state): State<Arc<AppState>>) -> Result<Json<NodeInf
         .map(|s| s.value.clone())
         .unwrap_or_default();
 
-    let open_registration = settings
-        .iter()
-        .find(|s| s.key == "instance_private")
-        .map(|s| s.value != "true")
-        .unwrap_or(true);
+    let open_registration = crate::auth::registration::from_settings(&settings, total_users);
 
     Ok(Json(NodeInfo {
         name,
@@ -917,38 +920,25 @@ pub struct StorageStatusResponse {
 pub async fn storage_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<StorageStatusResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let local_tracks = track::Entity::find().filter(track::Column::FilePath.not_like("p2p://%"));
-    let total_tracks = local_tracks.clone().count(&state.db).await.map_err(|e| {
-        tracing::error!(error = %e, "storage_status: failed to count tracks");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Failed to query track count" })),
-        )
-    })?;
-
     #[derive(Debug, FromQueryResult)]
-    struct SizeSum {
-        total_size: Option<i64>,
+    struct LocalUsage {
+        total_tracks: i64,
+        total_size: i64,
     }
-
-    let size_result = local_tracks
-        .select_only()
-        .column_as(
-            Expr::cust("COALESCE(SUM(file_size)::bigint, 0)"),
-            "total_size",
-        )
-        .into_model::<SizeSum>()
-        .one(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "storage_status: failed to sum file sizes");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Failed to query storage size" })),
-            )
-        })?;
-
-    let total_size: i64 = size_result.map(|r| r.total_size.unwrap_or(0)).unwrap_or(0);
+    let usage = LocalUsage::find_by_statement(sea_orm::Statement::from_string(
+        sea_orm::DbBackend::Postgres,
+        "SELECT coalesce(sum(publications),0)::bigint AS total_tracks, coalesce(sum(bytes),0)::bigint AS total_size
+         FROM (SELECT t.file_path,count(*) AS publications,max(t.file_size) AS bytes FROM tracks t
+               LEFT JOIN track_publications p ON p.track_id=t.id
+               WHERE t.file_path NOT LIKE 'p2p://%' AND p.state IS DISTINCT FROM 'withdrawn'
+                 AND NOT EXISTS (SELECT FROM federation_missing_sources m WHERE m.track_id=t.id)
+               GROUP BY t.file_path) paths",
+    )).one(&state.db).await.map_err(|e| {
+        tracing::error!(%e,"storage_status: failed to measure original files");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Failed to query storage size"})))
+    })?.expect("aggregate returns one row");
+    let total_tracks = usage.total_tracks as u64;
+    let total_size = usage.total_size;
 
     let remote_track_count = remote_track::Entity::find()
         .count(&state.db)

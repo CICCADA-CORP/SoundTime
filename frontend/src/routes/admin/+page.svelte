@@ -1,6 +1,9 @@
 <script lang="ts">
+  import CatalogHeader from "$lib/components/catalog/CatalogHeader.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
-  import { getTaskStore } from "$lib/stores/tasks.svelte";
+  import { untrack } from "svelte";
+  import StorageSection from "$lib/components/admin/StorageSection.svelte";
+  import { createStorageSection } from "$lib/components/admin/storage.svelte";
   import { api, pluginApi, themeApi } from "$lib/api";
   import { t } from "$lib/i18n/index.svelte";
   import {
@@ -32,10 +35,6 @@
     AdminTrack,
     TosResponse,
     PaginatedResponse,
-    StorageStatus,
-    StorageTaskStatus,
-    IntegrityReport,
-    SyncReport,
     P2pLogEntry,
     P2pLogResponse,
     ListingStatus,
@@ -48,7 +47,7 @@
   } from "$lib/types";
 
   const auth = getAuthStore();
-  const tasks = getTaskStore();
+  const storage = createStorageSection();
 
   let activeTab = $state<string>("overview");
   let stats = $state<AdminStats | null>(null);
@@ -110,14 +109,6 @@
   let tosSaving = $state(false);
   let tosSuccess = $state("");
 
-  // Storage state
-  let storageStatus = $state<StorageStatus | null>(null);
-  let integrityReport = $state<IntegrityReport | null>(null);
-  let syncReport = $state<SyncReport | null>(null);
-  let storageChecking = $state(false);
-  let storageSyncing = $state(false);
-  let taskProgress = $state<{ processed: number; total: number | null } | null>(null);
-
   // Listing status
   let listingStatus = $state<ListingStatus | null>(null);
   let listingTriggering = $state(false);
@@ -149,66 +140,6 @@
   let themeInstalling = $state(false);
   let themeUpdating = $state<string | null>(null);
   let themeSuccess = $state("");
-
-  /** Poll /admin/storage/task-status until the background task finishes. */
-  async function pollTaskStatus(kind: "sync" | "integrity") {
-    const POLL_INTERVAL = 1500; // ms
-    while (true) {
-      await new Promise((r) => setTimeout(r, POLL_INTERVAL));
-      try {
-        const status = await api.get<StorageTaskStatus>("/admin/storage/task-status");
-        if (status.status === "running") {
-          taskProgress = status.progress ?? null;
-          continue;
-        }
-        if (status.status === "completed") {
-          taskProgress = null;
-          if (kind === "sync" && status.result?.kind === "sync") {
-            syncReport = status.result as SyncReport;
-          } else if (kind === "integrity" && status.result?.kind === "integrity") {
-            integrityReport = status.result as IntegrityReport;
-          }
-          return;
-        }
-        if (status.status === "error") {
-          taskProgress = null;
-          error = status.message || t(kind === "sync" ? "admin.sync.taskFailed" : "admin.integrity.taskFailed");
-          return;
-        }
-        // idle or unknown → done
-        taskProgress = null;
-        return;
-      } catch (e: unknown) {
-        taskProgress = null;
-        error = e instanceof Error ? e.message : String(e);
-        return;
-      }
-    }
-  }
-
-  async function runStorageSync(emptySources: string[] = []) {
-    storageSyncing = true;
-    error = null;
-    taskProgress = null;
-    try {
-      await api.post(emptySources.length ? `/admin/storage/sync?prune_empty=${encodeURIComponent(emptySources.join(","))}` : "/admin/storage/sync");
-      tasks.startPolling("sync");
-      await pollTaskStatus("sync");
-    } catch (e: unknown) {
-      // The POST may have timed out (504) but the task was spawned server-side
-      // Check if it's actually running
-      try {
-        const status = await api.get<StorageTaskStatus>("/admin/storage/task-status");
-        if (status.status === "running") {
-          tasks.startPolling("sync");
-          await pollTaskStatus("sync");
-          return;
-        }
-      } catch { /* truly failed */ }
-      error = e instanceof Error ? e.message : String(e);
-    }
-    finally { storageSyncing = false; taskProgress = null; }
-  }
 
   // Block domain form
   let blockDomainInput = $state("");
@@ -323,7 +254,9 @@
     },
   ]);
 
+  let tabRequest = 0;
   async function loadData() {
+    const request = ++tabRequest;
     loading = true;
     error = null;
     try {
@@ -427,47 +360,9 @@
           tosSuccess = "";
           break;
         case "storage":
-          storageStatus = await api.get<StorageStatus>("/admin/storage/status");
-          break;
-        case "integrity":
-          storageStatus = await api.get<StorageStatus>("/admin/storage/status");
-          // Check if a task is already running and resume polling
-          try {
-            const taskStatus = await api.get<StorageTaskStatus>("/admin/storage/task-status");
-            if (taskStatus.status === "running") {
-              storageChecking = true;
-              taskProgress = taskStatus.progress ?? null;
-              tasks.startPolling("integrity");
-              pollTaskStatus("integrity").finally(() => { storageChecking = false; taskProgress = null; });
-            } else if (taskStatus.status === "completed" && taskStatus.result.kind === "integrity") {
-              integrityReport = taskStatus.result;
-            } else if (taskStatus.status === "error") {
-              error = taskStatus.message ?? t("admin.integrity.taskFailed");
-            }
-          } catch (e: unknown) {
-            // Log but don't block the page — task-status unavailability is non-fatal
-            console.warn("Failed to check integrity task status:", e);
-          }
-          break;
         case "sync":
-          storageStatus = await api.get<StorageStatus>("/admin/storage/status");
-          // Check if a task is already running and resume polling
-          try {
-            const taskStatus = await api.get<StorageTaskStatus>("/admin/storage/task-status");
-            if (taskStatus.status === "running") {
-              storageSyncing = true;
-              taskProgress = taskStatus.progress ?? null;
-              tasks.startPolling("sync");
-              pollTaskStatus("sync").finally(() => { storageSyncing = false; taskProgress = null; });
-            } else if (taskStatus.status === "completed" && taskStatus.result.kind === "sync") {
-              syncReport = taskStatus.result;
-            } else if (taskStatus.status === "error") {
-              error = taskStatus.message ?? t("admin.sync.taskFailed");
-            }
-          } catch (e: unknown) {
-            // Log but don't block the page — task-status unavailability is non-fatal
-            console.warn("Failed to check sync task status:", e);
-          }
+        case "integrity":
+          await storage.load(activeTab);
           break;
         case "plugins":
           try {
@@ -487,11 +382,15 @@
           break;
       }
     } catch (e: unknown) {
-      error = (e instanceof Error ? e.message : String(e)) || t("admin.unknownError");
+      if (request === tabRequest) error = (e instanceof Error ? e.message : String(e)) || t("admin.unknownError");
     } finally {
-      loading = false;
+      if (request === tabRequest) loading = false;
     }
   }
+
+  let savingRegistration = $state(false);
+  const registrationEnabled = $derived((settings.find(setting => setting.key === "open_registrations")?.value ?? "true") === "true");
+  const privateInstance = $derived(settings.find(setting => setting.key === "instance_private")?.value === "true");
 
   async function updateSetting(key: string, value: string) {
     try {
@@ -760,13 +659,6 @@
     finally { tosSaving = false; }
   }
 
-  function formatStorageSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} ${t('common.bytes')}`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} ${t('common.kilobytes')}`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} ${t('common.megabytes')}`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} ${t('common.gigabytes')}`;
-  }
-
   // ── Plugin functions ───────────────────────────────────────────
 
   async function installPlugin() {
@@ -933,32 +825,40 @@
     if (!auth.loading && !auth.isAdmin) {
       import("$app/navigation").then(({ goto }) => goto("/"));
     }
-    if (auth.isAdmin) loadData();
+    if (auth.isAdmin) untrack(loadData);
   });
 </script>
 
 <svelte:head><title>{t('admin.title')} — SoundTime</title></svelte:head>
 
 <div class="space-y-6">
-  <h1 class="text-2xl font-bold">{t('admin.title')}</h1>
+  <CatalogHeader title={t("admin.title")} />
 
   {#if !auth.isAdmin}
     <div class="text-center py-16">
       <p class="text-[hsl(var(--muted-foreground))]">{t('admin.accessDenied')}</p>
     </div>
   {:else}
-    <div class="flex gap-8 min-h-[calc(100vh-12rem)]">
+    <div class="flex flex-col gap-4 md:flex-row md:gap-8 min-h-[calc(100vh-12rem)]">
+      <select aria-label={t("admin.title")} value={activeTab} onchange={event => switchTab(event.currentTarget.value)}
+        class="h-10 w-full rounded-md border border-input bg-background px-3 text-sm md:hidden">
+        {#each tabGroups as group (group.label)}
+          <optgroup label={group.label}>
+            {#each group.tabs as tab (tab.id)}<option value={tab.id}>{tab.label}</option>{/each}
+          </optgroup>
+        {/each}
+      </select>
       <!-- Sidebar Navigation -->
-      <aside class="w-52 shrink-0 space-y-5">
-        {#each tabGroups as group}
+      <aside class="hidden w-52 shrink-0 space-y-5 md:block">
+        {#each tabGroups as group (group.label)}
           <div>
             <p class="text-[10px] uppercase tracking-widest text-[hsl(var(--muted-foreground))] font-semibold mb-1.5 px-3">{group.label}</p>
             <nav class="space-y-0.5">
-              {#each group.tabs as tab}
+              {#each group.tabs as tab (tab.id)}
                 <button
                   class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition
                     {activeTab === tab.id
-                      ? 'bg-[hsl(var(--primary))] text-white font-medium'
+                      ? 'bg-primary text-primary-foreground font-medium'
                       : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--secondary))]'}"
                   onclick={() => switchTab(tab.id)}
                 >
@@ -975,7 +875,7 @@
       <div class="flex-1 min-w-0 space-y-6">
         <!-- Error -->
         {#if error}
-          <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-4 text-red-400">
+          <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-4 text-destructive">
             {error}
             <button class="ml-2 underline" onclick={() => (error = null)}>{t('common.close')}</button>
           </div>
@@ -999,7 +899,7 @@
           </div>
           <div class="bg-[hsl(var(--card))] rounded-lg p-5">
             <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.overview.remoteTracks')}</p>
-            <p class="text-3xl font-bold mt-1 text-blue-400">{stats.total_remote_tracks}</p>
+            <p class="text-3xl font-bold mt-1 text-blue-700">{stats.total_remote_tracks}</p>
           </div>
           <div class="bg-[hsl(var(--card))] rounded-lg p-5">
             <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.overview.blockedDomains')}</p>
@@ -1007,7 +907,7 @@
           </div>
           <div class="bg-[hsl(var(--card))] rounded-lg p-5">
             <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.overview.p2pEnabled')}</p>
-            <p class="text-3xl font-bold mt-1 {stats.p2p_enabled ? 'text-green-400' : 'text-[hsl(var(--muted-foreground))]'}">{stats.p2p_enabled ? '✓' : '✗'}</p>
+            <p class="text-3xl font-bold mt-1 {stats.p2p_enabled ? 'text-green-700' : 'text-[hsl(var(--muted-foreground))]'}">{stats.p2p_enabled ? '✓' : '✗'}</p>
           </div>
           {#if stats.p2p_node_id}
             <div class="bg-[hsl(var(--card))] rounded-lg p-5 sm:col-span-2">
@@ -1029,11 +929,11 @@
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.metadata.enrichedMB')}</p>
-                <p class="text-3xl font-bold mt-1 text-green-400">{metadataStatus.enriched_tracks}</p>
+                <p class="text-3xl font-bold mt-1 text-green-700">{metadataStatus.enriched_tracks}</p>
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.metadata.pending')}</p>
-                <p class="text-3xl font-bold mt-1 {metadataStatus.pending_tracks > 0 ? 'text-yellow-400' : ''}">{metadataStatus.pending_tracks}</p>
+                <p class="text-3xl font-bold mt-1 {metadataStatus.pending_tracks > 0 ? 'text-amber-700' : ''}">{metadataStatus.pending_tracks}</p>
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.metadata.withBitrate')}</p>
@@ -1049,7 +949,7 @@
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.metadata.availableInstances')}</p>
-                <p class="text-3xl font-bold mt-1 text-green-400">{metadataStatus.available_remote_tracks}</p>
+                <p class="text-3xl font-bold mt-1 text-green-700">{metadataStatus.available_remote_tracks}</p>
               </div>
             </div>
           {/if}
@@ -1152,9 +1052,9 @@
                 ></div>
               </div>
               <div class="flex gap-4 text-xs text-[hsl(var(--muted-foreground))]">
-                <span class="text-green-400">{t('admin.metadata.statusEnrichedMB')}: {metadataTaskProgress.enriched}</span>
-                <span class="text-yellow-400">{t('admin.metadata.statusNotFound')}: {metadataTaskProgress.not_found}</span>
-                <span class="text-red-400">{t('admin.metadata.statusError')}: {metadataTaskProgress.errors}</span>
+                <span class="text-green-700">{t('admin.metadata.statusEnrichedMB')}: {metadataTaskProgress.enriched}</span>
+                <span class="text-amber-700">{t('admin.metadata.statusNotFound')}: {metadataTaskProgress.not_found}</span>
+                <span class="text-destructive">{t('admin.metadata.statusError')}: {metadataTaskProgress.errors}</span>
               </div>
             </div>
           {/if}
@@ -1163,7 +1063,7 @@
           {#if metadataTaskResult}
             <div class="bg-[hsl(var(--card))] rounded-lg border border-green-500/30 p-5">
               <div class="flex items-center justify-between mb-3">
-                <h3 class="font-medium text-green-400">{t('admin.metadata.enrichmentComplete')}</h3>
+                <h3 class="font-medium text-green-700">{t('admin.metadata.enrichmentComplete')}</h3>
                 <button
                   class="text-xs text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition"
                   onclick={async () => {
@@ -1180,16 +1080,16 @@
                   <p class="text-xl font-bold mt-1">{metadataTaskResult.total_processed}</p>
                 </div>
                 <div class="bg-green-500/10 rounded-lg p-3 text-center">
-                  <p class="text-xs text-green-400">{t('admin.metadata.statusEnrichedMB')}</p>
-                  <p class="text-xl font-bold mt-1 text-green-400">{metadataTaskResult.enriched}</p>
+                  <p class="text-xs text-green-700">{t('admin.metadata.statusEnrichedMB')}</p>
+                  <p class="text-xl font-bold mt-1 text-green-700">{metadataTaskResult.enriched}</p>
                 </div>
                 <div class="bg-yellow-500/10 rounded-lg p-3 text-center">
-                  <p class="text-xs text-yellow-400">{t('admin.metadata.statusNotFound')}</p>
-                  <p class="text-xl font-bold mt-1 text-yellow-400">{metadataTaskResult.not_found}</p>
+                  <p class="text-xs text-amber-700">{t('admin.metadata.statusNotFound')}</p>
+                  <p class="text-xl font-bold mt-1 text-amber-700">{metadataTaskResult.not_found}</p>
                 </div>
                 <div class="rounded-lg p-3 text-center {metadataTaskResult.errors > 0 ? 'bg-red-500/10' : 'bg-[hsl(var(--secondary))]'}">
-                  <p class="text-xs {metadataTaskResult.errors > 0 ? 'text-red-400' : 'text-[hsl(var(--muted-foreground))]'}">{t('admin.metadata.statusError')}</p>
-                  <p class="text-xl font-bold mt-1 {metadataTaskResult.errors > 0 ? 'text-red-400' : ''}">{metadataTaskResult.errors}</p>
+                  <p class="text-xs {metadataTaskResult.errors > 0 ? 'text-destructive' : 'text-[hsl(var(--muted-foreground))]'}">{t('admin.metadata.statusError')}</p>
+                  <p class="text-xl font-bold mt-1 {metadataTaskResult.errors > 0 ? 'text-destructive' : ''}">{metadataTaskResult.errors}</p>
                 </div>
               </div>
             </div>
@@ -1217,11 +1117,11 @@
                     <tr class="border-b border-[hsl(var(--border))] last:border-b-0">
                       <td class="p-3">
                         <span class="px-2 py-0.5 rounded text-xs font-medium
-                          {result.status === 'enriched' ? 'bg-green-500/20 text-green-400' :
-                           result.status === 'enriched_by_ai' ? 'bg-purple-500/20 text-purple-400' :
-                           result.status === 'not_found' ? 'bg-yellow-500/20 text-yellow-400' :
-                           result.status === 'already_enriched' ? 'bg-blue-500/20 text-blue-400' :
-                           'bg-red-500/20 text-red-400'}">
+                          {result.status === 'enriched' ? 'bg-green-500/20 text-green-700' :
+                           result.status === 'enriched_by_ai' ? 'bg-purple-500/20 text-purple-700' :
+                           result.status === 'not_found' ? 'bg-yellow-500/20 text-amber-700' :
+                           result.status === 'already_enriched' ? 'bg-blue-500/20 text-blue-700' :
+                           'bg-red-500/20 text-destructive'}">
                           {result.status === 'enriched' ? t('admin.metadata.statusEnrichedMB') :
                            result.status === 'enriched_by_ai' ? t('admin.metadata.statusEnrichedAI') :
                            result.status === 'not_found' ? t('admin.metadata.statusNotFound') :
@@ -1257,7 +1157,7 @@
             <div class="rounded-lg p-4 {librarySyncTask.status === 'running' ? 'bg-blue-500/10 border border-blue-500/30' : librarySyncTask.status === 'completed' ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}">
               {#if librarySyncTask.status === "running"}
                 <div class="flex items-center justify-between mb-2">
-                  <h4 class="text-sm font-semibold text-blue-400 flex items-center gap-2">
+                  <h4 class="text-sm font-semibold text-blue-700 flex items-center gap-2">
                     <div class="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
                     {t('admin.libSync.taskRunning')}
                   </h4>
@@ -1274,7 +1174,7 @@
               {:else if librarySyncTask.status === "completed"}
                 <div class="flex items-center justify-between">
                   <div>
-                    <h4 class="text-sm font-semibold text-green-400">{t('admin.libSync.taskCompleted')}</h4>
+                    <h4 class="text-sm font-semibold text-green-700">{t('admin.libSync.taskCompleted')}</h4>
                     <p class="text-sm text-[hsl(var(--muted-foreground))]">
                       {librarySyncTask.result.tracks_synced} {t('admin.libSync.tracksSynced')} — {t('admin.libSync.duration')}: {librarySyncTask.result.duration_secs}s
                     </p>
@@ -1293,7 +1193,7 @@
               {:else if librarySyncTask.status === "error"}
                 <div class="flex items-center justify-between">
                   <div>
-                    <h4 class="text-sm font-semibold text-red-400">{t('admin.libSync.taskError')}</h4>
+                    <h4 class="text-sm font-semibold text-destructive">{t('admin.libSync.taskError')}</h4>
                     <p class="text-sm text-red-300">{librarySyncTask.message}</p>
                   </div>
                   <button
@@ -1340,15 +1240,15 @@
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.syncedPeers')}</p>
-                <p class="text-3xl font-bold mt-1 text-green-400">{librarySyncOverview.synced_peers}</p>
+                <p class="text-3xl font-bold mt-1 text-green-700">{librarySyncOverview.synced_peers}</p>
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.partialPeers')}</p>
-                <p class="text-3xl font-bold mt-1 text-yellow-400">{librarySyncOverview.partial_peers}</p>
+                <p class="text-3xl font-bold mt-1 text-amber-700">{librarySyncOverview.partial_peers}</p>
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.notSyncedPeers')}</p>
-                <p class="text-3xl font-bold mt-1 text-red-400">{librarySyncOverview.not_synced_peers}</p>
+                <p class="text-3xl font-bold mt-1 text-destructive">{librarySyncOverview.not_synced_peers}</p>
               </div>
             </div>
 
@@ -1397,11 +1297,11 @@
                         </td>
                         <td class="p-3 text-center">
                           {#if peer.sync_state === "synced"}
-                            <span class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">{t('admin.libSync.stateSynced')}</span>
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-700">{t('admin.libSync.stateSynced')}</span>
                           {:else if peer.sync_state === "partial"}
-                            <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400">{t('admin.libSync.statePartial')}</span>
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-amber-700">{t('admin.libSync.statePartial')}</span>
                           {:else if peer.sync_state === "not_synced"}
-                            <span class="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-400">{t('admin.libSync.stateNotSynced')}</span>
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-destructive">{t('admin.libSync.stateNotSynced')}</span>
                           {:else if peer.sync_state === "offline"}
                             <span class="text-xs px-2 py-0.5 rounded-full bg-gray-500/20 text-gray-400">{t('admin.libSync.stateOffline')}</span>
                           {:else}
@@ -1411,7 +1311,7 @@
                         <td class="p-3 text-right">
                           <button
                             class="text-xs px-3 py-1.5 rounded transition font-medium disabled:opacity-50 {librarySyncResyncingPeer === peer.node_id
-                              ? 'bg-blue-500/20 text-blue-400 cursor-wait'
+                              ? 'bg-blue-500/20 text-blue-700 cursor-wait'
                               : 'bg-[hsl(var(--primary))]/20 text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary))]/30'}"
                             disabled={!peer.is_online || librarySyncResyncingPeer !== null || librarySyncTask?.status === "running"}
                             onclick={async () => {
@@ -1496,14 +1396,14 @@
                     <td class="p-3 text-center text-xs uppercase">{rt.format ?? "—"}</td>
                     <td class="p-3 text-center">
                       {#if rt.is_available}
-                        <span class="text-green-400 text-xs font-medium">{t('admin.remote.online')}</span>
+                        <span class="text-green-700 text-xs font-medium">{t('admin.remote.online')}</span>
                       {:else}
-                        <span class="text-red-400 text-xs font-medium">{t('admin.remote.offline')}</span>
+                        <span class="text-destructive text-xs font-medium">{t('admin.remote.offline')}</span>
                       {/if}
                     </td>
                     <td class="p-3 text-center">
                       {#if rt.local_track_id}
-                        <span class="text-blue-400 text-xs" title="{t('admin.remote.colLinked')}">{t('common.yes')}</span>
+                        <span class="text-blue-700 text-xs" title="{t('admin.remote.colLinked')}">{t('common.yes')}</span>
                       {:else}
                         <span class="text-[hsl(var(--muted-foreground))] text-xs">{t('common.no')}</span>
                       {/if}
@@ -1511,7 +1411,7 @@
                     <td class="p-3 text-center">
                       {#if rt.is_available}
                         <button
-                          class="text-xs text-red-400 hover:text-red-300 font-medium transition"
+                          class="text-xs text-destructive hover:text-red-300 font-medium transition"
                           onclick={async () => {
                             try {
                               await api.patch(`/admin/p2p/tracks/${rt.id}/dereference`);
@@ -1523,7 +1423,7 @@
                         </button>
                       {:else}
                         <button
-                          class="text-xs text-green-400 hover:text-green-300 font-medium transition"
+                          class="text-xs text-green-700 hover:text-green-300 font-medium transition"
                           onclick={async () => {
                             try {
                               await api.patch(`/admin/p2p/tracks/${rt.id}/rereference`);
@@ -1585,6 +1485,23 @@
           {/if}
         </div>
 
+        <div class="mb-4 rounded-lg border border-border bg-card p-5">
+          <label class="flex items-center justify-between gap-4">
+            <span><strong class="block text-sm font-semibold">{t("setup.openRegistrations")}</strong>
+              <span class="mt-1 block text-xs text-muted-foreground">{t("setup.openRegistrationsHint")}</span>
+            </span>
+            <input type="checkbox" class="size-5 accent-primary" disabled={privateInstance || savingRegistration}
+              checked={!privateInstance && registrationEnabled}
+              onchange={async (event) => {
+                const enabled = event.currentTarget.checked;
+                event.currentTarget.checked = !enabled;
+                savingRegistration = true;
+                try { await updateSetting("open_registrations", String(enabled)); }
+                finally { savingRegistration = false; }
+              }} />
+          </label>
+        </div>
+
         <!-- Public Listing Toggle -->
         <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-5 mb-4">
           <div class="flex items-center justify-between">
@@ -1623,12 +1540,12 @@
             <!-- Real listing status from backend -->
             {#if listingStatus}
               {#if listingStatus.domain_is_local}
-                <div class="mt-3 flex items-center gap-2 text-xs text-red-400 bg-red-500/10 rounded-md px-3 py-2">
+                <div class="mt-3 flex items-center gap-2 text-xs text-destructive bg-red-500/10 rounded-md px-3 py-2">
                   <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M3.586 15.424 12 21.414l8.414-5.99a2 2 0 0 0 .586-1.424V4a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 .586 1.424z"/></svg>
                   {t('admin.settings.listingDomainLocalError')}
                 </div>
               {:else if listingStatus.status === 'ok'}
-                <div class="mt-3 flex items-center gap-2 text-xs text-green-400 bg-green-500/10 rounded-md px-3 py-2">
+                <div class="mt-3 flex items-center gap-2 text-xs text-green-700 bg-green-500/10 rounded-md px-3 py-2">
                   <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
                   <div>
                     <span>{t('admin.settings.listingStatusOk')}</span>
@@ -1638,7 +1555,7 @@
                   </div>
                 </div>
               {:else if listingStatus.status === 'error'}
-                <div class="mt-3 flex flex-col gap-1 text-xs text-red-400 bg-red-500/10 rounded-md px-3 py-2">
+                <div class="mt-3 flex flex-col gap-1 text-xs text-destructive bg-red-500/10 rounded-md px-3 py-2">
                   <div class="flex items-center gap-2">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
                     <span class="font-medium">{t('admin.settings.listingStatusError')}</span>
@@ -1681,7 +1598,7 @@
                 {listingTriggering ? t('admin.settings.listingTriggerSending') : t('admin.settings.listingTrigger')}
               </button>
               {#if listingTriggerError}
-                <p class="text-xs text-red-400 mt-1.5">{listingTriggerError}</p>
+                <p class="text-xs text-destructive mt-1.5">{listingTriggerError}</p>
               {/if}
             </div>
 
@@ -1700,7 +1617,7 @@
               </div>
               <p class="text-xs text-[hsl(var(--muted-foreground))] mt-1.5">{t('admin.settings.listingDomainDesc')}</p>
               {#if listingStatus?.domain_is_local}
-                <div class="mt-2 flex items-center gap-2 text-xs text-red-400 bg-red-500/10 rounded-md px-3 py-2">
+                <div class="mt-2 flex items-center gap-2 text-xs text-destructive bg-red-500/10 rounded-md px-3 py-2">
                   <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M3.586 15.424 12 21.414l8.414-5.99a2 2 0 0 0 .586-1.424V4a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 .586 1.424z"/></svg>
                   {t('admin.settings.listingDomainWarning')}
                 </div>
@@ -1728,7 +1645,7 @@
         </div>
 
         <div class="bg-[hsl(var(--card))] rounded-lg divide-y divide-[hsl(var(--border))]">
-          {#each settings as setting}
+          {#each settings.filter(setting => setting.key !== "open_registrations") as setting}
             <div class="p-4 flex items-center justify-between gap-4">
               <div class="min-w-0">
                 <p class="font-mono text-sm">{setting.key}</p>
@@ -1738,8 +1655,8 @@
                   <button
                     class="px-3 py-1 rounded text-sm font-medium transition
                       {setting.value === 'true'
-                        ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
-                        : 'bg-red-500/20 text-red-400 hover:bg-red-500/30'}"
+                        ? 'bg-green-500/20 text-green-700 hover:bg-green-500/30'
+                        : 'bg-red-500/20 text-destructive hover:bg-red-500/30'}"
                     onclick={() => updateSetting(setting.key, setting.value === "true" ? "false" : "true")}
                   >
                     {setting.value === "true" ? t('admin.settings.enabled') : t('admin.settings.disabled')}
@@ -1818,7 +1735,7 @@
                   {/if}
                 </div>
                 <button
-                  class="text-xs text-red-400 hover:underline"
+                  class="text-xs text-destructive hover:underline"
                   onclick={() => unblockDomain(domain.id)}
                 >
                   {t('admin.blocked.unblock')}
@@ -1850,9 +1767,9 @@
                   <td class="p-3 text-center">{instance.track_count}</td>
                   <td class="p-3 text-center">
                     {#if instance.is_blocked}
-                      <span class="text-red-400 text-xs font-medium">{t('admin.instances.blocked')}</span>
+                      <span class="text-destructive text-xs font-medium">{t('admin.instances.blocked')}</span>
                     {:else}
-                      <span class="text-green-400 text-xs font-medium">{t('admin.instances.active')}</span>
+                      <span class="text-green-700 text-xs font-medium">{t('admin.instances.active')}</span>
                     {/if}
                   </td>
                 </tr>
@@ -1873,7 +1790,7 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.title')}</p>
-                <p class="text-3xl font-bold mt-1 {p2pStatus.enabled ? 'text-green-400' : 'text-[hsl(var(--muted-foreground))]'}">
+                <p class="text-3xl font-bold mt-1 {p2pStatus.enabled ? 'text-green-700' : 'text-[hsl(var(--muted-foreground))]'}">
                   {p2pStatus.enabled ? t('admin.p2p.enabled') : t('admin.p2p.disabled')}
                 </p>
               </div>
@@ -1890,14 +1807,14 @@
               <div class="bg-[hsl(var(--card))] rounded-lg p-5 sm:col-span-2">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.relayUrl')}</p>
                 {#if p2pStatus.relay_connected && p2pStatus.relay_url}
-                  <p class="text-sm font-mono mt-1 text-green-400 truncate">{p2pStatus.relay_url}</p>
+                  <p class="text-sm font-mono mt-1 text-green-700 truncate">{p2pStatus.relay_url}</p>
                 {:else}
                   <p class="text-sm mt-1 text-[hsl(var(--muted-foreground))] italic">{t('admin.p2p.relayDisconnected')}</p>
                 {/if}
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Relay</p>
-                <p class="text-xl font-bold mt-1 {p2pStatus.relay_connected ? 'text-green-400' : 'text-red-400'}">
+                <p class="text-xl font-bold mt-1 {p2pStatus.relay_connected ? 'text-green-700' : 'text-destructive'}">
                   {p2pStatus.relay_connected ? t('admin.p2p.relayConnected') : t('admin.p2p.relayDisconnected')}
                 </p>
               </div>
@@ -1911,13 +1828,13 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.dhtDiscovery')}</p>
-                <p class="text-xl font-bold mt-1 {p2pStatus.dht_discovery_enabled ? 'text-green-400' : 'text-[hsl(var(--muted-foreground))]'}">
+                <p class="text-xl font-bold mt-1 {p2pStatus.dht_discovery_enabled ? 'text-green-700' : 'text-[hsl(var(--muted-foreground))]'}">
                   {p2pStatus.dht_discovery_enabled ? t('admin.p2p.dhtEnabled') : t('admin.p2p.dhtDisabled')}
                 </p>
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.rendezvous')}</p>
-                <p class="text-xl font-bold mt-1 {p2pStatus.rendezvous_configured ? 'text-green-400' : 'text-[hsl(var(--muted-foreground))]'}">
+                <p class="text-xl font-bold mt-1 {p2pStatus.rendezvous_configured ? 'text-green-700' : 'text-[hsl(var(--muted-foreground))]'}">
                   {p2pStatus.rendezvous_configured ? t('admin.p2p.dhtEnabled') : t('admin.p2p.dhtDisabled')}
                 </p>
               </div>
@@ -1931,7 +1848,7 @@
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-5">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.onlinePeers')}</p>
-                <p class="text-3xl font-bold mt-1 text-green-400">{p2pStatus.online_peer_count}</p>
+                <p class="text-3xl font-bold mt-1 text-green-700">{p2pStatus.online_peer_count}</p>
               </div>
             </div>
           {/if}
@@ -1989,14 +1906,14 @@
                       <td class="p-3 text-center">{peer.track_count}</td>
                       <td class="p-3 text-center">
                         {#if peer.is_online}
-                          <span class="text-xs text-green-400">{t('admin.remote.online')}</span>
+                          <span class="text-xs text-green-700">{t('admin.remote.online')}</span>
                         {:else}
                           <span class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.remote.offline')}</span>
                         {/if}
                       </td>
                       <td class="p-3 text-right space-x-2">
                         <button
-                          class="text-xs text-blue-400 hover:underline"
+                          class="text-xs text-blue-700 hover:underline"
                           onclick={async () => {
                             try {
                               await api.post(`/admin/p2p/peers/${peer.node_id}/ping`);
@@ -2007,7 +1924,7 @@
                           {t('admin.p2p.ping')}
                         </button>
                         <button
-                          class="text-xs text-red-400 hover:underline"
+                          class="text-xs text-destructive hover:underline"
                           onclick={async () => {
                             try {
                               await api.delete(`/admin/p2p/peers/${peer.node_id}`);
@@ -2059,11 +1976,11 @@
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-3 text-center">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase">{t('admin.graph.peerCount')}</p>
-                <p class="text-2xl font-bold mt-1 text-purple-400">{networkGraphData.nodes.filter(n => n.node_type === 'peer').length}</p>
+                <p class="text-2xl font-bold mt-1 text-purple-700">{networkGraphData.nodes.filter(n => n.node_type === 'peer').length}</p>
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-3 text-center">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase">{t('admin.graph.relayCount')}</p>
-                <p class="text-2xl font-bold mt-1 text-blue-400">{networkGraphData.nodes.filter(n => n.node_type === 'relay').length}</p>
+                <p class="text-2xl font-bold mt-1 text-blue-700">{networkGraphData.nodes.filter(n => n.node_type === 'relay').length}</p>
               </div>
             </div>
           {/if}
@@ -2097,7 +2014,7 @@
               <!-- Auto-refresh toggle -->
               <button
                 class="text-xs px-3 py-1.5 rounded border transition {p2pLogsAutoRefresh
-                  ? 'bg-green-500/20 border-green-500/30 text-green-400'
+                  ? 'bg-green-500/20 border-green-500/30 text-green-700'
                   : 'bg-[hsl(var(--secondary))] border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]'}"
                 onclick={() => {
                   p2pLogsAutoRefresh = !p2pLogsAutoRefresh;
@@ -2120,7 +2037,7 @@
               </button>
               <!-- Clear logs -->
               <button
-                class="text-xs bg-red-500/20 text-red-400 px-3 py-1.5 rounded hover:bg-red-500/30 transition"
+                class="text-xs bg-red-500/20 text-destructive px-3 py-1.5 rounded hover:bg-red-500/30 transition"
                 onclick={async () => {
                   try {
                     await api.delete("/admin/p2p/logs");
@@ -2141,26 +2058,26 @@
               <p class="text-xs text-[hsl(var(--muted-foreground))] mt-2">{t('admin.p2pLogs.emptyHint')}</p>
             </div>
           {:else}
-            <div class="bg-[hsl(0,0%,5%)] rounded-lg border border-[hsl(var(--border))] overflow-hidden">
+            <div class="bg-muted rounded-lg border border-[hsl(var(--border))] overflow-hidden">
               <div class="max-h-[600px] overflow-y-auto font-mono text-xs">
                 {#each p2pLogs as entry, i}
-                  <div class="flex items-start gap-2 px-3 py-1.5 hover:bg-[hsl(0,0%,8%)] transition-colors border-b border-[hsl(var(--border))]/30 {i === p2pLogs.length - 1 ? 'border-b-0' : ''}">
+                  <div class="flex items-start gap-2 px-3 py-1.5 hover:bg-secondary transition-colors border-b border-[hsl(var(--border))]/30 {i === p2pLogs.length - 1 ? 'border-b-0' : ''}">
                     <!-- Timestamp -->
                     <span class="text-[hsl(var(--muted-foreground))] whitespace-nowrap flex-shrink-0 select-all">
                       {entry.timestamp.replace('T', ' ').replace('Z', '').slice(11, 23)}
                     </span>
                     <!-- Level badge -->
                     <span class="flex-shrink-0 w-14 text-center rounded px-1 py-0.5 font-bold {
-                      entry.level === 'ERROR' ? 'bg-red-500/20 text-red-400' :
-                      entry.level === 'WARN' ? 'bg-yellow-500/20 text-yellow-400' :
-                      entry.level === 'INFO' ? 'bg-blue-500/20 text-blue-400' :
+                      entry.level === 'ERROR' ? 'bg-red-500/20 text-destructive' :
+                      entry.level === 'WARN' ? 'bg-yellow-500/20 text-amber-700' :
+                      entry.level === 'INFO' ? 'bg-blue-500/20 text-blue-700' :
                       entry.level === 'DEBUG' ? 'bg-gray-500/20 text-gray-400' :
                       'bg-gray-500/10 text-gray-500'
                     }">
                       {entry.level}
                     </span>
                     <!-- Target (shortened) -->
-                    <span class="text-purple-400 flex-shrink-0 whitespace-nowrap max-w-[180px] truncate" title={entry.target}>
+                    <span class="text-purple-700 flex-shrink-0 whitespace-nowrap max-w-[180px] truncate" title={entry.target}>
                       {entry.target.replace('soundtime_p2p::', '').replace('iroh::', 'iroh/')}
                     </span>
                     <!-- Message + fields -->
@@ -2200,7 +2117,7 @@
                   <td class="p-3 font-medium">
                     {u.display_name || u.username}
                     {#if u.is_banned}
-                      <span class="ml-1 text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded-full font-normal">{t('admin.users.banned').toLowerCase()}</span>
+                      <span class="ml-1 text-[10px] bg-red-500/20 text-destructive px-1.5 py-0.5 rounded-full font-normal">{t('admin.users.banned').toLowerCase()}</span>
                     {/if}
                   </td>
                   <td class="p-3 text-[hsl(var(--muted-foreground))]">{u.email}</td>
@@ -2216,24 +2133,24 @@
                   </td>
                   <td class="p-3 text-center">
                     {#if u.is_banned}
-                      <span class="text-xs text-red-400" title={u.ban_reason ?? ""}>{t('admin.users.banned')}</span>
+                      <span class="text-xs text-destructive" title={u.ban_reason ?? ""}>{t('admin.users.banned')}</span>
                       {#if u.ban_reason}
                         <p class="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5 max-w-[150px] truncate" title={u.ban_reason}>{u.ban_reason}</p>
                       {/if}
                     {:else}
-                      <span class="text-xs text-green-400">{t('admin.users.active')}</span>
+                      <span class="text-xs text-green-700">{t('admin.users.active')}</span>
                     {/if}
                   </td>
                   <td class="p-3 text-center">
                     {#if u.role !== "admin"}
                       {#if u.is_banned}
                         <button
-                          class="text-xs px-3 py-1 rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 transition"
+                          class="text-xs px-3 py-1 rounded bg-green-500/20 text-green-700 hover:bg-green-500/30 transition"
                           onclick={() => unbanUser(u.id)}
                         >{t('admin.users.unban')}</button>
                       {:else}
                         <button
-                          class="text-xs px-3 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition"
+                          class="text-xs px-3 py-1 rounded bg-red-500/20 text-destructive hover:bg-red-500/30 transition"
                           onclick={() => banUser(u.id)}
                         >{t('admin.users.ban')}</button>
                       {/if}
@@ -2356,7 +2273,7 @@
 
             {#if editorialStatus.needs_regeneration}
               <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 mb-4">
-                <p class="text-sm text-yellow-400">{t('admin.editorial.regenerationNeeded')}</p>
+                <p class="text-sm text-amber-700">{t('admin.editorial.regenerationNeeded')}</p>
               </div>
             {/if}
 
@@ -2462,11 +2379,11 @@
         {#if reportStats}
           <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-4 text-center">
-              <p class="text-2xl font-bold text-yellow-400">{reportStats.pending}</p>
+              <p class="text-2xl font-bold text-amber-700">{reportStats.pending}</p>
               <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.reports.pending')}</p>
             </div>
             <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-4 text-center">
-              <p class="text-2xl font-bold text-green-400">{reportStats.resolved}</p>
+              <p class="text-2xl font-bold text-green-700">{reportStats.resolved}</p>
               <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.reports.resolved')}</p>
             </div>
             <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-4 text-center">
@@ -2484,7 +2401,7 @@
         <div class="flex gap-2">
           {#each [{ id: "all", label: t('admin.reports.filterAll') }, { id: "pending", label: t('admin.reports.filterPending') }, { id: "resolved", label: t('admin.reports.filterResolved') }, { id: "dismissed", label: t('admin.reports.filterDismissed') }] as f}
             <button
-              class="px-3 py-1.5 text-xs rounded-lg transition {reportFilter === f.id ? 'bg-[hsl(var(--primary))] text-white' : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] hover:text-white'}"
+              class="px-3 py-1.5 text-xs rounded-lg transition {reportFilter === f.id ? 'bg-[hsl(var(--primary))] text-white' : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] hover:text-foreground'}"
               onclick={() => reportFilter = f.id}
             >{f.label}</button>
           {/each}
@@ -2511,7 +2428,7 @@
                   <td class="p-3 font-medium max-w-[180px] truncate">{report.track_title}</td>
                   <td class="p-3 text-[hsl(var(--muted-foreground))] max-w-[120px] truncate">{report.track_artist}</td>
                   <td class="p-3">
-                    <span class="text-xs px-2 py-0.5 rounded {report.is_local ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}">
+                    <span class="text-xs px-2 py-0.5 rounded {report.is_local ? 'bg-green-500/20 text-green-700' : 'bg-blue-500/20 text-blue-700'}">
                       {report.is_local ? t('admin.reports.local') : t('admin.reports.remote')}
                     </span>
                   </td>
@@ -2519,9 +2436,9 @@
                   <td class="p-3 text-xs text-[hsl(var(--muted-foreground))] max-w-[200px] truncate" title={report.reason}>{report.reason}</td>
                   <td class="p-3">
                     {#if report.status === "pending"}
-                      <span class="text-xs px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-400">{t('admin.reports.statusPending')}</span>
+                      <span class="text-xs px-2 py-0.5 rounded bg-yellow-500/20 text-amber-700">{t('admin.reports.statusPending')}</span>
                     {:else if report.status === "resolved"}
-                      <span class="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-400">{t('admin.reports.statusResolved')}</span>
+                      <span class="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-700">{t('admin.reports.statusResolved')}</span>
                     {:else}
                       <span class="text-xs px-2 py-0.5 rounded bg-gray-500/20 text-gray-400">{t('admin.reports.statusDismissed')}</span>
                     {/if}
@@ -2533,14 +2450,14 @@
                     {#if report.status === "pending"}
                       <div class="flex gap-1 justify-end">
                         <button
-                          class="px-2 py-1 text-xs rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition"
+                          class="px-2 py-1 text-xs rounded bg-red-500/20 text-destructive hover:bg-red-500/30 transition"
                           title={report.is_local ? t('admin.reports.delete') : t('admin.reports.unlist')}
                           onclick={() => resolveReport(report.id, "resolved", report.is_local ? "delete" : "unlist")}
                         >
                           {report.is_local ? t('admin.reports.delete') : t('admin.reports.unlist')}
                         </button>
                         <button
-                          class="px-2 py-1 text-xs rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 transition"
+                          class="px-2 py-1 text-xs rounded bg-green-500/20 text-green-700 hover:bg-green-500/30 transition"
                           onclick={() => resolveReport(report.id, "resolved", "none")}
                         >{t('admin.reports.resolve')}</button>
                         <button
@@ -2596,21 +2513,21 @@
                     <td class="p-2 font-medium max-w-[200px] truncate">{tr.title}</td>
                     <td class="p-2 text-[hsl(var(--muted-foreground))]">{tr.artist_name}</td>
                     <td class="p-2">
-                      <span class="text-xs px-2 py-0.5 rounded {tr.is_local ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}">
+                      <span class="text-xs px-2 py-0.5 rounded {tr.is_local ? 'bg-green-500/20 text-green-700' : 'bg-blue-500/20 text-blue-700'}">
                         {tr.is_local ? t('admin.reports.local') : t('admin.reports.remote')}
                       </span>
                     </td>
                     <td class="p-2 text-right tabular-nums">{tr.play_count}</td>
                     <td class="p-2 text-right">
                       {#if tr.report_count > 0}
-                        <span class="text-xs px-2 py-0.5 rounded bg-red-500/20 text-red-400">{tr.report_count}</span>
+                        <span class="text-xs px-2 py-0.5 rounded bg-red-500/20 text-destructive">{tr.report_count}</span>
                       {:else}
                         <span class="text-xs text-[hsl(var(--muted-foreground))]">0</span>
                       {/if}
                     </td>
                     <td class="p-2 text-right">
                       <button
-                        class="px-2 py-1 text-xs rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 transition disabled:opacity-50"
+                        class="px-2 py-1 text-xs rounded bg-red-500/20 text-destructive hover:bg-red-500/30 transition disabled:opacity-50"
                         disabled={moderating}
                         onclick={() => moderateTrack(tr.id, tr.title)}
                       >{tr.is_local ? t('admin.reports.delete') : t('admin.reports.unlist')}</button>
@@ -2664,7 +2581,7 @@
           </div>
 
           {#if tosSuccess}
-            <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 mb-4 text-green-400 text-sm">{tosSuccess}</div>
+            <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 mb-4 text-green-700 text-sm">{tosSuccess}</div>
           {/if}
 
           <textarea
@@ -2693,254 +2610,15 @@
       </div>
       {/if}
 
-      <!-- Stockage Overview -->
-      {#if activeTab === "storage"}
-      <div class="space-y-6">
-        <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6">
-          <h2 class="text-lg font-semibold mb-4">{t('admin.storage.title')}</h2>
-          {#if storageStatus}
-            <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
-              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4">
-                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.storage.backend')}</p>
-                <p class="text-xl font-bold mt-1 capitalize">{storageStatus.backend}</p>
-              </div>
-              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4">
-                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.storage.tracksStored')}</p>
-                <p class="text-xl font-bold mt-1">{storageStatus.total_tracks}</p>
-              </div>
-              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4">
-                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.storage.totalSize')}</p>
-                <p class="text-xl font-bold mt-1">{formatStorageSize(storageStatus.total_size_bytes)}</p>
-              </div>
-              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4">
-                <p class="text-xs text-[hsl(var(--muted-foreground))]">{storageStatus.backend === "s3" ? t('admin.storage.bucket') : t('admin.storage.path')}</p>
-                <p class="text-sm font-mono mt-1 truncate" title={storageStatus.storage_path_or_bucket}>{storageStatus.storage_path_or_bucket}</p>
-              </div>
-              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4">
-                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.storage.remoteTracks')}</p>
-                <p class="text-xl font-bold mt-1 text-blue-400">{storageStatus.remote_track_count}</p>
-              </div>
-              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4">
-                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.storage.remoteAvailable')}</p>
-                <p class="text-xl font-bold mt-1 text-green-400">{storageStatus.remote_available_count}</p>
-              </div>
-            </div>
-            <div class="mt-4 p-4 bg-[hsl(var(--secondary))] rounded-lg">
-              <h3 class="text-sm font-medium mb-2">{t('admin.storage.configuration')}</h3>
-              <p class="text-xs text-[hsl(var(--muted-foreground))]">
-                {#if storageStatus.backend === "s3"}
-                  {t('admin.storage.s3Configured')}
-                  <code class="bg-[hsl(var(--card))] px-1 rounded">S3_ENDPOINT</code>,
-                  <code class="bg-[hsl(var(--card))] px-1 rounded">S3_REGION</code>,
-                  <code class="bg-[hsl(var(--card))] px-1 rounded">S3_ACCESS_KEY</code>,
-                  <code class="bg-[hsl(var(--card))] px-1 rounded">S3_SECRET_KEY</code>,
-                  <code class="bg-[hsl(var(--card))] px-1 rounded">S3_BUCKET</code>.
-                {:else}
-                  {t('admin.storage.localConfigured')}
-                  {t('admin.storage.localConfigHint', { var: 'AUDIO_STORAGE_PATH', default: './data/music', s3var: 'STORAGE_BACKEND=s3' })}
-                {/if}
-              </p>
-            </div>
-          {:else}
-            <p class="text-sm text-[hsl(var(--muted-foreground))]">{t('common.loading')}</p>
-          {/if}
-        </div>
-      </div>
-      {/if}
-
-      <!-- Intégrité -->
-      {#if activeTab === "integrity"}
-      <div class="space-y-6">
-        <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6">
-          <div class="flex items-center justify-between mb-4">
-            <div>
-              <h2 class="text-lg font-semibold">{t('admin.integrity.title')}</h2>
-              <p class="text-sm text-[hsl(var(--muted-foreground))] mt-1">
-                {t('admin.integrity.description')}
-              </p>
-            </div>
-            <button
-              class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
-              disabled={storageChecking}
-              onclick={async () => {
-                storageChecking = true;
-                error = null;
-                taskProgress = null;
-                try {
-                  await api.post("/admin/storage/integrity-check");
-                  tasks.startPolling("integrity");
-                  await pollTaskStatus("integrity");
-                } catch (e: unknown) {
-                  // The POST may have timed out (504) but the task was spawned server-side
-                  // Check if it's actually running
-                  try {
-                    const status = await api.get<StorageTaskStatus>("/admin/storage/task-status");
-                    if (status.status === "running") {
-                      tasks.startPolling("integrity");
-                      await pollTaskStatus("integrity");
-                      return;
-                    }
-                  } catch { /* truly failed */ }
-                  error = e instanceof Error ? e.message : String(e);
-                }
-                finally { storageChecking = false; taskProgress = null; }
-              }}
-            >
-              {storageChecking ? t('admin.integrity.checking') : t('admin.integrity.runCheck')}
-            </button>
-          </div>
-
-          {#if storageChecking && taskProgress}
-            <div class="mb-4">
-              <div class="flex items-center justify-between text-sm text-[hsl(var(--muted-foreground))] mb-1">
-                <span>{t('admin.integrity.checking')}</span>
-                <span>{taskProgress.processed}{taskProgress.total ? ` / ${taskProgress.total}` : ''}</span>
-              </div>
-              <div class="w-full bg-[hsl(var(--secondary))] rounded-full h-2">
-                <div
-                  class="bg-[hsl(var(--primary))] h-2 rounded-full transition-all duration-300"
-                  style="width: {taskProgress.total ? (taskProgress.processed / taskProgress.total * 100) : 50}%"
-                ></div>
-              </div>
-            </div>
-          {/if}
-
-          {#if integrityReport}
-            <div class="grid grid-cols-3 gap-4 mb-4">
-              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4 text-center">
-                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.integrity.checked')}</p>
-                <p class="text-2xl font-bold mt-1">{integrityReport.total_checked}</p>
-              </div>
-              <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-4 text-center">
-                <p class="text-xs text-green-400">{t('admin.integrity.healthy')}</p>
-                <p class="text-2xl font-bold mt-1 text-green-400">{integrityReport.healthy}</p>
-              </div>
-              <div class="rounded-lg p-4 text-center {integrityReport.missing.length > 0 ? 'bg-red-500/10 border border-red-500/30' : 'bg-[hsl(var(--secondary))]'}">
-                <p class="text-xs {integrityReport.missing.length > 0 ? 'text-red-400' : 'text-[hsl(var(--muted-foreground))]'}">{t('admin.integrity.missing')}</p>
-                <p class="text-2xl font-bold mt-1 {integrityReport.missing.length > 0 ? 'text-red-400' : ''}">{integrityReport.missing.length}</p>
-              </div>
-            </div>
-
-            {#if integrityReport.missing.length > 0}
-              <div class="mt-4">
-                <h3 class="text-sm font-medium mb-2 text-red-400">{t('admin.integrity.missingTracks')}</h3>
-                <button class="mb-3 underline text-sm" onclick={() => switchTab("sync")}>
-                  {t('admin.integrity.reconcile')}
-                </button>
-                <div class="space-y-2 max-h-64 overflow-y-auto">
-                  {#each integrityReport.missing as m}
-                    <div class="flex items-center gap-3 p-2 bg-red-500/5 rounded text-sm">
-                      <span class="font-medium truncate flex-1">{m.title}</span>
-                      <span class="text-xs text-[hsl(var(--muted-foreground))] font-mono truncate max-w-[200px]">{m.file_path}</span>
-                    </div>
-                  {/each}
-                </div>
-              </div>
-            {/if}
-
-            {#if integrityReport.errors.length > 0}
-              <div class="mt-4">
-                <h3 class="text-sm font-medium mb-2 text-yellow-400">{t('admin.integrity.errors')}</h3>
-                <div class="space-y-1 max-h-40 overflow-y-auto">
-                  {#each integrityReport.errors as err}
-                    <p class="text-xs text-yellow-400 font-mono">{err}</p>
-                  {/each}
-                </div>
-              </div>
-            {/if}
-          {/if}
-        </div>
-      </div>
-      {/if}
-
-      <!-- Synchronisation -->
-      {#if activeTab === "sync"}
-      <div class="space-y-6">
-        <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6">
-          <div class="flex items-center justify-between mb-4">
-            <div>
-              <h2 class="text-lg font-semibold">{t('admin.sync.title')}</h2>
-              <p class="text-sm text-[hsl(var(--muted-foreground))] mt-1">
-                {t('admin.sync.description')}
-              </p>
-            </div>
-            <button
-              class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
-              disabled={storageSyncing}
-              onclick={() => runStorageSync()}
-            >
-              {storageSyncing ? t('admin.sync.syncing') : t('admin.sync.runSync')}
-            </button>
-          </div>
-
-          {#if storageSyncing && taskProgress}
-            <div class="mb-4">
-              <div class="flex items-center justify-between text-sm text-[hsl(var(--muted-foreground))] mb-1">
-                <span>{t('admin.sync.syncing')}</span>
-                <span>{taskProgress.processed}{taskProgress.total ? ` / ${taskProgress.total}` : ''}</span>
-              </div>
-              <div class="w-full bg-[hsl(var(--secondary))] rounded-full h-2">
-                <div
-                  class="bg-[hsl(var(--primary))] h-2 rounded-full transition-all duration-300"
-                  style="width: {taskProgress.total ? (taskProgress.processed / taskProgress.total * 100) : 50}%"
-                ></div>
-              </div>
-            </div>
-          {/if}
-
-          {#if syncReport}
-            <div class="grid grid-cols-2 sm:grid-cols-5 gap-4 mb-4">
-              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4 text-center">
-                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.sync.scanned')}</p>
-                <p class="text-2xl font-bold mt-1">{syncReport.scanned}</p>
-              </div>
-              <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-4 text-center">
-                <p class="text-xs text-green-400">{t('admin.sync.imported')}</p>
-                <p class="text-2xl font-bold mt-1 text-green-400">{syncReport.imported}</p>
-              </div>
-              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4 text-center">
-                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.sync.alreadyReferenced')}</p>
-                <p class="text-2xl font-bold mt-1">{syncReport.skipped}</p>
-              </div>
-              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4 text-center">
-                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.sync.moved')}</p>
-                <p class="text-2xl font-bold mt-1">{syncReport.moved}</p>
-              </div>
-              <div class="bg-[hsl(var(--secondary))] rounded-lg p-4 text-center">
-                <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.sync.removed')}</p>
-                <p class="text-2xl font-bold mt-1">{syncReport.removed}</p>
-              </div>
-            </div>
-
-            {#if syncReport.empty_sources?.length}
-              <p class="text-sm mb-2">{t('admin.sync.emptyWarning', { sources: syncReport.empty_sources.join(', ') })}</p>
-              <button
-                class="text-sm text-red-400 underline disabled:opacity-50"
-                disabled={storageSyncing}
-                onclick={() => { if (syncReport && window.confirm(t('admin.sync.confirmEmpty', { sources: syncReport.empty_sources.join(', ') }))) runStorageSync(syncReport.empty_sources); }}
-              >{t('admin.sync.cleanEmpty')}</button>
-            {/if}
-
-            {#if syncReport.errors.length > 0}
-              <div class="mt-4">
-                <h3 class="text-sm font-medium mb-2 text-yellow-400">{t('admin.sync.importErrors')}</h3>
-                <div class="space-y-1 max-h-40 overflow-y-auto">
-                  {#each syncReport.errors as err}
-                    <p class="text-xs text-yellow-400 font-mono">{err}</p>
-                  {/each}
-                </div>
-              </div>
-            {/if}
-          {/if}
-        </div>
-      </div>
+      {#if activeTab === "storage" || activeTab === "sync" || activeTab === "integrity"}
+        <StorageSection tab={activeTab} section={storage} onSyncTab={() => switchTab("sync")} />
       {/if}
 
       <!-- Plugins -->
       {#if activeTab === "plugins"}
       <div class="space-y-6">
         {#if pluginSuccess}
-          <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-4 text-green-400">
+          <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-4 text-green-700">
             {pluginSuccess}
             <button class="ml-2 underline" onclick={() => (pluginSuccess = "")}>{t('common.close')}</button>
           </div>
@@ -2984,8 +2662,8 @@
                       <h3 class="font-semibold text-base">{plugin.name}</h3>
                       <span class="text-xs font-mono text-[hsl(var(--muted-foreground))]">v{plugin.version}</span>
                       <span class="px-2 py-0.5 rounded-full text-xs font-medium {
-                        plugin.status === 'enabled' ? 'bg-green-500/15 text-green-400' :
-                        plugin.status === 'error' ? 'bg-red-500/15 text-red-400' :
+                        plugin.status === 'enabled' ? 'bg-green-500/15 text-green-700' :
+                        plugin.status === 'error' ? 'bg-red-500/15 text-destructive' :
                         'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
                       }">
                         {t(`admin.plugins.status.${plugin.status}`)}
@@ -3001,7 +2679,7 @@
                       <span>{t('admin.plugins.installedAt')}: {new Date(plugin.installed_at).toLocaleDateString()}</span>
                     </div>
                     {#if plugin.status === "error" && plugin.error_message}
-                      <p class="text-xs text-red-400 mt-2 font-mono">{plugin.error_message}</p>
+                      <p class="text-xs text-destructive mt-2 font-mono">{plugin.error_message}</p>
                     {/if}
                   </div>
                   <div class="flex items-center gap-2 ml-4 shrink-0">
@@ -3094,7 +2772,7 @@
                         class="flex-1 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded px-3 py-1.5 text-xs"
                       />
                       <button
-                        class="text-red-400 hover:text-red-300 text-xs"
+                        class="text-destructive hover:text-red-300 text-xs"
                         onclick={() => removePluginConfigEntry(entry.key)}
                       >{t('common.delete')}</button>
                     </div>
@@ -3148,16 +2826,16 @@
                           <td class="py-2 px-2 font-mono">{log.event_name}</td>
                           <td class="py-2 px-2">
                             <span class="px-1.5 py-0.5 rounded text-[10px] font-medium {
-                              log.result === 'success' ? 'bg-green-500/15 text-green-400' :
-                              log.result === 'error' ? 'bg-red-500/15 text-red-400' :
-                              'bg-yellow-500/15 text-yellow-400'
+                              log.result === 'success' ? 'bg-green-500/15 text-green-700' :
+                              log.result === 'error' ? 'bg-red-500/15 text-destructive' :
+                              'bg-yellow-500/15 text-amber-700'
                             }">{log.result}</span>
                           </td>
                           <td class="py-2 px-2 text-right font-mono">{log.execution_time_ms}ms</td>
                           <td class="py-2 px-2 text-right text-[hsl(var(--muted-foreground))]">{new Date(log.created_at).toLocaleString()}</td>
                         </tr>
                         {#if log.error_message}
-                          <tr><td colspan="4" class="px-2 pb-2 text-red-400 font-mono text-[10px]">{log.error_message}</td></tr>
+                          <tr><td colspan="4" class="px-2 pb-2 text-destructive font-mono text-[10px]">{log.error_message}</td></tr>
                         {/if}
                       {/each}
                     </tbody>
@@ -3191,7 +2869,7 @@
 
         <!-- Success banner -->
         {#if themeSuccess}
-          <div class="bg-green-500/10 border border-green-500/30 text-green-400 px-4 py-3 rounded-lg text-sm">
+          <div class="bg-green-500/10 border border-green-500/30 text-green-700 px-4 py-3 rounded-lg text-sm">
             {themeSuccess}
           </div>
         {/if}
@@ -3234,7 +2912,7 @@
                       <h3 class="font-medium">{theme.name}</h3>
                       <span class="text-xs text-[hsl(var(--muted-foreground))]">v{theme.version}</span>
                       {#if theme.status === "enabled"}
-                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 font-medium">
+                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-green-500/20 text-green-700 font-medium">
                           {t("admin.themes.activeIndicator")}
                         </span>
                       {:else}
@@ -3286,7 +2964,7 @@
                     </button>
                     <button
                       onclick={() => uninstallTheme(theme.id)}
-                      class="px-3 py-1.5 bg-red-600/20 text-red-400 rounded-lg text-xs font-medium hover:bg-red-600/30 transition"
+                      class="px-3 py-1.5 bg-red-600/20 text-destructive rounded-lg text-xs font-medium hover:bg-red-600/30 transition"
                     >
                       {t("admin.themes.uninstall")}
                     </button>

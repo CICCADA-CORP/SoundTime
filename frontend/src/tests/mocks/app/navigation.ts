@@ -1,5 +1,6 @@
-// Mock for $app/navigation
-export function goto(url: string) {
+import { page } from "./state";
+export function goto(url: string | URL) {
+	page.url = new URL(url, page.url.href);
 	return Promise.resolve();
 }
 
