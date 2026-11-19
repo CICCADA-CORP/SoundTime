@@ -278,10 +278,16 @@ impl Podcasts {
                     })
                     .ok_or(StatusCode::NOT_FOUND)?;
                 let show = show(row, false).ok_or(BAD)?;
-                let feed = row["feedUrl"]
-                    .as_str()
-                    .and_then(web_url)
-                    .ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
+                // Apple also lists shows that publish no public RSS feed.
+                let Some(feed) = row["feedUrl"].as_str().filter(|url| !url.trim().is_empty())
+                else {
+                    return Ok(Arc::new(Archive {
+                        show,
+                        episodes: Vec::new(),
+                        truncated: false,
+                    }));
+                };
+                let feed = web_url(feed).ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
                 tokio::time::timeout(Duration::from_secs(12), async {
                     let response = open_public(Url::parse(&feed).map_err(|_| BAD)?).await?;
                     read_archive(response, show).await

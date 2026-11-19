@@ -198,3 +198,25 @@ async fn text_search_pages_share_one_bounded_result_across_offsets() {
     let beyond = podcasts.browse("US", "talk", u32::MAX).await.unwrap();
     assert!(beyond.shows.is_empty() && beyond.next_offset.is_none());
 }
+
+#[tokio::test]
+async fn a_known_show_without_public_rss_still_has_a_detail_page() {
+    let mock = MockServer::start().await;
+    let catalog = mock_directory(&mock);
+    Mock::given(path("/lookup")).and(query_param("id", "77")).respond_with(
+        ResponseTemplate::new(200).set_body_json(json!({"results":[
+            {"collectionId":77,"collectionName":"Subscriber series","artistName":"Editor","kind":"podcast"}
+        ]}))).expect(1).mount(&mock).await;
+    let archive = catalog.feed("FR", "77").await.unwrap();
+    let page = archive.page(0);
+    assert_eq!(page.show.title, "Subscriber series");
+    assert_eq!(page.show.id, "77");
+    assert!(page.episodes.is_empty() && page.next_offset.is_none() && !page.truncated);
+    Mock::given(path("/lookup"))
+        .and(query_param("id", "78"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    assert_eq!(catalog.feed("FR", "78").await.err(), Some(BAD));
+}
