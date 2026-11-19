@@ -155,13 +155,18 @@ jobs:
       - name: Validate all four release digests
         run: |
           root="$RUNNER_TEMP/release-digests"
+          files=("$root"/image-digest-*/digest)
+          [[ ${#files[@]} -eq 4 ]] || { echo "Expected four digest artifacts" >&2; exit 1; }
           for component in backend frontend; do
             for arch in amd64 arm64; do
               digest=$(cat "$root/image-digest-$component-$arch/digest")
-              [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+              if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+                echo "Invalid digest for $component ($arch)" >&2
+                exit 1
+              fi
             done
           done
-          [[ $(cat "$root"/image-digest-*/digest | sort -u | wc -l) -eq 4 ]]
+          [[ $(cat "${files[@]}" | sort -u | wc -l) -eq 4 ]]
 
       - uses: docker/login-action@v4.8.0
         with:
