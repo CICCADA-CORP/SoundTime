@@ -59,7 +59,35 @@ Sur les **298 000 titres** du banc `bd5abbf`, PostgreSQL a calculé le préfixe 
 
 Sur une copie du même index, la lecture des crédits et de la disponibilité d’une playlist d’un seul titre a pris 731 ms, dont 697 ms de compilation LLVM par PostgreSQL. La même requête et les mêmes droits, avec `SET LOCAL jit = off` dans une transaction de lecture, ont pris 0,82 ms d’exécution et 9,11 ms de planification. Le réglage s’applique à cette consultation des titres enregistrés. À la fin de la transaction, la connexion retrouve sa configuration précédente.
 
+La migration 51 permet de vérifier la page directement quand chacune de ses positions dispose d’un original local ou d’une offre de l’origine autorisée. Le chemin général couvre les positions manquantes, les miroirs et les versions historiques. Sur deux plans génériques réutilisés, les médianes SQL à chaud sont passées de 1,155 à 0,576 ms pour `Quartz0001` et de 1,310 à 0,616 ms pour `Melody00`. Le nombre de blocs consultés est passé respectivement de 727 à 327 et de 731 à 338. Les 33 cas de comparaison ont conservé les résultats et l’ordre des titres.
+
+Une insertion sans rapport avec le terme recherché invalidait aussi son classement pendant la durée de vie du préfixe. La révision `4732928` examine au plus 33 documents modifiés depuis son calcul. Avec 32 changements ou moins, elle réutilise le préfixe si aucun document modifié ne correspond au terme. Chaque page recontrôle la recherche et les droits. Au-delà, elle recalcule le classement. Sur la copie de 298 000 titres, après la publication de `Loadcatalogchange`, le contrôle générique de `Melody00` a lu un document et quatre blocs, en 0,016 à 0,044 ms. Cette mesure porte uniquement sur la vérification de réutilisation.
+
 ### Évaluation du plateau
+
+Le premier passage de la révision `0601728` sur le Mac mini a partagé deux vCPU et 5 Gio entre les trois instances, PostgreSQL, le générateur et les deux navigateurs. B suivait deux origines audio et 298 catalogues synthétiques de 1 000 titres chacun. Les budgets de descripteurs réellement appliqués aux trois serveurs Rust étaient de 8 192.
+
+| Profil de 90 s | Recherches abouties | Débit de recherche | Interruptions de réponse audio | Écrans mesurés |
+| --- | ---: | ---: | ---: | ---: |
+| Cache distant nul | 6 307 / 9 000 | 70,08/s | 75 | 0 |
+| Cache préchauffé | 8 838 / 9 000 | 98,20/s | 82 | 4 |
+| Panne de C pendant 12 s | 6 306 / 9 000 | 70,07/s | 88 | 0 |
+
+Les 1 000 sessions ont démarré. Les mesures navigateur étaient trop peu nombreuses pour qualifier leur p95. Le worker B a commencé la vectorisation de 298 000 titres distants pendant le profil à froid. Les recherches ont également attendu le pool PostgreSQL. Un test HTTP isolé a reproduit un défaut du générateur qui pouvait réinitialiser une connexion pendant la temporisation volontaire du lecteur, alors que des octets étaient déjà en mémoire. Les interruptions du tableau sont celles observées avant l’ajout des diagnostics distinguant cette temporisation d’une attente réseau.
+
+Sur la même VM, la révision `f0df6dd` a servi les 9 000 recherches prévues à chacune des trois répétitions de 90 secondes. Les 1 000 auditeurs ont obtenu leur première réponse audio dans les trois profils. La panne a coupé C pendant douze secondes. Les dernières colonnes mesurent les navigateurs et incluent le chargement de la page de recherche.
+
+| Profil | Recherches abouties | Réponse HTTP p95 | Interruptions audio | Navigation jusqu’au titre p95 | Clic jusqu’au premier son p95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Cache distant nul | 9 000 / 9 000 | 1 261 ms | 43 | 1 335 ms (21 mesures) | 508 ms (23 mesures) |
+| Cache préchauffé | 9 000 / 9 000 | 51 ms | 46 | 828 ms (30 mesures) | 154 ms (30 mesures) |
+| Panne de C | 9 000 / 9 000 | 461 ms | 31 | 1 374 ms (22 mesures) | 629 ms (23 mesures) |
+
+Le profil à chaud a dépassé le seuil de 300 ms à l’écran et 102 lecteurs ont manqué d’octets jouables pendant plus de deux secondes. Dans ce profil, C n’a transmis aucun octet audio et A en a transmis 320 876, témoins navigateur compris. Le cache a servi les fichiers de charge localement sur B.
+
+Un témoin à vide a repris la même base et le même navigateur sur la révision `2f15112`. Huit ouvertures directes de la page de recherche ont donné une médiane de 164 ms et un maximum de 191 ms. Depuis une page déjà ouverte, huit soumissions au clavier via le formulaire SoundTime ont donné une médiane de 18 ms et un maximum de 123 ms. Cette série de huit essais illustre le coût d’une nouvelle navigation. Les distributions de charge utilisent leur propre effectif.
+
+Après le changement de classement, le passage froid de `4732928` a terminé 8 997 recherches avant l’échéance, avec deux réponses encore en vol, une demande omise et zéro erreur HTTP. Le p95 HTTP est passé de 1 261 à 150 ms et le premier son de 508 à 325 ms. Sur 22 ouvertures de la page, le p95 de rendu est resté à 1 327 ms. Les jalons du navigateur situent le DOM interactif à 647 ms, le lancement de sa recherche à 1 065 ms et la fin de sa réponse à 1 122 ms au p95. La durée p95 de cette requête est de 57 ms. Le transfert de ressources immuables est nul au p95. Les deux témoins Chromium, le générateur et les serveurs se partagent ici deux vCPU. Le profil a signalé 34 interruptions de réponse audio.
 
 Avant les abonnements et les lectures, `search_index_preparation` vérifie sur B que le travail initial de projection est achevé. Le profil complet enregistre ensuite dans `local-search-explain.json` les plans PostgreSQL de la recherche réelle pour `Quartz0001` (1 000 titres) et `Melody00` (14 900 titres). Les appels sont séquentiels, en lecture seule, avec une limite SQL de huit secondes par plan. Le rapport compare les plans préparés génériques et personnalisés des titres et échantillonne le contrôle des noms ainsi que les deux requêtes d’autorisation évitées pour un terme absent. Un dépassement de délai figure dans le rapport et le plateau peut démarrer. Ces observations couvrent un accès SQL isolé avant la mesure concurrente.
 
