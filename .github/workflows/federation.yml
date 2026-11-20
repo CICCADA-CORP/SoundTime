@@ -57,6 +57,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Check navigation between browser documents
+        run: node --test scripts/federation/test_browser_document.mjs
       - name: Check isolated Compose topology
         env:
           FEDERATION_SECRET: ci-validation-only

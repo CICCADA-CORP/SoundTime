@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { pageDocuments } from "./browser-document.mjs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { tmpdir } from "node:os";
@@ -112,22 +113,13 @@ try {
   const mutations = [];
   const logins = [];
   let sequence = 0;
-  let mainFrameId;
-  let documentContext;
+  const documents = pageDocuments(send);
   socket.addEventListener("message", ({ data }) => {
     const msg = JSON.parse(data);
-    if (msg.method === "Page.frameNavigated" && !msg.params.frame.parentId) {
-      mainFrameId = msg.params.frame.id;
-    } else if (msg.method === "Runtime.executionContextCreated") {
-      const context = msg.params.context;
-      if (context.auxData?.isDefault && context.auxData.frameId === mainFrameId) documentContext = context.id;
-    } else if (msg.method === "Runtime.executionContextsCleared" ||
-        (msg.method === "Runtime.executionContextDestroyed" && msg.params.executionContextId === documentContext)) {
-      documentContext = undefined;
-    }
+    documents.observe(msg);
     if (msg.id && pending.has(msg.id)) {
       const { resolve, reject } = pending.get(msg.id);
-      if (msg.error) reject(new Error(msg.error.message));
+      if (msg.error) reject(Object.assign(new Error(msg.error.message), {code: msg.error.code}));
       else resolve(msg.result);
       return;
     }
@@ -165,20 +157,16 @@ try {
     }
   }
   async function evaluate(callback, {input = null, userGesture = false, awaitPromise = false} = {}) {
-    const executionContextId = await until("active page context", () => documentContext);
-    const value = await send("Runtime.callFunctionOn", {
-      executionContextId,
+    const value = await documents.call({
       functionDeclaration: callback.toString(),
       arguments: [{ value: { title, track, playlist } }, { value: input }],
       returnByValue: true, userGesture, awaitPromise,
-    });
+    }, !userGesture);
     if (value.exceptionDetails) throw new Error(value.exceptionDetails.text);
     return value.result.value;
   }
 
-  await send("Page.enable");
-  mainFrameId = (await send("Page.getFrameTree")).frameTree.frame.id;
-  await send("Runtime.enable");
+  await documents.enable();
   await send("Network.enable");
   await send("Emulation.setLocaleOverride", {locale:"en-US"});
   await send("Page.addScriptToEvaluateOnNewDocument", {source: "(" + installPlaylistProbe.toString() + ")()"});
@@ -201,11 +189,11 @@ try {
   let activeListener;
   async function asListener(listener) {
     if(activeListener===listener.username) return;
-    await send("Page.navigate",{url:"about:blank"});
+    await documents.navigate("about:blank");
     await until("clean navigation",()=>evaluate(() => location.href === "about:blank"));
     await send("Storage.clearDataForOrigin",{origin,storageTypes:"cookies,local_storage"});
     const destination="/playlists/"+listener.playlist;
-    await send("Page.navigate",{url:origin+"/login?next="+encodeURIComponent(destination)});
+    await documents.navigate(origin+"/login?next="+encodeURIComponent(destination));
     await until("login form",()=>evaluate(() => Boolean(document.querySelector("form input[name=password]"))));
     const submit = () => evaluate((_, credentials) => {
       const form=document.querySelector("form input[name=password]").form;
@@ -278,7 +266,7 @@ try {
     for (const listener of listeners) {
       const checkpoint=mutations.length;
       await asListener(listener);
-      await send("Page.navigate",{url:origin + "/search?q=" + encodeURIComponent(title)});
+      await documents.navigate(origin + "/search?q=" + encodeURIComponent(title));
       if (capture && !added.length) {
         await viewport(false);
         await until("desktop search result", () => evaluate(fixture =>
@@ -298,7 +286,7 @@ try {
   }
   async function openPlaylist(listener) {
     await asListener(listener);
-    await send("Page.navigate",{url:origin + "/playlists/" + listener.playlist});
+    await documents.navigate(origin + "/playlists/" + listener.playlist);
     await until("listener's playlist",()=>evaluate((fixture, path) =>
       location.pathname === path && Boolean(window.soundtimePlaylistProbe.row(fixture)), {input: "/playlists/" + listener.playlist}));
   }
@@ -361,7 +349,7 @@ try {
     }));
     assert.ok(responses.slice(checkpoint).some(r => r.status === 206 || r.status === 200),
       "No new media HTTP response during the sample");
-    await send("Page.navigate", {url: "about:blank"});
+    await documents.navigate("about:blank");
     await until("sample player closed", () => evaluate(() => location.href === "about:blank"));
     return observation;
   }
@@ -391,7 +379,7 @@ try {
         && Boolean(window.soundtimePlaylistProbe.visibleSeek("[role=dialog]"))));
   }
   async function playback(capture = false, credit) {
-    await send("Page.navigate", { url: origin + "/playlists/" + encodeURIComponent(playlist) });
+    await documents.navigate(origin + "/playlists/" + encodeURIComponent(playlist));
     await until("the remote track in its playlist", () => evaluate(fixture =>
       location.pathname === "/playlists/" + fixture.playlist &&
       Boolean(window.soundtimePlaylistProbe.row(fixture)?.querySelector("button.play-cell"))));
@@ -469,19 +457,19 @@ try {
       else if (phase==="measure") {
         await asListener(listeners[0]);
         const began=performance.now();
-        await send("Page.navigate",{url:origin+"/search?q="+encodeURIComponent(title)});
+        await documents.navigate(origin+"/search?q="+encodeURIComponent(title));
         await until("search result visible",()=>evaluate(fixture =>
           location.pathname === "/search" && new URL(location.href).searchParams.get("q") === fixture.title &&
           Boolean(window.soundtimePlaylistProbe.row(fixture)?.getBoundingClientRect().height)));
         const visible=performance.now()-began;
         const navigation = await evaluate(navigationTimings);
         result={search_to_screen_ms:visible,navigation_timing:navigation,...await playback()};
-        await send("Page.navigate",{url:"about:blank"});
+        await documents.navigate("about:blank");
       }
       else if (phase==="play") {
         await asListener(listeners[0]);
         result=await playback(capture, credit);
-        await send("Page.navigate",{url:"about:blank"});
+        await documents.navigate("about:blank");
         if (capture) await viewport(false);
       } else if (phase==="withdraw") result=await withdrawals(listeners);
       else throw new Error("Unknown browser phase");
