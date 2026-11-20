@@ -58,12 +58,14 @@ class FederationScenarioTests(unittest.TestCase):
         proc.stdin.close.side_effect = BrokenPipeError()
         proc.wait.side_effect = [subprocess.TimeoutExpired("browser", 5),
                                  subprocess.TimeoutExpired("browser", 3), -9]
-        with self.assertRaisesRegex(scenario.ScenarioError, "measure.*input pipe closed.*forward lost"):
+        with self.assertRaisesRegex(scenario.ScenarioError, "measure.*input pipe closed.*forward lost") as failure:
             with ExitStack() as stack:
                 browser = self.open_fake_browser(stack, proc)
-                browser.errors.write("forward lost")
+                browser.errors.write("forward lost\n" + "stack frame\n" * 300 + "end of trace")
                 browser.errors.flush()
                 browser.phase("measure")
+        self.assertTrue(str(failure.exception).endswith("end of trace"))
+        self.assertLess(len(str(failure.exception)), 2100)
         browser.close()
         self.assertEqual(proc.wait.call_args_list, [call(timeout=5), call(timeout=3), call(timeout=2)])
         proc.terminate.assert_called_once()

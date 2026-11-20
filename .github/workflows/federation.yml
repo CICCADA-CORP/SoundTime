@@ -50,32 +50,26 @@ jobs:
   three-instances:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
+    env:
+      FEDERATION_BROWSER: container
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: browser-actions/setup-chrome@v2
-        id: browser
-        with:
-          chrome-version: stable
-          install-dependencies: true
-
       - name: Check isolated Compose topology
         env:
           FEDERATION_SECRET: ci-validation-only
-        run: docker compose --env-file /dev/null -p st-fed-validate -f scripts/federation/compose.yml config --quiet
+        run: docker compose --env-file /dev/null -p st-fed-validate -f scripts/federation/compose.yml -f scripts/federation/browser.yml --profile measurement config --quiet
 
       - name: Capture baseline on a fresh project
         env:
           FEDERATION_ARTIFACT_DIR: ${{ runner.temp }}/soundtime-federation/baseline
-          CHROME_BIN: ${{ steps.browser.outputs.chrome-path }}
         run: scripts/test-p2p-federation.sh baseline
 
       - name: Check acceptance on a second fresh project
         env:
           FEDERATION_ARTIFACT_DIR: ${{ runner.temp }}/soundtime-federation/acceptance
-          CHROME_BIN: ${{ steps.browser.outputs.chrome-path }}
         run: scripts/test-p2p-federation.sh acceptance
 
       - name: Check durable retention and reseeding after restart

@@ -525,8 +525,12 @@ class BrowserSession:
 
     def failure(self, name, reason):
         fd = self.errors.fileno()
-        offset = max(0, os.fstat(fd).st_size - 2000)
-        detail = os.pread(fd, 2000, offset).decode(errors="replace").strip()
+        size = os.fstat(fd).st_size
+        if size <= 2000:
+            excerpt = os.pread(fd, size, 0)
+        else:
+            excerpt = os.pread(fd, 1200, 0) + b"\n...\n" + os.pread(fd, 795, size - 795)
+        detail = excerpt.decode(errors="replace").strip()
         return ScenarioError(f"Browser {name} failed ({reason})" + (f": {detail}" if detail else ""))
 
     def _exit(self, _type, original, _traceback):

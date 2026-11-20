@@ -26,7 +26,10 @@ const browser = spawn(chrome, [
 ], { stdio: ["ignore", "ignore", "pipe"] });
 let chromeLog = "";
 browser.stderr.setEncoding("utf8");
-browser.stderr.on("data", text => { chromeLog = (chromeLog + text).slice(-1800); });
+browser.stderr.on("data", text => {
+  const output = chromeLog + text;
+  chromeLog = output.length <= 1200 ? output : output.slice(0, 800) + "\n…\n" + output.slice(-397);
+});
 const exited = once(browser, "exit").catch(() => {});
 let launchError;
 browser.on("error", error => { launchError = error; });
