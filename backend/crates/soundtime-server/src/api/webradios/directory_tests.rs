@@ -5,6 +5,38 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
+fn directory_with(servers: &[&MockServer]) -> Directory {
+    assert!(!servers.is_empty());
+    let mut directory = Directory::new().unwrap();
+    directory.test_mirrors = Some(
+        servers
+            .iter()
+            .map(|server| Mirror::Loopback(server.address().port()))
+            .collect(),
+    );
+    directory
+}
+
+#[test]
+fn each_directory_operation_uses_the_selected_official_https_origin() {
+    let id = Uuid::from_u128(0xabcd);
+    for (mirror, origin) in [
+        (Mirror::Global, "https://all.api.radio-browser.info"),
+        (Mirror::Germany, "https://de1.api.radio-browser.info"),
+    ] {
+        for (route, path) in [
+            (DirectoryRoute::Search, "/json/stations/search"),
+            (DirectoryRoute::ByUuid, "/json/stations/byuuid"),
+            (
+                DirectoryRoute::Click(id),
+                "/json/url/00000000-0000-0000-0000-00000000abcd",
+            ),
+        ] {
+            assert_eq!(mirror.endpoint(route).as_str(), format!("{origin}{path}"));
+        }
+    }
+}
+
 fn row(id: Uuid) -> Value {
     json!({"stationuuid":id,"name":" Radio One ","url":"https://broadcast.example/playlist.pls",
         "url_resolved":"http://broadcast.example/live","favicon":"https://art.example/logo.png",
@@ -37,7 +69,7 @@ fn missing_and_unknown_codecs_are_omitted_from_station_details() {
 async fn paged_search_coalesces_requests_and_uses_the_working_mirror() {
     let down = MockServer::start().await;
     let up = MockServer::start().await;
-    let dir = Directory::with_mirrors(vec![down.uri(), up.uri()]).unwrap();
+    let dir = directory_with(&[&down, &up]);
     let id = Uuid::new_v4();
     let active = row(id);
     let mut broken = row(Uuid::new_v4());
@@ -110,7 +142,7 @@ async fn play_counts_once_locate_counts_nothing_and_both_return_the_resolved_url
     let server = MockServer::start().await;
     let previous_mirror = MockServer::start().await;
     let redirect_target = MockServer::start().await;
-    let dir = Directory::with_mirrors(vec![previous_mirror.uri(), server.uri()]).unwrap();
+    let dir = directory_with(&[&previous_mirror, &server]);
     let id = Uuid::new_v4();
     let mut listing = row(id);
     listing["hls"] = json!(1);
@@ -154,7 +186,7 @@ async fn play_counts_once_locate_counts_nothing_and_both_return_the_resolved_url
 #[tokio::test]
 async fn unknown_broken_and_unsafe_stations_are_never_counted() {
     let server = MockServer::start().await;
-    let dir = Directory::with_mirrors(vec![server.uri()]).unwrap();
+    let dir = directory_with(&[&server]);
     for kind in ["missing", "mismatched", "broken", "unsafe"] {
         let id = Uuid::new_v4();
         let mut station = row(id);
@@ -186,7 +218,7 @@ async fn unknown_broken_and_unsafe_stations_are_never_counted() {
 async fn oversized_and_invalid_directory_responses_and_capacity_are_bounded() {
     let large = MockServer::start().await;
     let invalid = MockServer::start().await;
-    let dir = Directory::with_mirrors(vec![large.uri(), invalid.uri()]).unwrap();
+    let dir = directory_with(&[&large, &invalid]);
     let search = || Mock::given(method("GET")).and(path("/json/stations/search"));
     search()
         .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b' '; MAX_JSON + 1]))
