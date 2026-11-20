@@ -1,6 +1,6 @@
 # Self-Hosting Guide
 
-Run your own SoundTime node with Docker Compose. For guided installation on a computer, NAS or remote server, see the [installer guide](installateur.md).
+Run your own SoundTime node with Docker Compose. For guided installation on a computer, NAS or remote server, see the [installer guide](install.md).
 
 ## Prerequisites
 
