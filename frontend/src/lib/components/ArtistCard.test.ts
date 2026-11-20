@@ -16,9 +16,9 @@ describe('ArtistCard', () => {
     expect(screen.getByText('Cool Artist')).toBeInTheDocument();
   });
 
-  it('renders fallback emoji when no image_url', () => {
+  it('renders accessible artwork when no image_url', () => {
     render(ArtistCard, { props: { artist } });
-    expect(screen.getByText('🎤')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Cool Artist' })).toBeInTheDocument();
   });
 
   it('renders image when image_url is set', () => {
@@ -35,8 +35,8 @@ describe('ArtistCard', () => {
     expect(link).toHaveAttribute('href', '/artists/artist-1');
   });
 
-  it('shows Artist label', () => {
-    render(ArtistCard, { props: { artist } });
-    expect(screen.getByText('Tracks')).toBeInTheDocument();
+  it('shows the artist biography when the library has one', () => {
+    render(ArtistCard, { props: { artist: { ...artist, bio: 'An independent jazz quartet.' } } });
+    expect(screen.getByText('An independent jazz quartet.')).toBeInTheDocument();
   });
 });

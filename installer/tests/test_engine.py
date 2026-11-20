@@ -1,6 +1,4 @@
 import json
-import base64
-import hashlib
 import io
 import os
 import re
@@ -94,6 +92,18 @@ class InstallationTests(unittest.TestCase):
         engine._configure(self.directory, self.settings)
         self.assertEqual(envfile.read_bytes(), engine._seal(original))
 
+    def test_portable_project_exposes_federation_controls(self):
+        settings = {**self.settings, "directory": "/volume1/docker/soundtime", "p2p": True, "peerPort": 22000}
+        _, contents = engine.export_project(settings, "nas")
+        with zipfile.ZipFile(io.BytesIO(contents)) as archive:
+            env = json.loads(archive.read("compose.yaml"))["services"]["backend"]["environment"]
+            self.assertEqual(env["P2P_ENABLED"], "true")
+            self.assertEqual(env["P2P_BIND_PORT"], "22000")
+            self.assertEqual(env["P2P_EXPLICIT_CATALOG"], "${P2P_EXPLICIT_CATALOG:-false}")
+            self.assertEqual(env["P2P_CACHE_MAX_SIZE"], "${P2P_CACHE_MAX_SIZE:-2GB}")
+            self.assertEqual(env["P2P_PEER_UPLOAD_BYTES_PER_SECOND"], "${P2P_PEER_UPLOAD_BYTES_PER_SECOND:-0}")
+            self.assertIn('P2P_CACHE_MAX_SIZE="2GB"', archive.read("qnap/backend.env").decode())
+
     def test_portable_project_can_be_generated_without_remote_files_or_docker(self):
         settings = {**self.settings, "directory": "/volume1/docker/ma musique", "musicDirectory": "/volume2/Albums"}
         for target in ("nas", "server", "vps", "vm", "cloud"):
@@ -115,6 +125,23 @@ class InstallationTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 engine.export_project({**settings, "directory": bad}, "cloud")
 
+    def test_nas_bootstrap_credential_matches_the_private_guide(self):
+        import bcrypt
+
+        settings = {**self.settings, "directory": "/volume1/docker/soundtime", "access": "lan"}
+        _, data = engine.export_project(settings, "nas")
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            password = re.search(rb"Temporary password: (\S+)", archive.read("README.txt"))[1]
+            record = archive.read("docker/access/users")
+            self.assertRegex(record, rb"\Asoundtime:\$2b\$12\$[./A-Za-z0-9]{53}\n\Z")
+            digest = record.removesuffix(b"\n").split(b":", 1)[1]
+            self.assertTrue(bcrypt.checkpw(password, digest))
+            self.assertFalse(bcrypt.checkpw(b"incorrect", digest))
+            self.assertEqual(archive.getinfo("README.txt").external_attr >> 16 & 0o777, 0o600)
+            for path in archive.namelist():
+                if path != "README.txt":
+                    self.assertNotIn(password, archive.read(path))
+
     @unittest.skipUnless(shutil.which("docker"), "Docker Compose CLI required")
     def test_nas_lan_bootstrap_and_exported_s3_project_resolve(self):
         settings = {**self.settings, "directory": "/volume1/docker/test-soundtime", "access": "lan", "storage": self.S3}
@@ -123,11 +150,7 @@ class InstallationTests(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(data)) as zipdata:
             zipdata.extractall(self.directory)
             guide = zipdata.read("README.txt").decode()
-            password = re.search(r"Temporary password: (\S+)", guide)[1]
-            digest = base64.b64encode(hashlib.sha1(password.encode()).digest()).decode()
-            self.assertEqual(zipdata.read("docker/access/users").decode(), f"soundtime:{{SHA}}{digest}\n")
             self.assertIn(b"auth_basic $soundtime_realm", zipdata.read("docker/access/bootstrap.active"))
-            self.assertNotIn(password, zipdata.read("compose.yaml").decode())
             self.assertNotIn(self.S3["secretKey"], guide)
         result = engine._docker("compose", "config", "--format", "json", cwd=self.directory)
         self.assertEqual(result.returncode, 0)

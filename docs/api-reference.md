@@ -24,6 +24,7 @@ Tokens are obtained via the [login](#post-apiauthlogin) or [refresh](#post-apiau
 |-----------|----------|-------|
 | Access token | 15 minutes | `Authorization: Bearer` header |
 | Refresh token | 7 days | POST body to `/api/auth/refresh` |
+| Media cookie | Up to 10 minutes | Native browser requests for track streams, radio relays and artwork |
 
 ### Visibility Modes
 
@@ -33,6 +34,25 @@ Some endpoints are conditionally authenticated based on instance settings:
 - **Private instance** — all content endpoints require a valid JWT.
 
 ---
+
+## Radio and podcasts
+
+The **Radio & podcasts** entry opens `/webradios`. This route supports direct links to station filters and podcast shows. The backend shares short-lived directory responses between listeners. Browsing transfers metadata and cover art. Audio starts when the listener selects a station or episode. [Radio Browser API](https://api.radio-browser.info/) · [Apple iTunes Search API](https://performance-partners.apple.com/search-api)
+
+| Endpoint | Result |
+| --- | --- |
+| `GET /api/webradios/status` | Returns `instance_enabled`, `user_enabled` and their conjunction `enabled`. Both settings default to true. |
+| `GET /api/webradios/stations` | Accepts optional `name`, `tag`, `offset` and `limit` (1–60, default 30). Returns `stations` and a nullable `next_offset`. Each station includes its UUID, name, icon when available, description or broadcast details, tags, country, language, codec, bitrate and HLS flag. |
+| `POST /api/webradios/stations/{id}/play` | Resolves the selected station, reports the click to Radio Browser and returns `url`, `hls` and an optional `relay_url`. |
+| `GET /api/webradios/stations/{id}/stream` | Relays compatible continuous HTTP audio by station UUID. SoundTime applies its streaming limits and checks the access setting during playback. |
+| `GET /api/webradios/podcasts` | Accepts `q`, a two-letter storefront `country` (API default US), and `offset`. An empty query returns the local Apple chart of up to 25 shows. A text search returns up to 200 matches in pages of 25, with `shows` and nullable `next_offset`. |
+| `GET /api/webradios/podcasts/{id}/episodes` | Looks up the numeric Apple show ID and reads the publisher’s public RSS audio enclosures. Returns `show`, `episodes`, nullable `next_offset` and `truncated`. Pass `country` and reuse `next_offset` in `offset` for the next 50 episodes. Feed parsing is bounded to 2 MiB and 500 episodes. |
+| `PUT /api/webradios/preference` | Saves `{"enabled":false}` or `{"enabled":true}` for the signed-in listener. Guests can change their preference in the browser. |
+| `PUT /api/admin/settings/webradios_enabled` | An administrator supplies `{"value":"false"}` or `{"value":"true"}` for the whole instance. |
+
+Directory and playback endpoints follow instance privacy. A disabled directory returns HTTP 403 for list and play requests, including known station UUIDs. HTTPS broadcasters serve listeners directly and receive the listener’s IP. An HTTP-only continuous audio station can use the same-origin relay when the site uses HTTPS. An HTTP-only HLS playlist may require an external player. Broadcasters control availability, codec support and cross-origin access to HLS segments.
+
+Apple’s catalogue includes the shows indexed in each storefront. Some publishers restrict their RSS archives or offer episodes exclusively through a subscription. The app plays publicly available episodes from their publisher’s media URLs. The publisher receives the listener’s IP. A personal or global opt-out also disables podcast lookups and stops the SoundTime episode player. [Apple podcast feed requirements](https://podcasters.apple.com/support/823-podcast-requirements)
 
 ## Health Check
 
@@ -56,7 +76,9 @@ All auth endpoints are **rate-limited** to 10 requests per 60 seconds per IP.
 
 ### `POST /api/auth/register`
 
-Register a new user account. The first registered user automatically becomes the admin.
+Register a new user account. The first registered user becomes the admin. After the first account exists, registration requires completed setup, a public instance and enabled registrations. An existing public instance with no `open_registrations` setting keeps its previous open-registration behavior. When registrations are closed the server returns `403 Forbidden`.
+
+`GET /api/nodeinfo` exposes this same effective policy as the boolean `open_registration`.
 
 **Body** `application/json`
 ```json
@@ -71,8 +93,21 @@ Register a new user account. The first registered user automatically becomes the
 **Response** `201 Created`
 ```json
 {
-  "access_token": "eyJ...",
-  "refresh_token": "eyJ..."
+  "user": {
+    "id": "f7253772-aa17-49c0-a38b-89bd44711c85",
+    "username": "alice",
+    "email": "alice@example.com",
+    "display_name": "Alice",
+    "avatar_url": null,
+    "role": "user",
+    "instance_id": "alice@music.example"
+  },
+  "tokens": {
+    "access_token": "eyJ...",
+    "refresh_token": "eyJ...",
+    "token_type": "Bearer",
+    "expires_in": 900
+  }
 }
 ```
 
@@ -88,13 +123,7 @@ Authenticate with username and password.
 }
 ```
 
-**Response** `200 OK`
-```json
-{
-  "access_token": "eyJ...",
-  "refresh_token": "eyJ..."
-}
-```
+**Response** `200 OK` with the same `user` and `tokens` object as registration.
 
 ### `POST /api/auth/refresh`
 
@@ -114,6 +143,16 @@ Exchange a valid refresh token for a new token pair.
   "refresh_token": "eyJ..."
 }
 ```
+
+### `POST /api/auth/media-session`
+
+Exchange a Bearer access token for media access on the same origin. A successful response contains `expires_in` in seconds and sets HttpOnly, SameSite=Strict cookies named `soundtime_media`, scoped to `/api/tracks/`, `/api/media/` and `/api/webradios/stations/`. HTTPS requests receive Secure cookies. The stream and artwork handlers accept the media credential for GET and HEAD.
+
+The grant expires within 600 seconds and by the end of the access token's lifetime. When the access token has 45 seconds or less remaining, the exchange returns `401`. Refresh the access token and repeat the exchange before resuming playback.
+
+### `DELETE /api/auth/media-session`
+
+Expire the scoped media cookies on logout. The server returns `204 No Content`, including when the access token has expired.
 
 ### `GET /api/auth/me`
 
@@ -178,7 +217,7 @@ Permanently delete the authenticated user's account and all associated data (GDP
 
 ## Setup
 
-These endpoints are used during initial instance configuration. They are always accessible (never gated by private mode).
+Setup status is public. Instance configuration and completion require an authenticated administrator.
 
 ### `GET /api/setup/status`
 
@@ -187,8 +226,9 @@ Check whether the instance has completed initial setup.
 **Response** `200 OK`
 ```json
 {
-  "setup_completed": false,
-  "has_admin": false
+  "setup_complete": false,
+  "has_admin": false,
+  "instance_private": false
 }
 ```
 
@@ -201,10 +241,11 @@ Create the first admin user during initial setup.
 {
   "username": "admin",
   "email": "admin@example.com",
-  "password": "securepassword",
-  "display_name": "Admin"
+  "password": "securepassword"
 }
 ```
+
+On success, the `201 Created` response contains the admin profile and token pair in the same shape as `/api/auth/register`.
 
 ### `POST /api/setup/instance`
 
@@ -216,16 +257,22 @@ Configure instance settings during setup.
 ```json
 {
   "instance_name": "My SoundTime",
-  "description": "A personal music server",
-  "private": false
+  "instance_description": "A personal music server"
 }
 ```
 
 ### `POST /api/setup/complete`
 
-Mark the setup wizard as complete.
+Save the final instance settings and mark setup complete in one transaction. Send the access token returned by account creation or administrator login. The optional `instance_private` field sets visibility. Omitting it preserves the current instance visibility.
 
-**Auth**: Required
+```json
+{
+  "p2p_enabled": false,
+  "open_registrations": false,
+  "max_upload_size_mb": 500,
+  "instance_private": true
+}
+```
 
 ---
 
@@ -279,15 +326,13 @@ Get a single track's full metadata.
 
 ### `GET /api/tracks/{id}/credits`
 
-Get track credits and contributors.
+Get track credits and contributors. An uncredited track has a null `artist_name`. Clients can use the track ID to open and play it.
 
 **Auth**: Conditional
 
 ### `GET /api/tracks/{id}/stream`
 
-Stream the audio file. Returns the audio binary with appropriate `Content-Type` header.
-
-**Auth**: Conditional
+Stream the audio file with the appropriate `Content-Type`. On private instances, send a Bearer access token or a media cookie. Keep the track URL free of credentials. A satisfiable byte range such as `Range: bytes=64-191` returns `206 Partial Content` with `Content-Range`.
 
 ### `GET /api/tracks/{id}/lyrics`
 
@@ -380,13 +425,13 @@ Upload a cover image for an album. Maximum body size: **500 MB**.
 
 ### `GET /api/artists`
 
-List all artists with pagination.
+List credited artists with pagination. The total, page count and search results exclude the placeholder used internally for uncredited tracks.
 
 **Auth**: Conditional
 
 ### `GET /api/artists/{id}`
 
-Get a single artist with their albums and tracks.
+Get a single artist with their albums and tracks. A request for the internal placeholder returns HTTP 404.
 
 **Auth**: Conditional
 
@@ -396,9 +441,13 @@ Get a single artist with their albums and tracks.
 
 ### `GET /api/playlists`
 
-List all playlists (public playlists + user's own private playlists).
+Discover public playlists, ordered by last update. On a private instance this endpoint requires authentication.
 
 **Auth**: Conditional
+
+### `GET /api/me/playlists`
+
+List the authenticated member’s public and private playlists, with track counts. Accepts `page` (default 1) and `per_page` (default 20, maximum 100). Returns `data`, `page`, `per_page`, `total` and `total_pages`.
 
 ### `GET /api/playlists/{id}`
 
@@ -445,6 +494,8 @@ Add a track to a playlist.
   "track_id": "uuid"
 }
 ```
+
+Repeating a successful addition returns HTTP 204 and preserves the existing position.
 
 ### `DELETE /api/playlists/{id}/tracks/{track_id}`
 
@@ -593,7 +644,7 @@ Report a track for moderation.
 
 Serve JPEG, PNG, GIF and WebP cover images from the media directories. The response uses the image format detected from the file contents. Other file types return HTTP 404.
 
-**Auth**: Conditional
+Private instances accept a Bearer access token or a media cookie.
 
 ---
 
@@ -794,11 +845,11 @@ Get metadata enrichment status (MusicBrainz integration).
 
 #### `POST /api/admin/metadata/enrich/{track_id}`
 
-Enrich a single track's metadata from MusicBrainz.
+Look up a local recording using its embedded recording MBID, ISRC, or title and performer. Album, duration, credits and version distinguish candidates. A confident result updates the existing track. An ambiguous result returns up to five candidates with recording ID, performer, album, duration and disambiguation when available. Confirm a candidate with `?recording_id={mbid}` on the same endpoint. A failed lookup leaves the existing metadata and playlist references intact. [MusicBrainz search fields](https://musicbrainz.org/doc/MusicBrainz_API/Search)
 
 #### `POST /api/admin/metadata/enrich-all`
 
-Enrich metadata for all tracks.
+Run a bounded, paginated pass over eligible local tracks missing a recording ID. Tracks imported after the run starts are eligible on the next run. Progress distinguishes enrichment, ambiguous results, misses and errors. The server spaces requests to the same MusicBrainz provider. [MusicBrainz rate limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting)
 
 ### Editorial Playlists
 

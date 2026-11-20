@@ -1,9 +1,8 @@
 """Build a self-contained Docker Compose project for a remote Linux host."""
 
-import base64
-import hashlib
 import io
 import json
+import re
 import secrets
 import shlex
 import zipfile
@@ -75,6 +74,12 @@ def _model(s, project, storage_env, nas_guard):
 
 
 def _guard(nginx, password):
+    try:
+        import bcrypt
+    except ModuleNotFoundError as exc:
+        if exc.name != "bcrypt":
+            raise
+        raise RuntimeError("For NAS LAN exports from source, install installer/requirements.txt.") from exc
     cookie = secrets.token_urlsafe(32)
     # Basic auth is needed only until this browser has authenticated once.
     # The cookie leaves Authorization available for SoundTime's Bearer tokens.
@@ -86,9 +91,9 @@ def _guard(nginx, password):
     nginx = nginx.replace(marker, marker + "\n    include /etc/nginx/soundtime-bootstrap/*.active;")
     rule = ("auth_basic $soundtime_realm;\nauth_basic_user_file /etc/nginx/soundtime-bootstrap/users;\n"
             f'add_header Set-Cookie "soundtime_bootstrap={cookie}; Path=/; HttpOnly; SameSite=Strict";\n')
-    digest = base64.b64encode(hashlib.sha1(password.encode("ascii")).digest()).decode("ascii")
+    digest = bcrypt.hashpw(password.encode("ascii"), bcrypt.gensalt(rounds=12))
     return nginx, {"docker/access/bootstrap.active": rule.encode(),
-                   "docker/access/users": f"soundtime:{{SHA}}{digest}\n".encode()}
+                   "docker/access/users": b"soundtime:" + digest + b"\n"}
 
 
 def _instructions(s, target, password, project):
@@ -135,6 +140,12 @@ def archive(s, target, root, storage_env, secret_variables, *, language="en"):
     if s["storage"]["kind"] == "s3":
         values.update(S3_ACCESS_KEY=s["storage"]["accessKey"], S3_SECRET_KEY=s["storage"]["secretKey"])
     model = _model(s, project, storage_env, guard)
+    # Reuse the deployment defaults shipped in the same installer. Keep the
+    # port and enable switch chosen during setup authoritative for this export.
+    base_compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    backend_env = model["services"]["backend"]["environment"]
+    for name, default in re.findall(r"^      (P2P_[A-Z0-9_]+): (\$\{\1:-[^}]*\})$", base_compose, re.M):
+        backend_env.setdefault(name, default)
     files = {".env": env.encode(), "compose.yaml": (json.dumps(model, indent=2, ensure_ascii=False) + "\n").encode()}
     if target == "nas":
         if __package__:

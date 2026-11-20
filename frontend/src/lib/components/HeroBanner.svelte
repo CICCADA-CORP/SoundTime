@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Play } from "lucide-svelte";
   import type { EditorialPlaylist, Album } from "$lib/types";
-  import { t } from "$lib/i18n/index.svelte";
+  import { formatTrackCount, t } from "$lib/i18n/index.svelte";
 
   let { item, type = "editorial", onclick }: {
     item: EditorialPlaylist | Album;
@@ -44,7 +44,7 @@
         <Play class="w-5 h-5 ml-0.5" fill="currentColor" />
       </div>
       {#if trackCount}
-        <span class="text-sm text-white/70">{trackCount} {t('playlists.tracks')}</span>
+        <span class="text-sm text-white/70">{formatTrackCount(trackCount)}</span>
       {/if}
     </div>
   </div>

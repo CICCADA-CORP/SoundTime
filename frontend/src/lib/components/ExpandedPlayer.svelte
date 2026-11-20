@@ -1,503 +1,315 @@
 <script lang="ts">
-  import type { Playlist } from "$lib/types";
+  import { availabilityLabel, canPlay } from "$lib/catalog/availability";
+  import { Dialog } from "bits-ui";
+  import { AudioLines, ChevronDown, Clock3, Disc3, Infinity as Autoplay, ListMusic, Mic2, Pause, Play, Repeat2, Shuffle, SkipBack, SkipForward, RotateCw, Square, Volume1, Volume2, VolumeX } from "lucide-svelte";
+  import { api } from "$lib/api";
+  import { catalogQuery } from "$lib/catalog/query.svelte";
+  import { t } from "$lib/i18n/index.svelte";
+  import { showcaseAudio } from "$lib/showcase";
+  import { getAuthStore } from "$lib/stores/auth.svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
-  import { getAuthStore } from "$lib/stores/auth.svelte";
-  import { api, API_BASE } from "$lib/api";
-  import { formatDuration } from "$lib/utils";
-  import FavoriteButton from "./FavoriteButton.svelte";
-  import { X, ChevronDown, Music, ListMusic, Mic2, Radio, Square } from "lucide-svelte";
   import { getRadioStore } from "$lib/stores/radio.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import PlayerRange from "./player/PlayerRange.svelte";
+  import UpcomingTracks from "./player/UpcomingTracks.svelte";
+  import { playerArtwork } from "./player/artwork";
+  import CatalogArtwork from "./catalog/CatalogArtwork.svelte";
+  import SoundTimeSignature from "./SoundTimeSignature.svelte";
+  import { formatDuration } from "$lib/utils";
+  import { Button } from "$lib/components/ui/button";
+  import PlayerSaveActions from "./player/PlayerSaveActions.svelte";
 
-  interface Props {
+  type Panel = "track" | "queue" | "lyrics";
+  let { open = $bindable(), panel = $bindable<Panel>("track"), onclose }: {
     open: boolean;
+    panel?: Panel;
     onclose: () => void;
-  }
-
-  let { open = $bindable(), onclose }: Props = $props();
-
+  } = $props();
+  const auth = getAuthStore();
   const player = getPlayerStore();
   const queue = getQueueStore();
-  const auth = getAuthStore();
   const radio = getRadioStore();
-
-  // Lyrics state  
-  let lyrics = $state<string | null>(null);
-  let lyricsSource = $state<string | null>(null);
-  let lyricsLoading = $state(false);
-  let lyricsError = $state<string | null>(null);
-  let lastLyricsTrackId = $state<string | null>(null);
-
-  // Active panel on mobile  
-  let activePanel = $state<"info" | "lyrics" | "queue">("info");
-
-  // Playlist picker state
-  let showPlaylistPicker = $state(false);
-  let userPlaylists = $state<Playlist[]>([]);
-  let playlistLoading = $state(false);
-
-  // Favorite state  
-  let liked = $state(false);
-  let lastCheckedTrackId = $state<string | null>(null);
-
-  function resolveMediaUrl(url: string): string {
-    if (url.startsWith("http")) return url;
-    const base = API_BASE.replace(/\/api$/, "");
-    return `${base}${url}`;
+  const track = $derived(player.currentTrack);
+  const cover = $derived(track && playerArtwork(track));
+  const visible = $derived(open && track !== null);
+  const catalogId = $derived(visible && track && !showcaseAudio(track.id) ? track.id : null);
+  const upcoming = $derived(queue.queue.slice(queue.currentIndex + 1));
+  const upcomingDuration = $derived(upcoming.reduce((time, song) => time + Math.max(0, song.duration_secs || 0), 0));
+  const lyrics = catalogQuery(() => catalogId && panel === "lyrics"
+    ? api.get<{ lyrics: string | null; source: string | null }>(`/tracks/${catalogId}/lyrics`) : null);
+  function close() {
+    panel = "track";
+    open = false;
+    onclose();
   }
 
-  // Fetch lyrics when track changes and panel is open
-  $effect(() => {
-    const trackId = player.currentTrack?.id;
-    if (open && trackId && trackId !== lastLyricsTrackId) {
-      lastLyricsTrackId = trackId;
-      fetchLyrics(trackId);
-    }
-  });
-
-  // Check favorite status
-  $effect(() => {
-    const trackId = player.currentTrack?.id;
-    if (open && trackId && auth.isAuthenticated && trackId !== lastCheckedTrackId) {
-      lastCheckedTrackId = trackId;
-      api.get<string[]>(`/favorites/check?track_ids=${trackId}`)
-        .then((ids) => { liked = ids.includes(trackId); })
-        .catch(() => { liked = false; });
-    }
-  });
-
-  async function fetchLyrics(trackId: string) {
-    lyricsLoading = true;
-    lyricsError = null;
-    lyrics = null;
-    lyricsSource = null;
-    try {
-      const res = await api.get<{ lyrics: string | null; source: string | null }>(`/tracks/${trackId}/lyrics`);
-      lyrics = res.lyrics;
-      lyricsSource = res.source;
-    } catch (e: unknown) {
-      const err = e as { status?: number };
-      if (err?.status === 503 || err?.status === 404) {
-        lyrics = null;
-      } else {
-        lyricsError = t('player.lyricsError');
-      }
-    } finally {
-      lyricsLoading = false;
-    }
-  }
-
-  function handleSeek(e: MouseEvent) {
-    const bar = e.currentTarget as HTMLElement;
-    const rect = bar.getBoundingClientRect();
-    const ratio = (e.clientX - rect.left) / rect.width;
-    player.seek(ratio * player.duration);
-  }
-
-  function playFromQueue(index: number) {
-    if (queue.queue[index]) {
-      const player = getPlayerStore();
-      // Update queue index and play
-      queue.playQueue(queue.queue, index);
-    }
-  }
-
-  async function openPlaylistPicker() {
-    showPlaylistPicker = true;
-    playlistLoading = true;
-    try {
-      const res = await api.get<{ data: Playlist[] }>("/playlists");
-      userPlaylists = (res.data ?? []).filter(p => p.user_id === auth.user?.id || p.owner_id === auth.user?.id);
-    } catch {
-      userPlaylists = [];
-    } finally {
-      playlistLoading = false;
-    }
-  }
-
-  async function addToPlaylist(playlistId: string) {
-    const trackId = player.currentTrack?.id;
-    if (!trackId) return;
-    try {
-      await api.post(`/playlists/${playlistId}/tracks`, { track_id: trackId });
-    } catch { /* ignore duplicates */ }
-    showPlaylistPicker = false;
-  }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      onclose();
-    }
-  }
-
-  // Upcoming tracks (after current)
-  let upcomingTracks = $derived(
-    queue.currentIndex >= 0
-      ? queue.queue.slice(queue.currentIndex + 1)
-      : []
-  );
+  const panels = [
+    { id: "track", label: "player.track", icon: Disc3 },
+    { id: "queue", label: "player.upNext", icon: ListMusic },
+    { id: "lyrics", label: "player.lyrics", icon: Mic2 },
+  ] as const;
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<Dialog.Root open={visible} onOpenChange={value => { if (!value) close(); }}>
+  <Dialog.Portal>
+    <Dialog.Content class="expanded-dialog fixed inset-0 z-[101] overflow-y-auto">
+      {#if track}
+        <div class="canvas">
+          <header class="player-header">
+            <span class="signature"><SoundTimeSignature width={122} /></span>
+            <Dialog.Title class="player-caption"><AudioLines size={17} />{t("player.nowPlaying")}</Dialog.Title>
+            <Button variant="ghost" size="icon" class="collapse-player" onclick={close}
+              aria-label={t("a11y.close")} title={t("a11y.close")}>
+              <ChevronDown size={20} />
+            </Button>
+          </header>
+          <Dialog.Description class="sr-only">{[track.title, track.artist_name].filter(Boolean).join(" · ")}</Dialog.Description>
 
-{#if open && player.currentTrack}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="fixed inset-0 z-[100] bg-[hsl(0,0%,4%)] flex flex-col transition-all duration-300"
-    class:animate-slide-up={open}
-  >
-    <!-- Header -->
-    <div class="flex items-center justify-between px-6 py-4">
-      <button
-        onclick={onclose}
-        class="text-[hsl(var(--muted-foreground))] hover:text-white transition p-2 rounded-full hover:bg-white/10"
-        aria-label={t('a11y.close')}
-      >
-        <ChevronDown class="w-6 h-6" />
-      </button>
+          <div class="stage" data-panel={panel}>
+            <div class="deck">
+              <div class="album-art" aria-hidden="true">
+                <CatalogArtwork source={cover} title={track.album_title || track.title} kind="album" artworkId={track.album_id ?? track.id} loading="eager" />
+              </div>
 
-        {#if radio.active}
-          <div class="flex items-center gap-2">
-            <div class="w-2 h-2 rounded-full bg-[hsl(var(--primary))] animate-pulse"></div>
-            <p class="text-xs font-medium text-[hsl(var(--primary))] uppercase tracking-widest">
-              {#if radio.autoplayMode}
-                {t('player.autoplayActive')}
-              {:else}
-                {t('radio.nowPlayingFrom')} {radio.seedLabel}
-              {/if}
-            </p>
-          </div>
-      {:else}
-        <p class="text-xs font-medium text-[hsl(var(--muted-foreground))] uppercase tracking-widest">
-          {t('player.nowPlaying')}
-        </p>
-      {/if}
-
-      <div class="w-10"></div>
-    </div>
-
-    <!-- Mobile panel switcher -->
-    <div class="flex justify-center gap-1 px-6 pb-3 md:hidden">
-      <button
-        class="px-3 py-1.5 text-xs rounded-full transition font-medium {activePanel === 'info' ? 'bg-white/15 text-white' : 'text-[hsl(var(--muted-foreground))] hover:text-white'}"
-        onclick={() => activePanel = "info"}
-      >
-        <Music class="w-3.5 h-3.5 inline-block mr-1" />
-        {t('player.track')}
-      </button>
-      <button
-        class="px-3 py-1.5 text-xs rounded-full transition font-medium {activePanel === 'lyrics' ? 'bg-white/15 text-white' : 'text-[hsl(var(--muted-foreground))] hover:text-white'}"
-        onclick={() => activePanel = "lyrics"}
-      >
-        <Mic2 class="w-3.5 h-3.5 inline-block mr-1" />
-        {t('player.lyrics')}
-      </button>
-      <button
-        class="px-3 py-1.5 text-xs rounded-full transition font-medium {activePanel === 'queue' ? 'bg-white/15 text-white' : 'text-[hsl(var(--muted-foreground))] hover:text-white'}"
-        onclick={() => activePanel = "queue"}
-      >
-        <ListMusic class="w-3.5 h-3.5 inline-block mr-1" />
-        {t('player.queue')}
-      </button>
-    </div>
-
-    <!-- Main content — 3 columns on desktop, swipeable on mobile -->
-    <div class="flex-1 overflow-hidden flex">
-      <!-- Left: Track info + Cover -->
-      <div class="flex-1 flex flex-col items-center justify-center px-6 md:px-12 {activePanel !== 'info' ? 'hidden md:flex' : ''}">
-        <!-- Cover art -->
-        <div class="w-full max-w-[380px] aspect-square rounded-lg overflow-hidden bg-[hsl(var(--secondary))] shadow-2xl mb-8">
-          {#if player.currentTrack.cover_url}
-            <img
-              src={resolveMediaUrl(player.currentTrack.cover_url)}
-              alt={player.currentTrack.title}
-              class="w-full h-full object-cover"
-            />
-          {:else}
-            <div class="w-full h-full flex items-center justify-center">
-              <Music class="w-24 h-24 text-[hsl(var(--muted-foreground))]" />
-            </div>
-          {/if}
-        </div>
-
-        <!-- Track info -->
-        <div class="w-full max-w-[380px] flex items-start justify-between gap-3">
-          <div class="min-w-0 flex-1">
-            <h2 class="text-xl font-bold truncate">{player.currentTrack.title}</h2>
-            {#if player.currentTrack.artist_id}
-              <a href="/artists/{player.currentTrack.artist_id}" class="text-sm text-[hsl(var(--muted-foreground))] truncate block hover:underline">{player.currentTrack.artist_name ?? t('track.unknownArtist')}</a>
-            {:else}
-              <p class="text-sm text-[hsl(var(--muted-foreground))] truncate">{player.currentTrack.artist_name ?? t('track.unknownArtist')}</p>
-            {/if}
-            {#if player.currentTrack.album_title}
-              {#if player.currentTrack.album_id}
-                <a href="/albums/{player.currentTrack.album_id}" class="text-xs text-[hsl(var(--muted-foreground))]/60 truncate mt-0.5 block hover:underline">{player.currentTrack.album_title}</a>
-              {:else}
-                <p class="text-xs text-[hsl(var(--muted-foreground))]/60 truncate mt-0.5">{player.currentTrack.album_title}</p>
-              {/if}
-            {/if}
-            {#if radio.active}
-              <div class="flex items-center gap-1.5 mt-1">
-                {#if radio.autoplayMode}
-                  <svg class="w-3 h-3 text-[hsl(var(--primary))]" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M18.6 6.62c-1.44 0-2.8.56-3.77 1.53L12 10.66 10.48 12h.01L7.8 14.39c-.64.64-1.49.99-2.4.99-1.87 0-3.39-1.52-3.39-3.39S3.53 8.61 5.4 8.61c.91 0 1.76.35 2.44 1.03l1.13 1 1.51-1.34L9.22 8.2C8.2 7.18 6.84 6.62 5.4 6.62 2.42 6.62 0 9.04 0 12s2.42 5.38 5.4 5.38c1.44 0 2.8-.56 3.77-1.53l2.83-2.5.01.01L13.52 12h-.01l2.69-2.39c.64-.64 1.49-.99 2.4-.99 1.87 0 3.39 1.52 3.39 3.39s-1.52 3.38-3.39 3.38c-.9 0-1.76-.35-2.44-1.03l-1.14-1.01-1.51 1.34 1.27 1.12c1.02 1.01 2.37 1.57 3.82 1.57 2.98 0 5.4-2.41 5.4-5.38s-2.42-5.37-5.4-5.37z"/>
-                  </svg>
-                  <span class="text-[10px] text-[hsl(var(--primary))] font-medium uppercase tracking-wider">{t('player.autoplayActive')}</span>
-                {:else}
-                  <Radio class="w-3 h-3 text-[hsl(var(--primary))]" />
-                  <span class="text-[10px] text-[hsl(var(--primary))] font-medium uppercase tracking-wider">{t('radio.label')}</span>
+              <div class="track-heading">
+                <div class="min-w-0 flex-1">
+                  <h2>{track.title}</h2>
+                  {#if track.artist_name || track.album_title}
+                    <p class="byline">
+                      {#if track.artist_name}
+                        {#if catalogId && track.artist_id}<a href={"/artists/" + track.artist_id} onclick={close}>{track.artist_name}</a>
+                        {:else}{track.artist_name}{/if}
+                      {/if}
+                      {#if track.album_title}
+                        {#if track.artist_name}<span class="separator" aria-hidden="true">·</span>{/if}
+                        {#if catalogId && track.album_id}<a class="album" href={"/albums/" + track.album_id} onclick={close}>{track.album_title}</a>
+                        {:else}<span class="album">{track.album_title}</span>{/if}
+                      {/if}
+                    </p>
+                  {/if}
+                </div>
+                {#if catalogId && auth.isAuthenticated}
+                  {#key catalogId}<PlayerSaveActions {track} />{/key}
                 {/if}
               </div>
-            {/if}
-          </div>
-          {#if auth.isAuthenticated}
-            <div class="flex items-center gap-1.5 flex-shrink-0">
-              <button
-                onclick={openPlaylistPicker}
-                class="text-[hsl(var(--muted-foreground))] hover:text-white transition p-1.5 rounded-full hover:bg-white/10"
-                title={t('track.addToPlaylist')}
-              >
-                <svg class="w-[22px] h-[22px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
-              </button>
-              <FavoriteButton trackId={player.currentTrack.id} bind:liked size={22} />
-            </div>
-          {/if}
-        </div>
 
-        <!-- Progress bar -->
-        <div class="w-full max-w-[380px] mt-6">
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="w-full h-1.5 bg-[hsl(var(--secondary))] rounded-full cursor-pointer group" onclick={handleSeek}>
-            <div
-              class="h-full bg-white rounded-full group-hover:bg-[hsl(var(--primary))] transition relative"
-              style="width: {player.duration > 0 ? (player.progress / player.duration) * 100 : 0}%"
-            >
-              <div class="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover:opacity-100 transition"></div>
-            </div>
-          </div>
-          <div class="flex justify-between mt-1.5">
-            <span class="text-xs text-[hsl(var(--muted-foreground))]">{formatDuration(player.progress)}</span>
-            <span class="text-xs text-[hsl(var(--muted-foreground))]">{formatDuration(player.duration)}</span>
-          </div>
-        </div>
-
-        <!-- Controls -->
-        <div class="flex items-center gap-6 mt-4">
-          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" class:text-[hsl(var(--primary))]={player.shuffle} onclick={player.toggleShuffle} title={t('player.shuffle')}>
-            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
-          </button>
-          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" onclick={queue.previous} title={t('player.previous')}>
-            <svg class="w-7 h-7" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
-          </button>
-          <button class="w-14 h-14 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 transition" onclick={player.togglePlay}>
-            {#if player.isPlaying}
-              <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-            {:else}
-              <svg class="w-6 h-6 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-            {/if}
-          </button>
-          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" onclick={queue.next} title={t('player.next')}>
-            <svg class="w-7 h-7" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-          </button>
-          <button class="text-[hsl(var(--muted-foreground))] hover:text-white transition" class:text-[hsl(var(--primary))]={player.repeat !== 'none'} onclick={player.cycleRepeat} title="{t('player.repeat')}: {player.repeat}">
-            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
-            {#if player.repeat === 'one'}
-              <span class="absolute text-[8px] font-bold">1</span>
-            {/if}
-          </button>
-          <button 
-            class="text-[hsl(var(--muted-foreground))] hover:text-white transition" 
-            class:text-[hsl(var(--primary))]={queue.autoplay} 
-            onclick={queue.toggleAutoplay} 
-            title={t('player.autoplay')}
-          >
-            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M18.6 6.62c-1.44 0-2.8.56-3.77 1.53L12 10.66 10.48 12h.01L7.8 14.39c-.64.64-1.49.99-2.4.99-1.87 0-3.39-1.52-3.39-3.39S3.53 8.61 5.4 8.61c.91 0 1.76.35 2.44 1.03l1.13 1 1.51-1.34L9.22 8.2C8.2 7.18 6.84 6.62 5.4 6.62 2.42 6.62 0 9.04 0 12s2.42 5.38 5.4 5.38c1.44 0 2.8-.56 3.77-1.53l2.83-2.5.01.01L13.52 12h-.01l2.69-2.39c.64-.64 1.49-.99 2.4-.99 1.87 0 3.39 1.52 3.39 3.39s-1.52 3.38-3.39 3.38c-.9 0-1.76-.35-2.44-1.03l-1.14-1.01-1.51 1.34 1.27 1.12c1.02 1.01 2.37 1.57 3.82 1.57 2.98 0 5.4-2.41 5.4-5.38s-2.42-5.37-5.4-5.37z"/>
-            </svg>
-          </button>
-          {#if radio.active}
-            <button
-              class="text-[hsl(var(--primary))] hover:text-white transition"
-              onclick={() => radio.stopRadio()}
-              title={t('radio.stop')}
-            >
-              <Square class="w-5 h-5" />
-            </button>
-          {/if}
-        </div>
-
-        <!-- Technical details -->
-        <div class="flex items-center gap-3 mt-6 text-[10px] text-[hsl(var(--muted-foreground))]/60 uppercase tracking-wider">
-          {#if player.currentTrack.format}
-            <span class="px-2 py-0.5 rounded bg-white/5">{player.currentTrack.format}</span>
-          {/if}
-          {#if player.currentTrack.bitrate}
-            <span>{player.currentTrack.bitrate} kbps</span>
-          {/if}
-          {#if player.currentTrack.sample_rate}
-            <span>{(player.currentTrack.sample_rate / 1000).toFixed(1)} kHz</span>
-          {/if}
-        </div>
-      </div>
-
-      <!-- Center: Lyrics -->
-      <div class="w-[380px] flex-shrink-0 border-x border-[hsl(var(--border))]/20 flex flex-col {activePanel !== 'lyrics' ? 'hidden md:flex' : 'flex-1'}">
-        <div class="px-6 py-3 border-b border-[hsl(var(--border))]/20">
-          <h3 class="text-sm font-semibold flex items-center gap-2">
-            <Mic2 class="w-4 h-4 text-[hsl(var(--primary))]" />
-            {t('player.lyrics')}
-          </h3>
-        </div>
-        <div class="flex-1 overflow-y-auto px-6 py-4">
-          {#if lyricsLoading}
-            <div class="flex items-center justify-center h-full">
-              <div class="w-6 h-6 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full animate-spin"></div>
-            </div>
-          {:else if lyricsError}
-            <p class="text-sm text-red-400 text-center mt-8">{lyricsError}</p>
-          {:else if lyrics}
-            <div class="text-sm text-[hsl(var(--muted-foreground))] leading-relaxed whitespace-pre-wrap">
-              {lyrics}
-            </div>
-            {#if lyricsSource}
-              <p class="text-[10px] text-[hsl(var(--muted-foreground))]/40 mt-4 uppercase tracking-wider">
-                {t('player.source')} : {lyricsSource}
-              </p>
-            {/if}
-          {:else}
-            <div class="flex flex-col items-center justify-center h-full text-center">
-              <Mic2 class="w-10 h-10 text-[hsl(var(--muted-foreground))]/30 mb-3" />
-              <p class="text-sm text-[hsl(var(--muted-foreground))]">{t('player.noLyrics')}</p>
-              <p class="text-xs text-[hsl(var(--muted-foreground))]/50 mt-1">{t('player.noLyricsHint')}</p>
-            </div>
-          {/if}
-        </div>
-      </div>
-
-      <!-- Right: Queue -->
-      <div class="w-[340px] flex-shrink-0 flex flex-col {activePanel !== 'queue' ? 'hidden md:flex' : 'flex-1'}">
-        <div class="px-6 py-3 border-b border-[hsl(var(--border))]/20">
-          <h3 class="text-sm font-semibold flex items-center gap-2">
-            <ListMusic class="w-4 h-4 text-[hsl(var(--primary))]" />
-            {t('player.queue')}
-            {#if upcomingTracks.length > 0}
-              <span class="text-xs text-[hsl(var(--muted-foreground))] font-normal">({upcomingTracks.length})</span>
-            {/if}
-          </h3>
-        </div>
-        <div class="flex-1 overflow-y-auto">
-          {#if upcomingTracks.length === 0}
-            <div class="flex flex-col items-center justify-center h-full text-center px-6">
-              <ListMusic class="w-10 h-10 text-[hsl(var(--muted-foreground))]/30 mb-3" />
-              <p class="text-sm text-[hsl(var(--muted-foreground))]">{t('player.queueEmpty')}</p>
-            </div>
-          {:else}
-            <div class="divide-y divide-[hsl(var(--border))]/10">
-              {#each upcomingTracks as track, i}
-                <div class="w-full flex items-center gap-3 px-6 py-3 hover:bg-white/5 transition group">
-                  <span class="text-xs text-[hsl(var(--muted-foreground))] w-5 text-right flex-shrink-0">{i + 1}</span>
-                  <button
-                    class="w-10 h-10 rounded bg-[hsl(var(--secondary))] flex-shrink-0 overflow-hidden"
-                    onclick={() => playFromQueue(queue.currentIndex + 1 + i)}
-                  >
-                    {#if track.cover_url}
-                      <img src={resolveMediaUrl(track.cover_url)} alt="" class="w-full h-full object-cover" />
-                    {:else}
-                      <div class="w-full h-full flex items-center justify-center text-xs">🎵</div>
-                    {/if}
-                  </button>
-                  <button
-                    class="min-w-0 flex-1 text-left"
-                    onclick={() => playFromQueue(queue.currentIndex + 1 + i)}
-                  >
-                    <p class="text-sm font-medium truncate">{track.title}</p>
-                    <p class="text-xs text-[hsl(var(--muted-foreground))] truncate">{track.artist_name ?? t('track.unknownArtist')}</p>
-                  </button>
-                  <span class="text-xs text-[hsl(var(--muted-foreground))] flex-shrink-0">{formatDuration(track.duration_secs)}</span>
-                  <div class="flex items-center gap-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      class="p-1 text-[hsl(var(--muted-foreground))] hover:text-white transition rounded hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
-                      onclick={() => queue.moveInQueue(queue.currentIndex + 1 + i, queue.currentIndex + i)}
-                      disabled={i === 0}
-                      title="Move up"
-                    >
-                      <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M7 14l5-5 5 5H7z"/></svg>
-                    </button>
-                    <button
-                      class="p-1 text-[hsl(var(--muted-foreground))] hover:text-white transition rounded hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
-                      onclick={() => queue.moveInQueue(queue.currentIndex + 1 + i, queue.currentIndex + 2 + i)}
-                      disabled={i === upcomingTracks.length - 1}
-                      title="Move down"
-                    >
-                      <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5H7z"/></svg>
-                    </button>
-                    <button
-                      class="p-1 text-[hsl(var(--muted-foreground))] hover:text-red-400 transition rounded hover:bg-white/10"
-                      onclick={() => queue.removeFromQueue(queue.currentIndex + 1 + i)}
-                      title="Remove from queue"
-                    >
-                      <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-                    </button>
+              {#if player.failed}<p role="alert">{availabilityLabel(track) || t("player.playbackError")}</p>{/if}
+              <div class="seek">
+                <PlayerRange max={Math.max(1, player.duration)} disabled={!player.duration} label={t("shell.seek")}
+                  valueText={formatDuration(player.progress)} value={player.progress} onchange={player.seek} />
+                <div class="time"><span>{formatDuration(player.progress)}</span><span>{formatDuration(player.duration)}</span></div>
+              </div>
+              <div class="transport">
+                <button class="mode" aria-label={t("player.shuffle")} aria-pressed={player.shuffle} onclick={player.toggleShuffle}><Shuffle size={18} /></button>
+                <button class="skip" aria-label={t("player.previous")} onclick={queue.previous}><SkipBack size={25} fill="currentColor" /></button>
+                <Button class="main-play" disabled={!canPlay(track) && track.availability !== "temporarily_unavailable"} aria-label={t(player.failed ? "radio.tryAgain" : player.isPlaying ? "shell.pause" : "shell.play")} onclick={player.togglePlay}>
+                  {#if player.failed}<RotateCw />{:else if player.isPlaying}<Pause fill="currentColor" />{:else}<Play fill="currentColor" />{/if}
+                </Button>
+                <button class="skip" aria-label={t("player.next")} onclick={queue.next}><SkipForward size={25} fill="currentColor" /></button>
+                <button class="mode" aria-label={t("player.repeat") + " · " + player.repeat} aria-pressed={player.repeat !== "none"} onclick={player.cycleRepeat}>
+                  <Repeat2 size={18} />{#if player.repeat === "one"}<span class="repeat-one">1</span>{/if}
+                </button>
+              </div>
+              <div class="deck-footer">
+                {#if track.format || track.bitrate || track.sample_rate}
+                  <div class="quality" aria-label={t("track.quality")}>
+                    <AudioLines size={13} />
+                    {#if track.format}<span class="format">{track.format}</span>{/if}
+                    {#if track.bitrate}<span>{track.bitrate} kbps</span>{/if}
+                    {#if track.sample_rate}<span>{(track.sample_rate / 1000).toFixed(1)} kHz</span>{/if}
                   </div>
-                </div>
-              {/each}
+                {/if}
+                {#if radio.active}
+                  <div class="radio-status">
+                    <span>{radio.autoplayMode ? t("player.autoplayActive") : t("radio.nowPlayingFrom") + " " + radio.seedLabel}</span>
+                    <Button variant="ghost" size="sm" onclick={radio.stopRadio}><Square size={12} />{t("radio.stop")}</Button>
+                  </div>
+                {/if}
+              </div>
             </div>
-          {/if}
-        </div>
-      </div>
-    </div>
-  </div>
-{/if}
 
-<!-- Playlist Picker Modal -->
-{#if showPlaylistPicker}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="fixed inset-0 bg-black/60 z-[201] flex items-center justify-center p-4" onclick={() => showPlaylistPicker = false} onkeydown={(e) => e.key === 'Escape' && (showPlaylistPicker = false)} role="dialog" tabindex="-1">
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="bg-[hsl(var(--card))] rounded-xl p-6 w-full max-w-sm shadow-2xl" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
-      <h3 class="text-lg font-semibold mb-4">{t('track.addToPlaylist')}</h3>
-      {#if playlistLoading}
-        <div class="flex justify-center py-6">
-          <div class="w-6 h-6 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full animate-spin"></div>
-        </div>
-      {:else if userPlaylists.length === 0}
-        <p class="text-sm text-[hsl(var(--muted-foreground))] py-4">{t('track.noPlaylists')}</p>
-      {:else}
-        <div class="space-y-1 max-h-60 overflow-y-auto">
-          {#each userPlaylists as pl}
-            <button
-              class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-[hsl(var(--secondary))] transition text-sm flex items-center gap-3"
-              onclick={() => addToPlaylist(pl.id)}
-            >
-              <span class="text-lg">🎶</span>
-              <span class="truncate">{pl.name}</span>
-            </button>
-          {/each}
+            <section class="side-panel" aria-label={t(panel === "lyrics" ? "player.lyrics" : "player.queue")}>
+              <div class="panel-head">
+                <div class="desktop-tabs">
+                  <button type="button" aria-pressed={panel !== "lyrics"} onclick={() => panel = "queue"}><ListMusic size={17} />{t("player.queue")}</button>
+                  <button type="button" aria-pressed={panel === "lyrics"} onclick={() => panel = "lyrics"}><Mic2 size={16} />{t("player.lyrics")}</button>
+                </div>
+                {#if catalogId}
+                  <button class="autoplay" title={t("player.autoplay")} aria-label={t("player.autoplay")} aria-pressed={queue.autoplay} onclick={queue.toggleAutoplay}>
+                    <Autoplay size={19} />
+                  </button>
+                {/if}
+              </div>
+
+              <div class="panel-content">
+                {#if panel === "lyrics"}
+                  <div class="lyrics">
+                    {#if lyrics.loading}<p role="status" class="empty">{t("common.loading")}</p>
+                    {:else if lyrics.failed}
+                      <p role="alert" class="empty">{t("player.lyricsError")}</p>
+                      <Button variant="outline" size="sm" onclick={lyrics.retry}>{t("radio.tryAgain")}</Button>
+                    {:else if lyrics.data?.lyrics}
+                      <p class="lyrics-text">{lyrics.data.lyrics}</p>
+                      {#if lyrics.data.source}<p class="mt-3 text-xs text-muted-foreground">{t("player.source")} · {lyrics.data.source}</p>{/if}
+                    {:else}
+                      <div class="empty empty-lyrics"><Mic2 size={27} strokeWidth={1.35} /><span>{t("player.noLyrics")}</span></div>
+                    {/if}
+                  </div>
+                {:else}
+                  <div class="current-row">
+                    <span class="current-cover" aria-hidden="true"><CatalogArtwork source={cover} title={track.album_title || track.title} kind="album" artworkId={track.album_id ?? track.id} loading="eager" /></span>
+                    <div class="min-w-0 flex-1">
+                      <p class="current-label">{t("player.nowPlaying")}</p>
+                      <p class="current-title">{track.title}</p>
+                      {#if track.artist_name}<p class="row-artist">{track.artist_name}</p>{/if}
+                    </div>
+                    <div class="level" data-playing={player.isPlaying} aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+                  </div>
+                  <div class="queue-heading">
+                    <h3>{t("player.upNext")}{#if upcoming.length}<span class="queue-count">{upcoming.length}</span>{/if}</h3>
+                    {#if upcomingDuration > 0}
+                      <span class="queue-duration" title={t("album.totalDuration")}><Clock3 size={12} /><span class="sr-only">{t("album.totalDuration")} </span>{formatDuration(upcomingDuration)}</span>
+                    {/if}
+                  </div>
+                  {#if !upcoming.length}
+                    <p class="empty">{t("player.queueEmpty")}</p>
+                  {:else}
+                    <UpcomingTracks tracks={upcoming} />
+                  {/if}
+                {/if}
+              </div>
+              <div class="volume">
+                {#if !player.volume}<VolumeX size={16} />{:else if player.volume < .5}<Volume1 size={16} />{:else}<Volume2 size={16} />{/if}
+                <div class="volume-range">
+                  <PlayerRange label={t("player.volume")} max={1} step={.01} value={player.volume} onchange={player.setVolume} />
+                </div>
+                <span>{Math.round(player.volume * 100)}%</span>
+              </div>
+            </section>
+          </div>
+
+          <nav class="mobile-tabs" aria-label={t("player.nowPlaying")}>
+            {#each panels as item (item.id)}
+              <button type="button" aria-pressed={panel === item.id} onclick={() => panel = item.id}>
+                <item.icon size={18} />{t(item.label)}
+              </button>
+            {/each}
+          </nav>
         </div>
       {/if}
-      <div class="mt-4 flex justify-end">
-        <button class="px-4 py-2 text-sm rounded-lg bg-[hsl(var(--secondary))] hover:opacity-80 transition" onclick={() => showPlaylistPicker = false}>{t('common.cancel')}</button>
-      </div>
-    </div>
-  </div>
-{/if}
+    </Dialog.Content>
+  </Dialog.Portal>
+</Dialog.Root>
 
 <style>
-  @keyframes slide-up {
-    from {
-      transform: translateY(100%);
-      opacity: 0;
-    }
-    to {
-      transform: translateY(0);
-      opacity: 1;
-    }
+  :global(.expanded-dialog) {
+    --signal: hsl(var(--link, var(--primary)));
+    --slider-track: hsl(var(--foreground) / .17);
+    --slider-fill: hsl(var(--primary));
+    --slider-height: 3px;
+    --slider-thumb-size: 9px;
+    width: 100%; height: 100dvh; overscroll-behavior: contain;
+    background: hsl(var(--background)); color: hsl(var(--foreground));
   }
-
-  .animate-slide-up {
-    animation: slide-up 0.3s ease-out;
+  .canvas {
+    position: relative; isolation: isolate; min-height: 100%; display: flex; flex-direction: column;
+    padding: 0 clamp(24px, 5vw, 84px);
   }
+  .player-header { flex: none; display: flex; align-items: center; gap: 23px; height: 70px; border-bottom: 1px solid hsl(var(--border)); }
+  .signature { color: hsl(var(--foreground)); }
+  :global(.player-caption) { display: inline-flex; align-items: center; gap: 8px; padding-left: 23px; border-left: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); font-size: .78rem; font-weight: 550; }
+  :global(.player-caption svg) { color: var(--signal); }
+  :global(.collapse-player) { margin-left: auto; width: 40px; height: 40px; border: 1px solid hsl(var(--border)); border-radius: 50%; color: hsl(var(--foreground)); background: hsl(var(--foreground) / .06); }
+  :global(.collapse-player svg) { width: 19px; height: 19px; }
+  .stage {
+    flex: 1; width: 100%; max-width: 1010px; min-height: 0; margin-inline: auto;
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 1fr); align-items: center; gap: clamp(48px, 7vw, 112px);
+    padding-block: clamp(22px, 4.5dvh, 64px);
+  }
+  .deck { width: 100%; max-width: min(100%, max(215px, calc(100dvh - 445px)), 470px); justify-self: center; }
+  .album-art {
+    display: grid; aspect-ratio: 1; place-items: center; overflow: hidden; color: hsl(var(--muted-foreground)); background: hsl(var(--muted));
+    border-radius: 12px; box-shadow: 0 10px 30px -10px rgb(0 0 0 / .19);
+  }
+  .track-heading { display: flex; align-items: center; gap: .7rem; margin-top: clamp(18px, 3dvh, 31px); }
+  .track-heading h2 { margin: 0; font-size: clamp(1.8rem, 3vw, 2.55rem); line-height: 1.06; font-weight: 680; letter-spacing: -.048em; overflow-wrap: anywhere; }
+  .byline { margin: 6px 0 0; color: hsl(var(--foreground)); font-size: .96rem; line-height: 1.46; }
+  .album, .separator { color: hsl(var(--muted-foreground)); }
+  .separator { margin: 0 .12rem; }
+  .byline a:hover { text-decoration: underline; }
+  .seek { margin-top: 13px; }
+  .time, .volume { font-size: .7rem; font-variant-numeric: tabular-nums; color: hsl(var(--muted-foreground)); }
+  .time { display: flex; justify-content: space-between; margin-top: -3px; }
+  .transport { display: flex; justify-content: space-between; align-items: center; gap: 4px; margin: 8px auto 0; }
+  .mode, .skip, .autoplay { position: relative; display: grid; place-items: center; flex: none; width: 42px; height: 42px; border-radius: 50%; }
+  .mode, .autoplay { color: hsl(var(--muted-foreground)); }
+  .mode:hover, .skip:hover, .autoplay:hover { background: hsl(var(--foreground) / .06); color: hsl(var(--foreground)); }
+  .mode[aria-pressed="true"], .autoplay[aria-pressed="true"] { color: var(--signal); background: hsl(var(--foreground) / .06); }
+  .repeat-one { position: absolute; font-size: .53rem; font-weight: 700; line-height: 1; }
+  :global(.main-play) { width: 57px; height: 57px; padding: 0; border-radius: 50%; color: hsl(var(--background)); background: hsl(var(--foreground)); }
+  :global(.main-play:hover) { color: hsl(var(--background)); background: hsl(var(--foreground) / .85); }
+  :global(.main-play svg) { width: 22px; height: 22px; }
+  .deck-footer { margin-top: 16px; }
+  .quality { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; column-gap: .44rem; row-gap: .2rem; color: hsl(var(--muted-foreground)); font-size: .67rem; letter-spacing: .01em; font-variant-numeric: tabular-nums; }
+  .quality .format { text-transform: uppercase; font-weight: 650; }
+  .quality span + span::before { content: "·"; margin-right: .44rem; }
+  .radio-status { display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 4px; color: hsl(var(--muted-foreground)); font-size: .76rem; }
+  .side-panel { display: flex; flex-direction: column; align-self: center; width: 100%; min-width: 0; max-width: 440px; overflow: hidden; border: 1px solid hsl(var(--border)); border-radius: 12px; background: hsl(var(--card)); }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 64px; margin: 0 22px; border-bottom: 1px solid hsl(var(--border)); }
+  .desktop-tabs { display: flex; align-items: center; gap: 18px; }
+  .desktop-tabs button { position: relative; display: flex; align-items: center; justify-content: center; gap: 7px; height: 64px; color: hsl(var(--muted-foreground)); font-size: .85rem; font-weight: 550; }
+  .desktop-tabs button[aria-pressed="true"] { color: hsl(var(--foreground)); }
+  .desktop-tabs button[aria-pressed="true"]::after { content: ""; position: absolute; inset: auto 0 -1px; height: 2px; border-radius: 2px; background: var(--signal); }
+  .panel-content { overflow-y: auto; max-height: min(57dvh, 620px); padding: 19px 22px 11px; overscroll-behavior-y: contain; scrollbar-width: thin; }
+  .current-row { display: flex; align-items: center; gap: 13px; border-radius: 9px; padding: 9px; background: hsl(var(--muted)); }
+  .current-cover { display: grid; flex: none; place-items: center; width: 55px; height: 55px; overflow: hidden; border-radius: 6px; background: hsl(var(--muted)); }
+  .current-label { margin-bottom: 2px; color: var(--signal); font-size: .64rem; font-weight: 650; letter-spacing: .025em; }
+  .current-title, .row-artist { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .current-title { font-size: .91rem; font-weight: 650; line-height: 1.35; }
+  .row-artist { margin-top: 2px; font-size: .735rem; color: hsl(var(--muted-foreground)); }
+  .level { display: inline-flex; height: 16px; align-items: center; gap: 2px; margin-inline: 4px 3px; color: var(--signal); }
+  .level i { display: block; width: 2px; height: 12px; border-radius: 2px; background: currentColor; transform: scaleY(.4); }
+  .level i:nth-child(2) { height: 20px; } .level i:nth-child(3) { height: 15px; }
+  .level[data-playing="true"] i { animation: meter 730ms ease-in-out infinite alternate; }
+  .level[data-playing="true"] i:nth-child(2) { animation-delay: -420ms; }
+  .level[data-playing="true"] i:nth-child(3) { animation-delay: -250ms; }
+  .level[data-playing="true"] i:nth-child(4) { animation-delay: -550ms; }
+  @keyframes meter { to { transform: scaleY(1); } }
+  .queue-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 23px 0 8px; }
+  .queue-heading h3 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 1.05rem; font-weight: 640; letter-spacing: -.025em; }
+  .queue-count { padding: 1px 6px; border: 1px solid hsl(var(--border)); border-radius: 6px; color: hsl(var(--muted-foreground)); font-size: .64rem; font-weight: 500; letter-spacing: 0; }
+  .queue-duration { display: flex; align-items: center; gap: 5px; color: hsl(var(--muted-foreground)); font-size: .72rem; font-variant-numeric: tabular-nums; }
+  .lyrics { min-height: 225px; }
+  .lyrics-text { white-space: pre-wrap; font-size: clamp(1.1rem, 2vw, 1.35rem); line-height: 1.55; font-weight: 600; }
+  .empty { padding: 8px 0 17px; color: hsl(var(--muted-foreground)); font-size: .83rem; }
+  .empty-lyrics { min-height: 210px; display: grid; place-content: center; justify-items: center; gap: 12px; }
+  .volume { display: flex; align-items: center; gap: 12px; padding: 12px 23px; border-top: 1px solid hsl(var(--border)); background: hsl(var(--foreground) / .06); --slider-fill: hsl(var(--muted-foreground)); }
+  .volume-range { flex: 1; max-width: 145px; }
+  .volume > span { margin-left: auto; }
+  .mobile-tabs { display: none; }
+  @media (max-width: 740px) {
+    .canvas { padding: 0 clamp(18px, 6vw, 38px); min-height: 100dvh; }
+    .player-header { height: 62px; gap: 0; }
+    .signature { display: none; }
+    :global(.player-caption) { padding-left: 0; border: 0; }
+    :global(.collapse-player) { width: 36px; height: 36px; }
+    .stage { display: flex; align-items: center; justify-content: center; width: 100%; min-height: auto; max-width: 480px; flex: 1; padding-block: clamp(16px, 3dvh, 32px); }
+    .deck { width: 100%; max-width: min(100%, max(215px, calc(100dvh - 360px)), 365px); }
+    .track-heading { margin-top: 22px; }
+    .track-heading h2 { font-size: clamp(1.8rem, 7vw, 2.25rem); }
+    .transport { margin-top: 9px; }
+    .mode, .skip { width: 44px; height: 44px; }
+    .deck-footer { margin-top: 16px; }
+    .stage[data-panel="track"] .side-panel, .stage:not([data-panel="track"]) .deck { display: none; }
+    .stage:not([data-panel="track"]) { align-items: stretch; }
+    .side-panel { max-width: none; align-self: stretch; border: 0; border-radius: 0; background: none; box-shadow: none; }
+    .desktop-tabs { display: none; }
+    .panel-head { min-height: 0; margin: 0; border: 0; justify-content: end; }
+    .panel-content { max-height: none; padding: 0; flex: 1; overflow: visible; }
+    .volume { margin-top: 14px; padding: 9px 2px; background: transparent; }
+    .mobile-tabs { position: sticky; bottom: 0; display: flex; justify-content: center; gap: 6px; margin-inline: calc(clamp(18px, 6vw, 38px) * -1); padding: 8px 12px max(8px, env(safe-area-inset-bottom)); border-top: 1px solid hsl(var(--border)); background: hsl(var(--background) / .96); }
+    .mobile-tabs button { display: grid; place-content: center; justify-items: center; gap: 2px; min-height: 44px; min-width: 70px; padding: 1px 10px; border-radius: 9px; color: hsl(var(--muted-foreground)); font-size: .66rem; font-weight: 550; }
+    .mobile-tabs button[aria-pressed="true"] { background: hsl(var(--foreground) / .06); color: var(--signal); }
+  }
+  @media (prefers-reduced-motion: reduce) { .level[data-playing="true"] i { animation: none; } }
 </style>

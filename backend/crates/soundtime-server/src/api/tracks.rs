@@ -11,17 +11,9 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::auth::middleware::AuthUser;
-use soundtime_db::entities::{album, artist, listen_history, remote_track, track};
+use soundtime_db::entities::{album, artist, remote_track, track};
 use soundtime_db::AppState;
 use std::collections::HashMap;
-
-/// Extract p2p node from type-erased state
-fn get_p2p_node(state: &AppState) -> Option<std::sync::Arc<soundtime_p2p::P2pNode>> {
-    state
-        .p2p
-        .as_ref()
-        .and_then(|any| any.clone().downcast::<soundtime_p2p::P2pNode>().ok())
-}
 
 #[derive(Debug, Deserialize)]
 pub struct PaginationParams {
@@ -40,6 +32,9 @@ pub struct PaginatedResponse<T: Serialize> {
 
 #[derive(Debug, Serialize)]
 pub struct TrackResponse {
+    pub availability: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<i32>,
     pub id: Uuid,
     pub title: String,
     pub artist_id: Uuid,
@@ -62,7 +57,7 @@ pub struct TrackResponse {
     /// Joined album title
     #[serde(skip_serializing_if = "Option::is_none")]
     pub album_title: Option<String>,
-    /// Album cover URL
+    /// Individual artwork or the cover of the associated album
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cover_url: Option<String>,
     /// Highest bitrate available across local + federated sources
@@ -76,6 +71,8 @@ pub struct TrackResponse {
 impl From<track::Model> for TrackResponse {
     fn from(t: track::Model) -> Self {
         Self {
+            availability: "unavailable_on_instance".into(),
+            position: None,
             id: t.id,
             title: t.title,
             artist_id: t.artist_id,
@@ -94,11 +91,128 @@ impl From<track::Model> for TrackResponse {
             created_at: t.created_at,
             artist_name: None,
             album_title: None,
-            cover_url: None,
+            cover_url: t.cover_url.map(media_cover_url),
             best_bitrate: None,
             best_source: None,
         }
     }
+}
+
+pub(super) fn media_cover_url(url: String) -> String {
+    if url.starts_with("/api/media/") || url.starts_with("http") {
+        url
+    } else {
+        format!("/api/media/{url}")
+    }
+}
+
+impl TrackResponse {
+    pub(super) fn attach_album(&mut self, album: Option<&album::Model>) {
+        if let Some(album) = album {
+            self.album_title = Some(album.title.clone());
+            if self.cover_url.is_none() {
+                self.cover_url = album.cover_url.clone().map(media_cover_url);
+            }
+        }
+    }
+
+    /// For rows selected with the playable catalogue predicate in the same SQL query.
+    pub(super) fn playable(track: track::Model) -> Self {
+        Self {
+            availability: "playable".into(),
+            ..Self::from(track)
+        }
+    }
+}
+
+pub(super) fn policy_flags(state: &AppState) -> [bool; 2] {
+    if crate::cluster::Role::configured() == crate::cluster::Role::Catalogue {
+        return [
+            std::env::var("P2P_EXPLICIT_CATALOG").is_ok_and(|v| v.eq_ignore_ascii_case("true")),
+            std::env::var("P2P_ENABLED").is_ok_and(|v| v.eq_ignore_ascii_case("true")),
+        ];
+    }
+    let node = state
+        .p2p
+        .as_ref()
+        .and_then(|node| node.downcast_ref::<soundtime_p2p::P2pNode>());
+    [
+        node.is_some_and(|node| node.explicit_catalog()),
+        node.is_some(),
+    ]
+}
+
+pub(super) fn playable_filter(state: &AppState) -> sea_orm::sea_query::SimpleExpr {
+    sea_orm::sea_query::Expr::cust_with_values(
+        "tracks.id IN (SELECT track_id FROM federation_track_availability($1,$2) WHERE availability='playable')",
+        policy_flags(state),
+    )
+}
+
+/// Hydrate the whole page with current availability, credit and artwork. Personal
+/// collections keep their saved order, including repeated listening-history rows.
+pub(super) async fn attach_availability<'a>(
+    state: &AppState,
+    tracks: impl IntoIterator<Item = &'a mut TrackResponse>,
+) -> Result<(), (StatusCode, String)> {
+    use sea_orm::{
+        AccessMode, ConnectionTrait, DbBackend, FromQueryResult, Statement, TransactionTrait,
+    };
+    #[derive(FromQueryResult)]
+    struct CatalogRow {
+        track_id: Uuid,
+        availability: String,
+        artist_name: Option<String>,
+        album_title: Option<String>,
+        cover_url: Option<String>,
+    }
+    let tracks: Vec<_> = tracks.into_iter().collect();
+    if tracks.is_empty() {
+        return Ok(());
+    }
+    let ids: std::collections::HashSet<_> = tracks.iter().map(|t| t.id).collect();
+    let [strict, enabled] = policy_flags(state);
+    let query = Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT t.id AS track_id, av.availability, a.name AS artist_name, al.title AS album_title,
+                COALESCE(t.cover_url, al.cover_url) AS cover_url
+         FROM jsonb_array_elements_text($3) AS requested(value)
+         JOIN tracks t ON t.id = requested.value::uuid
+         JOIN federation_track_availability($1,$2) av ON av.track_id = t.id
+         LEFT JOIN artists a ON a.id = t.artist_id AND NOT a.is_placeholder
+         LEFT JOIN albums al ON al.id = t.album_id",
+        [strict.into(), enabled.into(), serde_json::json!(ids).into()],
+    );
+    // The provider branches give this sparse ID lookup a high estimated cost.
+    // JIT can spend hundreds of milliseconds compiling it for a single saved track.
+    let rows = async {
+        let tx = state
+            .db
+            .begin_with_config(None, Some(AccessMode::ReadOnly))
+            .await?;
+        tx.execute_unprepared("SET LOCAL jit = off").await?;
+        let rows = CatalogRow::find_by_statement(query).all(&tx).await?;
+        tx.commit().await?;
+        Ok::<_, sea_orm::DbErr>(rows)
+    }
+    .await
+    .map_err(|e| {
+        tracing::error!(%e, "track availability lookup failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Track availability unavailable".to_owned(),
+        )
+    })?;
+    let catalog: HashMap<_, _> = rows.into_iter().map(|row| (row.track_id, row)).collect();
+    for track in tracks {
+        if let Some(row) = catalog.get(&track.id) {
+            track.availability.clone_from(&row.availability);
+            track.artist_name.clone_from(&row.artist_name);
+            track.album_title.clone_from(&row.album_title);
+            track.cover_url = row.cover_url.clone().map(media_cover_url);
+        }
+    }
+    Ok(())
 }
 
 /// GET /api/tracks
@@ -107,10 +221,12 @@ pub async fn list_tracks(
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResponse<TrackResponse>>, (StatusCode, String)> {
     let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(20).min(100);
+    let per_page = params.per_page.unwrap_or(20).clamp(1, 100);
 
     let paginator = track::Entity::find()
+        .filter(playable_filter(&state))
         .order_by_desc(track::Column::CreatedAt)
+        .order_by_asc(track::Column::Id)
         .paginate(&state.db, per_page);
 
     let total = paginator
@@ -140,7 +256,7 @@ pub async fn list_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -169,27 +285,10 @@ pub async fn list_tracks(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
-            let mut resp = TrackResponse::from(t);
+            let album = t.album_id.and_then(|id| albums.get(&id));
+            let mut resp = TrackResponse::playable(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -211,11 +310,13 @@ pub async fn my_uploads(
 ) -> Result<Json<PaginatedResponse<TrackResponse>>, (StatusCode, String)> {
     let user_id = user.0.sub;
     let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(20).min(100);
+    let per_page = params.per_page.unwrap_or(20).clamp(1, 100);
 
     let paginator = track::Entity::find()
         .filter(track::Column::UploadedBy.eq(user_id))
         .order_by_desc(track::Column::CreatedAt)
+        .order_by_asc(track::Column::Id)
+        .order_by_asc(track::Column::Id)
         .paginate(&state.db, per_page);
 
     let total = paginator
@@ -230,75 +331,8 @@ pub async fn my_uploads(
 
     let total_pages = total.div_ceil(per_page);
 
-    // Batch-fetch artist and album data
-    let artist_ids: Vec<Uuid> = tracks
-        .iter()
-        .map(|t| t.artist_id)
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-    let album_ids: Vec<Uuid> = tracks
-        .iter()
-        .filter_map(|t| t.album_id)
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
-            .filter(artist::Column::Id.is_in(artist_ids))
-            .all(&state.db)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|a| (a.id, a))
-            .collect()
-    } else {
-        HashMap::new()
-    };
-
-    let albums: HashMap<Uuid, album::Model> = if !album_ids.is_empty() {
-        album::Entity::find()
-            .filter(album::Column::Id.is_in(album_ids))
-            .all(&state.db)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|a| (a.id, a))
-            .collect()
-    } else {
-        HashMap::new()
-    };
-
-    let data = tracks
-        .into_iter()
-        .map(|t| {
-            let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
-            let mut resp = TrackResponse::from(t);
-            resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
-            resp
-        })
-        .collect();
-
+    let mut data: Vec<_> = tracks.into_iter().map(TrackResponse::from).collect();
+    attach_availability(&state, &mut data).await?;
     Ok(Json(PaginatedResponse {
         data,
         total,
@@ -320,28 +354,6 @@ pub async fn get_track(
         .ok_or((StatusCode::NOT_FOUND, "Track not found".to_string()))?;
 
     let mut resp = TrackResponse::from(track_model.clone());
-
-    // Fetch artist name
-    if let Ok(Some(a)) = artist::Entity::find_by_id(track_model.artist_id)
-        .one(&state.db)
-        .await
-    {
-        resp.artist_name = Some(a.name);
-    }
-
-    // Fetch album title & cover
-    if let Some(album_id) = track_model.album_id {
-        if let Ok(Some(a)) = album::Entity::find_by_id(album_id).one(&state.db).await {
-            resp.album_title = Some(a.title);
-            resp.cover_url = a.cover_url.map(|url| {
-                if url.starts_with("/api/media/") || url.starts_with("http") {
-                    url
-                } else {
-                    format!("/api/media/{url}")
-                }
-            });
-        }
-    }
 
     // Compute best available bitrate across local and remote sources
     let local_bitrate = track_model.bitrate.unwrap_or(0);
@@ -385,6 +397,11 @@ pub async fn get_track(
         resp.best_source = Some(best_source);
     }
 
+    attach_availability(&state, [&mut resp]).await?;
+    if resp.availability != "playable" {
+        resp.best_bitrate = None;
+        resp.best_source = None;
+    }
     Ok(Json(resp))
 }
 
@@ -408,7 +425,7 @@ pub struct TrackCreditsResponse {
     pub created_at: chrono::DateTime<chrono::FixedOffset>,
     // Artist info
     pub artist_id: Uuid,
-    pub artist_name: String,
+    pub artist_name: Option<String>,
     pub artist_bio: Option<String>,
     pub artist_image: Option<String>,
     pub artist_musicbrainz_id: Option<String>,
@@ -437,11 +454,11 @@ pub async fn get_track_credits(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
         .ok_or((StatusCode::NOT_FOUND, "Track not found".to_string()))?;
 
-    let artist_model = artist::Entity::find_by_id(track_model.artist_id)
+    let artist_model = artist::Entity::credited()
+        .filter(artist::Column::Id.eq(track_model.artist_id))
         .one(&state.db)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
-        .ok_or((StatusCode::NOT_FOUND, "Artist not found".to_string()))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     let album_model = if let Some(album_id) = track_model.album_id {
         album::Entity::find_by_id(album_id)
@@ -467,14 +484,17 @@ pub async fn get_track_credits(
         play_count: track_model.play_count,
         uploaded_by: track_model.uploaded_by,
         created_at: track_model.created_at,
-        artist_id: artist_model.id,
-        artist_name: artist_model.name,
-        artist_bio: artist_model.bio,
-        artist_image: artist_model.image_url,
-        artist_musicbrainz_id: artist_model.musicbrainz_id,
+        artist_id: track_model.artist_id,
+        artist_name: artist_model.as_ref().map(|a| a.name.clone()),
+        artist_bio: artist_model.as_ref().and_then(|a| a.bio.clone()),
+        artist_image: artist_model.as_ref().and_then(|a| a.image_url.clone()),
+        artist_musicbrainz_id: artist_model.and_then(|a| a.musicbrainz_id),
         album_id: album_model.as_ref().map(|a| a.id),
         album_title: album_model.as_ref().map(|a| a.title.clone()),
-        album_cover_url: album_model.as_ref().and_then(|a| a.cover_url.clone()),
+        album_cover_url: track_model
+            .cover_url
+            .or_else(|| album_model.as_ref().and_then(|a| a.cover_url.clone()))
+            .map(media_cover_url),
         album_genre: album_model.as_ref().and_then(|a| a.genre.clone()),
         album_year: album_model.as_ref().and_then(|a| a.year),
         album_musicbrainz_id: album_model.as_ref().and_then(|a| a.musicbrainz_id.clone()),
@@ -520,6 +540,12 @@ pub async fn update_track(
 
     let mut active: track::ActiveModel = existing.into();
     if let Some(title) = body.title {
+        if title.trim().is_empty() || title.chars().count() > 255 || title.contains('\0') {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Title must contain 1 to 255 characters".into(),
+            ));
+        }
         active.title = Set(title);
     }
     if let Some(genre) = body.genre {
@@ -540,119 +566,41 @@ pub async fn update_track(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    Ok(Json(TrackResponse::from(updated)))
+    let mut track = TrackResponse::from(updated);
+    attach_availability(&state, [&mut track]).await?;
+    Ok(Json(track))
 }
 
-/// DELETE /api/tracks/:id — delete track (owner only)
-///
-/// Performs cascade cleanup of all associated data:
-/// - Audio file on disk
-/// - Playlist entries, favorites, listen history
-/// - Remote track records referencing this track
-/// - P2P blob cache entries, health records, and search index
+/// DELETE /api/tracks/:id — withdraw a local publication while retaining playlist entries.
 pub async fn delete_track(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let existing = track::Entity::find_by_id(id)
-        .one(&state.db)
+    let db_error = |e: sea_orm::DbErr| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());
+    let tx = crate::storage_catalog::begin_write(&state.db)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
-        .ok_or((StatusCode::NOT_FOUND, "Track not found".to_string()))?;
-
-    // Only the uploader can delete
-    match existing.uploaded_by {
-        Some(uploader_id) if uploader_id == user.0.sub => {}
-        _ => {
-            return Err((
-                StatusCode::FORBIDDEN,
-                "You can only delete your own tracks".to_string(),
-            ))
-        }
+        .map_err(db_error)?;
+    let track = track::Entity::find_by_id(id)
+        .one(&tx)
+        .await
+        .map_err(db_error)?
+        .ok_or((StatusCode::NOT_FOUND, "Track not found".into()))?;
+    if track.uploaded_by != Some(user.0.sub)
+        || !crate::publications::local(&tx, id)
+            .await
+            .map_err(db_error)?
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "You can only withdraw your own publications".into(),
+        ));
     }
-
-    // Delete the audio file
-    let _ = state.storage.delete_file(&existing.file_path).await;
-
-    // Remove from playlists, favorites, history
-    use soundtime_db::entities::{favorite, playlist_track};
-    playlist_track::Entity::delete_many()
-        .filter(playlist_track::Column::TrackId.eq(id))
-        .exec(&state.db)
+    let change = crate::publications::remove(&tx, &track, true)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
-
-    favorite::Entity::delete_many()
-        .filter(favorite::Column::TrackId.eq(id))
-        .exec(&state.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
-
-    listen_history::Entity::delete_many()
-        .filter(listen_history::Column::TrackId.eq(id))
-        .exec(&state.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
-
-    // Delete associated remote_track records that reference this track
-    remote_track::Entity::delete_many()
-        .filter(remote_track::Column::LocalTrackId.eq(Some(id)))
-        .exec(&state.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
-
-    // Best-effort P2P cleanup: blob cache, health records
-    if let Some(p2p_node) = get_p2p_node(&state) {
-        if let Some(ref content_hash) = existing.content_hash {
-            // Remove from blob cache tracker
-            if let Ok(hash) = content_hash.parse::<soundtime_p2p::BlobHash>() {
-                p2p_node.blob_cache().remove(&hash).await;
-            } else {
-                tracing::warn!(
-                    track_id = %id,
-                    content_hash = %content_hash,
-                    "failed to parse content_hash for blob cache cleanup"
-                );
-            }
-
-            // Remove health record for this track
-            p2p_node.health_manager().remove_record(content_hash).await;
-        }
-    }
-
-    // Delete the track itself
-    track::Entity::delete_by_id(id)
-        .exec(&state.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
-
-    // Best-effort: rebuild search index after the track is deleted from DB.
-    // Bloom filters don't support individual removal, so we mark the index
-    // dirty and trigger an async rebuild from the database.
-    if let Some(p2p_node) = get_p2p_node(&state) {
-        p2p_node.search_index().mark_dirty().await;
-        let db = state.db.clone();
-        let search_index = p2p_node.search_index().clone();
-        tokio::spawn(async move {
-            if let Err(e) = search_index.rebuild_from_db(&db).await {
-                tracing::warn!("failed to rebuild search index after track deletion: {e}");
-            }
-        });
-    }
-
-    // Dispatch plugin event (best-effort)
-    if let Some(registry) = super::get_plugin_registry(&state) {
-        let payload = soundtime_plugin::TrackDeletedPayload {
-            track_id: id.to_string(),
-        };
-        let payload_val = serde_json::to_value(&payload).unwrap_or_default();
-        let registry = registry.clone();
-        tokio::spawn(async move {
-            registry.dispatch("on_track_deleted", &payload_val).await;
-        });
-    }
-
+        .map_err(db_error)?;
+    tx.commit().await.map_err(db_error)?;
+    change.committed(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -670,10 +618,12 @@ pub async fn list_popular_tracks(
     Query(params): Query<ExploreParams>,
 ) -> Result<Json<PaginatedResponse<TrackResponse>>, (StatusCode, String)> {
     let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(20).min(100);
+    let per_page = params.per_page.unwrap_or(20).clamp(1, 100);
 
     let paginator = track::Entity::find()
+        .filter(playable_filter(&state))
         .order_by_desc(track::Column::PlayCount)
+        .order_by_asc(track::Column::Id)
         .paginate(&state.db, per_page);
 
     let total = paginator
@@ -703,7 +653,7 @@ pub async fn list_popular_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -732,27 +682,10 @@ pub async fn list_popular_tracks(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
-            let mut resp = TrackResponse::from(t);
+            let album = t.album_id.and_then(|id| albums.get(&id));
+            let mut resp = TrackResponse::playable(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -828,6 +761,7 @@ pub async fn list_trending_tracks(
     // Fetch full track data for the trending IDs
     let track_ids: Vec<Uuid> = entries.iter().map(|e| e.track_id).collect();
     let tracks_map: HashMap<Uuid, track::Model> = track::Entity::find()
+        .filter(playable_filter(&state))
         .filter(track::Column::Id.is_in(track_ids.clone()))
         .all(&state.db)
         .await
@@ -851,7 +785,7 @@ pub async fn list_trending_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -882,27 +816,10 @@ pub async fn list_trending_tracks(
         .filter_map(|id| {
             let t = tracks_map.get(id)?;
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
-            let mut resp = TrackResponse::from(t.clone());
+            let album = t.album_id.and_then(|id| albums.get(&id));
+            let mut resp = TrackResponse::playable(t.clone());
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             Some(resp)
         })
         .collect();
@@ -928,7 +845,7 @@ pub async fn list_random_tracks(
 
     let count = params.count.unwrap_or(10).min(50);
 
-    let mut query = track::Entity::find();
+    let mut query = track::Entity::find().filter(playable_filter(&state));
     if let Some(ref genre) = params.genre {
         query = query.filter(track::Column::Genre.eq(genre.clone()));
     }
@@ -955,7 +872,7 @@ pub async fn list_random_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -984,27 +901,10 @@ pub async fn list_random_tracks(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
-            let mut resp = TrackResponse::from(t);
+            let album = t.album_id.and_then(|id| albums.get(&id));
+            let mut resp = TrackResponse::playable(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -1020,10 +920,12 @@ pub async fn list_recently_added_tracks(
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResponse<TrackResponse>>, (StatusCode, String)> {
     let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(20).min(100);
+    let per_page = params.per_page.unwrap_or(20).clamp(1, 100);
 
     let paginator = track::Entity::find()
+        .filter(playable_filter(&state))
         .order_by_desc(track::Column::CreatedAt)
+        .order_by_asc(track::Column::Id)
         .paginate(&state.db, per_page);
 
     let total = paginator
@@ -1053,7 +955,7 @@ pub async fn list_recently_added_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -1082,27 +984,10 @@ pub async fn list_recently_added_tracks(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
-            let mut resp = TrackResponse::from(t);
+            let album = t.album_id.and_then(|id| albums.get(&id));
+            let mut resp = TrackResponse::playable(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -1130,6 +1015,7 @@ pub async fn list_genres(
     }
 
     let rows = track::Entity::find()
+        .filter(playable_filter(&state))
         .select_only()
         .column(track::Column::Genre)
         .distinct()
@@ -1154,13 +1040,13 @@ pub async fn list_genre_tracks(
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResponse<TrackResponse>>, (StatusCode, String)> {
     let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(20).min(100);
-
-    use sea_orm::{sea_query::Expr, Order};
+    let per_page = params.per_page.unwrap_or(20).clamp(1, 100);
 
     let paginator = track::Entity::find()
+        .filter(playable_filter(&state))
         .filter(track::Column::Genre.eq(genre))
-        .order_by(Expr::cust("RANDOM()"), Order::Asc)
+        .order_by_desc(track::Column::CreatedAt)
+        .order_by_asc(track::Column::Id)
         .paginate(&state.db, per_page);
 
     let total = paginator
@@ -1190,7 +1076,7 @@ pub async fn list_genre_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(&state.db)
             .await
@@ -1219,27 +1105,10 @@ pub async fn list_genre_tracks(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
-            let mut resp = TrackResponse::from(t);
+            let album = t.album_id.and_then(|id| albums.get(&id));
+            let mut resp = TrackResponse::playable(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -1264,6 +1133,7 @@ mod tests {
             title: "Test Track".into(),
             artist_id: Uuid::new_v4(),
             album_id: Some(Uuid::new_v4()),
+            cover_url: None,
             track_number: Some(1),
             disc_number: Some(1),
             duration_secs: 240.5,
@@ -1295,6 +1165,20 @@ mod tests {
         assert!(resp.artist_name.is_none());
         assert!(resp.album_title.is_none());
         assert!(resp.cover_url.is_none());
+    }
+
+    #[test]
+    fn albumless_track_keeps_its_own_artwork_in_collections() {
+        let mut track = make_track_model();
+        track.album_id = None;
+        track.cover_url = Some("singles/track-42.jpg".into());
+
+        let mut response = TrackResponse::playable(track);
+        response.attach_album(None);
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["cover_url"], "/api/media/singles/track-42.jpg");
+        assert!(json["album_id"].is_null());
+        assert!(json.get("album_title").is_none());
     }
 
     #[test]

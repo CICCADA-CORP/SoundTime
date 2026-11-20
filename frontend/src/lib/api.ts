@@ -23,15 +23,68 @@ function setTokens(access: string, refresh: string) {
   localStorage.setItem("soundtime_refresh_token", refresh);
 }
 
-export function clearTokens() {
-  localStorage.removeItem("soundtime_access_token");
-  localStorage.removeItem("soundtime_refresh_token");
+// Serialize creation and deletion so that a late cookie response cannot undo logout.
+let mediaOperations = Promise.resolve();
+let mediaRequest: Promise<void> | undefined;
+let mediaRevision = 0;
+let mediaRenewAt = 0;
+
+/** A fresh cookie lets native play() run synchronously in the user's gesture. */
+export function prepareMediaSession(force = false): Promise<void> | undefined {
+  if (!getAccessToken() || (!force && Date.now() < mediaRenewAt)) return;
+  if (mediaRequest) return mediaRequest;
+  const revision = mediaRevision;
+  const request = mediaOperations.then(async () => {
+    if (revision !== mediaRevision) return;
+    const grant = await apiFetch<{ expires_in: number }>("/auth/media-session", { method: "POST" });
+    if (revision === mediaRevision) mediaRenewAt = Date.now() + Math.max(0, grant.expires_in - 45) * 1000;
+  }).finally(() => {
+    if (mediaRequest === request) mediaRequest = undefined;
+  });
+  mediaRequest = request;
+  mediaOperations = request.catch(() => {});
+  return request;
 }
 
-async function refreshAccessToken(): Promise<boolean> {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) return false;
+function invalidateMediaSession(clearCookie: boolean) {
+  mediaRevision++;
+  mediaRenewAt = 0;
+  mediaRequest = undefined;
+  window.dispatchEvent(new Event("soundtime:logout"));
+  if (clearCookie) {
+    mediaOperations = mediaOperations.then(async () => {
+      await fetch(API_BASE + "/auth/media-session", { method: "DELETE", keepalive: true });
+    }).catch(() => {});
+  }
+}
 
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === "soundtime_access_token" && !event.newValue) invalidateMediaSession(!!mediaRequest);
+  });
+}
+
+export function clearTokens() {
+  const hadSession = !!getAccessToken() || !!mediaRequest;
+  localStorage.removeItem("soundtime_access_token");
+  localStorage.removeItem("soundtime_refresh_token");
+  invalidateMediaSession(hadSession);
+}
+
+let refreshRequest: { token: string; result: Promise<boolean> } | undefined;
+
+function refreshAccessToken(): Promise<boolean> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return Promise.resolve(false);
+  if (refreshRequest?.token === refreshToken) return refreshRequest.result;
+  const result = fetchRefreshedTokens(refreshToken).finally(() => {
+    if (refreshRequest?.result === result) refreshRequest = undefined;
+  });
+  refreshRequest = { token: refreshToken, result };
+  return result;
+}
+
+async function fetchRefreshedTokens(refreshToken: string): Promise<boolean> {
   try {
     const res = await fetch(`${API_BASE}/auth/refresh`, {
       method: "POST",
@@ -39,16 +92,17 @@ async function refreshAccessToken(): Promise<boolean> {
       body: JSON.stringify({ refresh_token: refreshToken }),
     });
 
+    if (getRefreshToken() !== refreshToken) return false;
     if (!res.ok) {
-      clearTokens();
+      if (res.status === 401 || res.status === 403) clearTokens();
       return false;
     }
 
     const data: TokenPair = await res.json();
+    if (getRefreshToken() !== refreshToken) return false;
     setTokens(data.access_token, data.refresh_token);
     return true;
   } catch {
-    clearTokens();
     return false;
   }
 }
@@ -88,9 +142,13 @@ export async function apiFetch<T = unknown>(
     const err: ApiError = await res.json().catch(() => ({
       error: `HTTP ${res.status}`,
     }));
-    throw new Error(err.error);
+    throw Object.assign(new Error(err?.error || err?.message || `HTTP ${res.status}`), { status: res.status });
   }
 
+  // Refresh artwork access before an idle tab renders a new catalog response.
+  if (token && !options.method && !path.startsWith("/auth/") && mediaRenewAt && Date.now() >= mediaRenewAt) {
+    await prepareMediaSession()?.catch(() => {});
+  }
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   if (!text) return undefined as T;
@@ -98,7 +156,7 @@ export async function apiFetch<T = unknown>(
 }
 
 export const api = {
-  get: <T = unknown>(path: string) => apiFetch<T>(path),
+  get: <T = unknown>(path: string, signal?: AbortSignal) => apiFetch<T>(path, { signal }),
 
   post: <T = unknown>(path: string, body?: unknown) =>
     apiFetch<T>(path, {
@@ -178,12 +236,9 @@ export const api = {
   },
 };
 
-// SECURITY: The JWT token is passed as a URL query parameter because HTML <audio>/<video>
-// elements cannot set custom headers on their src requests. This is a known limitation.
-// Mitigations: tokens are short-lived (15min), stream endpoints validate the token server-side.
+/** Native audio uses a short-lived, same-origin media cookie. */
 export function streamUrl(trackId: string): string {
-  const token = getAccessToken();
-  return `${API_BASE}/tracks/${trackId}/stream${token ? `?token=${token}` : ""}`;
+  return `${API_BASE}/tracks/${encodeURIComponent(trackId)}/stream`;
 }
 
 // ─── Plugin API ─────────────────────────────────────────────────────
@@ -253,49 +308,49 @@ export const themeApi = {
 
 export const homeApi = {
   /** Get random tracks, optionally filtered by genre */
-  randomTracks: (count = 10, genre?: string) => {
+  randomTracks: (count = 10, genre?: string, signal?: AbortSignal) => {
     const params = new URLSearchParams({ count: String(count) });
     if (genre) params.set("genre", genre);
-    return api.get<import("./types").Track[]>(`/tracks/random?${params}`);
+    return api.get<import("./types").Track[]>(`/tracks/random?${params}`, signal);
   },
 
   /** Get recently added tracks */
-  recentlyAdded: (perPage = 10) =>
-    api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/tracks/recently-added?per_page=${perPage}`),
+  recentlyAdded: (perPage = 10, signal?: AbortSignal) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/tracks/recently-added?per_page=${perPage}`, signal),
 
   /** Get popular tracks (enriched with artist/album) */
-  popularTracks: (perPage = 10) =>
-    api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/tracks/popular?per_page=${perPage}`),
+  popularTracks: (perPage = 10, signal?: AbortSignal) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/tracks/popular?per_page=${perPage}`, signal),
 
   /** Get trending tracks (time-windowed, Redis-backed with PostgreSQL fallback) */
-  trendingTracks: (limit = 10, window: "1h" | "24h" | "7d" = "24h") =>
-    api.get<import("./types").Track[]>(`/tracks/trending?limit=${limit}&window=${window}`),
+  trendingTracks: (limit = 10, window: "1h" | "24h" | "7d" = "24h", signal?: AbortSignal) =>
+    api.get<import("./types").Track[]>(`/tracks/trending?limit=${limit}&window=${window}`, signal),
 
   /** Get all genres as a string array */
-  genres: () => api.get<string[]>("/genres"),
+  genres: (signal?: AbortSignal) => api.get<string[]>("/genres", signal),
 
   /** Get tracks for a specific genre */
   genreTracks: (genre: string, perPage = 10) =>
     api.get<import("./types").PaginatedResponse<import("./types").Track>>(`/genres/${encodeURIComponent(genre)}/tracks?per_page=${perPage}`),
 
   /** Get recent listening history (requires auth) */
-  recentHistory: (perPage = 6) =>
-    api.get<import("./types").HistoryEntry[]>(`/history/recent?per_page=${perPage}`),
+  recentHistory: (perPage = 6, signal?: AbortSignal) =>
+    api.get<import("./types").HistoryEntry[]>(`/history/recent?per_page=${perPage}`, signal),
 
   /** Get stats overview (total tracks, albums, artists, genres, duration, peers) */
-  statsOverview: () => api.get<import("./types").StatsOverview>("/stats/overview"),
+  statsOverview: (signal?: AbortSignal) => api.get<import("./types").StatsOverview>("/stats/overview", signal),
 
   /** Get recently added albums */
-  recentAlbums: (perPage = 10) =>
-    api.get<import("./types").PaginatedResponse<import("./types").Album>>(`/albums/recent?per_page=${perPage}`),
+  recentAlbums: (perPage = 10, signal?: AbortSignal) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Album>>(`/albums/recent?per_page=${perPage}`, signal),
 
   /** Get top artists by play count */
-  topArtists: (perPage = 10) =>
-    api.get<import("./types").PaginatedResponse<import("./types").Artist>>(`/artists/top?per_page=${perPage}`),
+  topArtists: (perPage = 10, signal?: AbortSignal) =>
+    api.get<import("./types").PaginatedResponse<import("./types").Artist>>(`/artists/top?per_page=${perPage}`, signal),
 
   /** Get editorial playlists */
-  editorialPlaylists: () =>
-    api.get<import("./types").EditorialPlaylist[]>("/editorial-playlists").catch(() => [] as import("./types").EditorialPlaylist[]),
+  editorialPlaylists: (signal?: AbortSignal) =>
+    api.get<import("./types").EditorialPlaylist[]>("/editorial-playlists", signal),
 };
 
 // ─── Last.fm API ─────────────────────────────────────────────────────

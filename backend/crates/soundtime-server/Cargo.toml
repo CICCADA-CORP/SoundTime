@@ -5,6 +5,7 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
+anyhow = "1"
 axum = { version = "0.8", features = ["multipart"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
 serde = { version = "1", features = ["derive"] }
@@ -26,7 +27,9 @@ tokio-util = { version = "0.7", features = ["io"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 url = "2"
 urlencoding = "2"
+xml-rs = "0.8"
 bytes = "1"
+futures-util = "0.3"
 toml = "0.8"
 regex = "1"
 git2 = { version = "0.21", features = ["https", "ssh"] }

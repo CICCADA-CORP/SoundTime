@@ -1,6 +1,10 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { Input } from "$lib/components/ui/input";
+  import { Button } from "$lib/components/ui/button";
+  import { accountLink } from "$lib/access/navigation";
   import { goto } from "$app/navigation";
+  import SoundTimeSignature from "$lib/components/SoundTimeSignature.svelte";
   import { api, setTokens } from "$lib/api";
   import { getAuthStore } from "$lib/stores/auth.svelte";
   import type {
@@ -15,6 +19,9 @@
 
   let currentStep = $state(1);
   let loading = $state(true);
+  let statusFailed = $state(false);
+  let redirectTimer: ReturnType<typeof setTimeout>;
+  let adminLoginRequired = $state(false);
   let submitting = $state(false);
   let error = $state("");
 
@@ -30,32 +37,32 @@
 
   // Step 3: P2P & Registrations
   let p2pEnabled = $state(true);
+  let instancePrivate = $state(false);
   let openRegistrations = $state(true);
   let maxUploadSizeMb = $state(500);
 
-  onMount(async () => {
+  async function checkSetup() {
+    loading = true;
+    statusFailed = false;
     try {
       const status = await api.get<SetupStatus>("/setup/status");
       if (status.setup_complete) {
-        goto("/");
+        await goto("/", { replaceState: true });
         return;
       }
+      instancePrivate = status.instance_private;
       if (status.has_admin) {
-        // Admin already created, skip to step 2
-        // But need to be logged in — check auth
-        await auth.init();
-        if (auth.isAuthenticated && auth.isAdmin) {
-          currentStep = 2;
-        } else {
-          // Admin exists but we're not logged in as admin — show login prompt
-          currentStep = 1;
-        }
+        adminLoginRequired = !auth.isAdmin;
+        if (auth.isAdmin) currentStep = 2;
       }
     } catch {
-      // API not available yet, show step 1
+      statusFailed = true;
+    } finally {
+      loading = false;
     }
-    loading = false;
-  });
+  }
+  onMount(() => { void checkSetup(); });
+  onDestroy(() => clearTimeout(redirectTimer));
 
   async function handleCreateAdmin() {
     error = "";
@@ -113,47 +120,55 @@
     try {
       await api.post("/setup/complete", {
         p2p_enabled: p2pEnabled,
+        instance_private: instancePrivate,
         open_registrations: openRegistrations,
         max_upload_size_mb: maxUploadSizeMb,
       } satisfies SetupCompleteRequest);
       currentStep = 4;
       // Short delay then redirect
-      setTimeout(() => goto("/"), 2000);
+      redirectTimer = setTimeout(() => goto("/"), 2000);
     } catch (e: unknown) {
       error = (e instanceof Error ? e.message : String(e)) || t('setup.finalizingError');
     }
     submitting = false;
   }
 
-  const steps = [
+  const steps = $derived([
     { num: 1, label: t('setup.stepAdmin') },
     { num: 2, label: t('setup.stepInstance') },
     { num: 3, label: t('setup.stepP2P') },
     { num: 4, label: t('setup.stepDone') },
-  ];
+  ]);
 </script>
 
 {#if loading}
-  <div class="flex items-center justify-center min-h-screen">
-    <div class="animate-spin w-8 h-8 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full"></div>
+  <div class="flex items-center justify-center min-h-svh" role="status" aria-label={t("common.loading")}>
+    <div class="motion-safe:animate-spin w-8 h-8 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full"></div>
+  </div>
+{:else if statusFailed || adminLoginRequired}
+  <div class="setup-card glass-surface mx-auto max-w-lg space-y-4 p-7">
+    <h1 class="setup-title">{t(statusFailed ? "access.unavailable" : "access.resumeSetup")}</h1>
+    {#if statusFailed}<Button onclick={checkSetup}>{t("access.retry")}</Button>
+    {:else}<Button href={accountLink("/login", "/setup")}>{t("auth.signIn")}</Button>{/if}
   </div>
 {:else}
-  <div class="w-full max-w-lg mx-auto px-6 py-12">
+  <div class="setup-card glass-surface w-full max-w-lg p-6 sm:p-9">
     <!-- Logo -->
-    <div class="text-center mb-8">
-      <div class="text-5xl mb-3">🎵</div>
-      <h1 class="text-3xl font-bold">SoundTime</h1>
-      <p class="text-[hsl(var(--muted-foreground))] mt-1">{t('setup.subtitle')}</p>
+    <div class="mb-7 border-b border-border pb-5">
+      <h1 class="mb-3 flex">
+        <SoundTimeSignature width={144} />
+      </h1>
+      <p class="text-sm text-muted-foreground mt-1">{t('setup.subtitle')}</p>
     </div>
 
     <!-- Progress bar -->
-    <div class="flex items-center justify-between mb-10 px-2">
-      {#each steps as step, i}
+    <div class="flex items-center justify-between mb-7 gap-1">
+      {#each steps as step, i (step.num)}
         <div class="flex items-center {i < steps.length - 1 ? 'flex-1' : ''}">
           <div class="flex flex-col items-center">
             <div
-              class="w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium transition-colors
-                {currentStep > step.num ? 'bg-green-500 text-white' : currentStep === step.num ? 'bg-[hsl(var(--primary))] text-white' : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'}"
+              class="step-number flex size-8 items-center justify-center border border-border text-sm transition-colors
+                {currentStep >= step.num ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}"
             >
               {#if currentStep > step.num}
                 ✓
@@ -161,10 +176,10 @@
                 {step.num}
               {/if}
             </div>
-            <span class="text-xs mt-1.5 text-[hsl(var(--muted-foreground))] whitespace-nowrap">{step.label}</span>
+            <span class="text-xs mt-1.5 text-[hsl(var(--muted-foreground))] text-center">{step.label}</span>
           </div>
           {#if i < steps.length - 1}
-            <div class="flex-1 h-0.5 mx-3 mt-[-1rem] {currentStep > step.num ? 'bg-green-500' : 'bg-[hsl(var(--secondary))]'}"></div>
+            <div class="flex-1 h-0.5 mx-3 mt-[-1rem] {currentStep > step.num ? 'bg-primary' : 'bg-[hsl(var(--secondary))]'}"></div>
           {/if}
         </div>
       {/each}
@@ -172,7 +187,7 @@
 
     <!-- Error -->
     {#if error}
-      <div class="mb-4 p-3 rounded-md bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
+      <div role="alert" class="mb-4 rounded-md border border-destructive/30 p-3 text-sm text-destructive">
         {error}
       </div>
     {/if}
@@ -190,52 +205,52 @@
         <form onsubmit={(e) => { e.preventDefault(); handleCreateAdmin(); }} class="space-y-4">
           <div>
             <label for="username" class="block text-sm font-medium mb-1.5">{t('setup.usernameLabel')}</label>
-            <input
-              id="username"
+            <Input
+              id="username" autocomplete="username"
               type="text"
               bind:value={adminUsername}
               required
-              minlength="3"
-              maxlength="64"
-              class="w-full px-3 py-2.5 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]"
+              minlength={3}
+              maxlength={64}
+              class="h-10 bg-background shadow-none"
               placeholder="admin"
             />
           </div>
 
           <div>
             <label for="email" class="block text-sm font-medium mb-1.5">{t('setup.emailLabel')}</label>
-            <input
+            <Input
               id="email"
-              type="email"
+              type="email" autocomplete="email"
               bind:value={adminEmail}
               required
-              class="w-full px-3 py-2.5 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]"
+              class="h-10 bg-background shadow-none"
               placeholder="admin@example.com"
             />
           </div>
 
           <div>
             <label for="password" class="block text-sm font-medium mb-1.5">{t('setup.passwordLabel')}</label>
-            <input
+            <Input
               id="password"
-              type="password"
+              type="password" autocomplete="new-password"
               bind:value={adminPassword}
               required
-              minlength="8"
-              class="w-full px-3 py-2.5 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]"
+              minlength={8}
+              class="h-10 bg-background shadow-none"
               placeholder="••••••••"
             />
           </div>
 
           <div>
             <label for="password-confirm" class="block text-sm font-medium mb-1.5">{t('setup.confirmPasswordLabel')}</label>
-            <input
+            <Input
               id="password-confirm"
-              type="password"
+              type="password" autocomplete="new-password"
               bind:value={adminPasswordConfirm}
               required
-              minlength="8"
-              class="w-full px-3 py-2.5 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]"
+              minlength={8}
+              class="h-10 bg-background shadow-none"
               placeholder="••••••••"
             />
           </div>
@@ -243,7 +258,7 @@
           <button
             type="submit"
             disabled={submitting}
-            class="w-full py-2.5 bg-[hsl(var(--primary))] text-white rounded-md font-medium hover:opacity-90 transition disabled:opacity-50"
+            class="w-full py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:opacity-90 transition disabled:opacity-50"
           >
             {#if submitting}
               {t('setup.creating')}
@@ -268,12 +283,12 @@
         <form onsubmit={(e) => { e.preventDefault(); handleConfigureInstance(); }} class="space-y-4">
           <div>
             <label for="instance-name" class="block text-sm font-medium mb-1.5">{t('setup.instanceNameLabel')}</label>
-            <input
+            <Input
               id="instance-name"
               type="text"
               bind:value={instanceName}
               required
-              class="w-full px-3 py-2.5 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]"
+              class="h-10 bg-background shadow-none"
               placeholder="My SoundTime"
             />
           </div>
@@ -290,17 +305,11 @@
           </div>
 
           <div class="flex gap-3">
-            <button
-              type="button"
-              onclick={() => { currentStep = 1; error = ''; }}
-              class="flex-1 py-2.5 bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))] rounded-md font-medium hover:opacity-90 transition"
-            >
-              {t('setup.back')}
-            </button>
+
             <button
               type="submit"
               disabled={submitting}
-              class="flex-1 py-2.5 bg-[hsl(var(--primary))] text-white rounded-md font-medium hover:opacity-90 transition disabled:opacity-50"
+              class="flex-1 py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:opacity-90 transition disabled:opacity-50"
             >
               {#if submitting}
                 {t('setup.saving')}
@@ -336,12 +345,20 @@
               <input
                 id="p2p-toggle"
                 type="checkbox"
+                aria-label={t("setup.p2pLabel")}
                 bind:checked={p2pEnabled}
                 class="sr-only peer"
               />
               <div class="w-11 h-6 bg-[hsl(var(--border))] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[hsl(var(--primary))]"></div>
             </label>
           </div>
+
+          <label class="flex items-center justify-between gap-4 rounded-lg border border-border bg-secondary p-4">
+            <span><strong class="block text-sm font-medium">{t("admin.settings.privateInstance")}</strong>
+              <span class="block text-xs text-muted-foreground">{t("admin.settings.privateInstanceDesc")}</span>
+            </span>
+            <input type="checkbox" class="size-5 accent-primary" bind:checked={instancePrivate} />
+          </label>
 
           <!-- Open registrations toggle -->
           <div class="flex items-center justify-between p-4 bg-[hsl(var(--secondary))] rounded-lg border border-[hsl(var(--border))]">
@@ -355,7 +372,10 @@
               <input
                 id="registrations-toggle"
                 type="checkbox"
-                bind:checked={openRegistrations}
+                aria-label={t("setup.openRegistrations")}
+                checked={!instancePrivate && openRegistrations}
+                disabled={instancePrivate}
+                onchange={(event) => openRegistrations = event.currentTarget.checked}
                 class="sr-only peer"
               />
               <div class="w-11 h-6 bg-[hsl(var(--border))] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[hsl(var(--primary))]"></div>
@@ -375,13 +395,14 @@
             </div>
             <input
               type="range"
+              aria-label={t("setup.maxUploadSize")}
               bind:value={maxUploadSizeMb}
               min="50"
               max="2000"
               step="50"
               class="w-full h-2 bg-[hsl(var(--border))] rounded-lg appearance-none cursor-pointer accent-[hsl(var(--primary))]"
             />
-            <div class="flex justify-between text-xs text-[hsl(var(--muted-foreground))] mt-1">
+            <div class="flex justify-between text-xs text-sm text-muted-foreground mt-1">
               <span>50 {t('common.megabytes')}</span>
               <span>2 {t('common.gigabytes')}</span>
             </div>
@@ -400,12 +421,12 @@
             type="button"
             onclick={handleComplete}
             disabled={submitting}
-            class="flex-1 py-2.5 bg-[hsl(var(--primary))] text-white rounded-md font-medium hover:opacity-90 transition disabled:opacity-50"
+            class="flex-1 py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:opacity-90 transition disabled:opacity-50"
           >
             {#if submitting}
               {t('setup.finalizing')}
             {:else}
-              {t('setup.next')}
+              {t('setup.finish')}
             {/if}
           </button>
         </div>
@@ -415,7 +436,6 @@
     <!-- Step 4: Complete -->
     {#if currentStep === 4}
       <div class="text-center space-y-6">
-        <div class="text-6xl">🎉</div>
         <div>
           <h2 class="text-2xl font-bold">{t('setup.readyTitle')}</h2>
           <p class="text-[hsl(var(--muted-foreground))] mt-2">
@@ -427,7 +447,7 @@
           <h3 class="text-sm font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wide">{t('setup.summary')}</h3>
           <div class="grid grid-cols-2 gap-y-2 text-sm">
             <span class="text-[hsl(var(--muted-foreground))]">{t('setup.summaryAdmin')}</span>
-            <span class="font-medium">{adminUsername}</span>
+            <span class="font-medium">{auth.user?.username ?? adminUsername}</span>
 
             <span class="text-[hsl(var(--muted-foreground))]">{t('setup.summaryInstance')}</span>
             <span class="font-medium">{instanceName}</span>
@@ -436,16 +456,22 @@
             <span class="font-medium">{p2pEnabled ? t('setup.enabled') : t('setup.disabled')}</span>
 
             <span class="text-[hsl(var(--muted-foreground))]">{t('setup.summaryRegistrations')}</span>
-            <span class="font-medium">{openRegistrations ? t('setup.open') : t('setup.closed')}</span>
+            <span class="font-medium">{!instancePrivate && openRegistrations ? t('setup.open') : t('setup.closed')}</span>
 
             <span class="text-[hsl(var(--muted-foreground))]">{t('setup.summaryMaxUpload')}</span>
             <span class="font-medium">{maxUploadSizeMb} {t('common.megabytes')}</span>
           </div>
         </div>
 
-        <div class="animate-spin w-6 h-6 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full mx-auto"></div>
+        <div class="motion-safe:animate-spin w-6 h-6 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full mx-auto"></div>
         <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('setup.redirecting')}</p>
       </div>
     {/if}
   </div>
 {/if}
+
+<style>
+  .setup-card { border-radius: 1.25rem; }
+  .setup-title, .setup-card h2 { font-size: 1.48rem; line-height: 1.17; font-weight: 640; letter-spacing: -.03em; }
+  .step-number { border-radius: 50%; font-variant-numeric: tabular-nums; }
+</style>

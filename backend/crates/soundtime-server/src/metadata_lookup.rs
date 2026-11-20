@@ -12,24 +12,27 @@
 //!
 //! ## Rate limiting
 //!
-//! MusicBrainz enforces a 1 request/second policy. All external API calls in
-//! this module sleep [`MB_RATE_LIMIT_MS`] (1100 ms) before each request to
-//! stay safely under the limit.
+//! Recording searches, ID lookups and artist lookups use the shared MusicBrainz request scheduler.
 
+pub(crate) mod hints;
 use reqwest::Client;
-use sea_orm::DatabaseConnection;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QuerySelect, Set,
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, PaginatorTrait,
+    QueryFilter, QueryOrder, QuerySelect, Set,
 };
 use serde::{Deserialize, Serialize};
 use soundtime_audio::StorageBackend;
 use soundtime_db::entities::{album, artist, instance_setting, track};
+use soundtime_p2p::musicbrainz::{self, MusicBrainzHttp, RecordingMatch};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+#[cfg(test)]
+mod batch_tests;
+
 /// MusicBrainz user-agent (required by their API policy) — defaults, overridden by instance settings
-const DEFAULT_MB_USER_AGENT: &str = "SoundTime/0.1.0 (https://github.com/soundtime)";
+const DEFAULT_MB_USER_AGENT: &str = "SoundTime/0.1.0 (https://github.com/CICCADA-CORP/SoundTime)";
 
 /// Build the base URL for the given domain, respecting SOUNDTIME_SCHEME env var.
 fn instance_base_url(domain: &str) -> String {
@@ -45,96 +48,29 @@ const MB_RATE_LIMIT_MS: u64 = 1100;
 
 /// Load MusicBrainz configuration from instance_settings or fall back to defaults.
 async fn load_mb_config(db: &DatabaseConnection) -> (String, String, String) {
-    let mb_base_url = instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq("musicbrainz_base_url"))
-        .one(db)
+    let keys = [
+        "musicbrainz_base_url",
+        "musicbrainz_user_agent",
+        "coverart_base_url",
+    ];
+    let rows = instance_setting::Entity::find()
+        .filter(instance_setting::Column::Key.is_in(keys))
+        .all(db)
         .await
-        .ok()
-        .flatten()
-        .map(|s| s.value)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_MB_BASE_URL.to_string());
-
-    let mb_user_agent = instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq("musicbrainz_user_agent"))
-        .one(db)
-        .await
-        .ok()
-        .flatten()
-        .map(|s| s.value)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_MB_USER_AGENT.to_string());
-
-    let caa_base_url = instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq("coverart_base_url"))
-        .one(db)
-        .await
-        .ok()
-        .flatten()
-        .map(|s| s.value)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_CAA_BASE_URL.to_string());
-
-    (mb_base_url, mb_user_agent, caa_base_url)
+        .unwrap_or_default();
+    let value = |key: &str, default: &str| {
+        rows.iter()
+            .find(|r| r.key == key && !r.value.trim().is_empty())
+            .map_or(default.to_owned(), |r| r.value.trim().to_owned())
+    };
+    (
+        value(keys[0], DEFAULT_MB_BASE_URL),
+        value(keys[1], DEFAULT_MB_USER_AGENT),
+        value(keys[2], DEFAULT_CAA_BASE_URL),
+    )
 }
 
 // ─── MusicBrainz API response types ────────────────────────────────
-
-#[derive(Debug, Deserialize)]
-struct MbRecordingSearch {
-    recordings: Option<Vec<MbRecording>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MbRecording {
-    id: String,
-    title: Option<String>,
-    #[serde(rename = "artist-credit")]
-    artist_credit: Option<Vec<MbArtistCredit>>,
-    releases: Option<Vec<MbRelease>>,
-    tags: Option<Vec<MbTag>>,
-    #[serde(rename = "first-release-date")]
-    first_release_date: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MbArtistCredit {
-    artist: MbArtist,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct MbArtist {
-    id: String,
-    name: Option<String>,
-    #[serde(rename = "sort-name")]
-    sort_name: Option<String>,
-    disambiguation: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct MbRelease {
-    id: String,
-    title: Option<String>,
-    date: Option<String>,
-    #[serde(rename = "release-group")]
-    release_group: Option<MbReleaseGroup>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct MbReleaseGroup {
-    id: Option<String>,
-    #[serde(rename = "primary-type")]
-    primary_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MbTag {
-    name: String,
-    count: i32,
-}
 
 #[derive(Debug, Deserialize)]
 struct CaaResponse {
@@ -162,7 +98,58 @@ struct CaaThumbnails {
 // ─── Public result type ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
+pub struct MetadataCandidate {
+    pub recording_mbid: String,
+    pub title: String,
+    pub artist_name: Option<String>,
+    pub album_title: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub disambiguation: Option<String>,
+}
+
+fn join_credit(recording: &musicbrainz::Recording) -> Option<String> {
+    let mut credit = String::new();
+    for artist in &recording.artist_credit {
+        let name = artist
+            .name
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(&artist.artist.name);
+        credit.push_str(name);
+        credit.push_str(&artist.joinphrase);
+    }
+    let result = credit.trim();
+    (!result.is_empty()).then(|| result.to_owned())
+}
+
+fn same_label(a: &str, b: &str) -> bool {
+    fn key(s: &str) -> String {
+        s.chars()
+            .flat_map(char::to_lowercase)
+            .filter(|c| c.is_alphanumeric())
+            .collect()
+    }
+    !a.trim().is_empty() && key(a) == key(b)
+}
+
+impl From<musicbrainz::Recording> for MetadataCandidate {
+    fn from(r: musicbrainz::Recording) -> Self {
+        let artist_name = join_credit(&r);
+        Self {
+            recording_mbid: r.id,
+            title: r.title,
+            artist_name,
+            album_title: r.releases.first().map(|v| v.title.clone()),
+            duration_ms: r.length,
+            disambiguation: r.disambiguation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct MetadataResult {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<MetadataCandidate>,
     pub track_id: Uuid,
     pub status: MetadataStatus,
     pub recording_mbid: Option<String>,
@@ -182,6 +169,7 @@ pub enum MetadataStatus {
     Enriched,
     EnrichedByAi,
     NotFound,
+    Ambiguous,
     AlreadyEnriched,
     Error,
 }
@@ -197,42 +185,6 @@ fn build_client_with_ua(user_agent: &str) -> Result<Client, reqwest::Error> {
         .user_agent(user_agent)
         .timeout(std::time::Duration::from_secs(15))
         .build()
-}
-
-/// Search MusicBrainz for a recording matching title + artist.
-async fn search_recording(
-    client: &Client,
-    title: &str,
-    artist_name: &str,
-    mb_base_url: &str,
-) -> Result<Option<MbRecording>, String> {
-    // URL-encode query
-    let query = format!(
-        "recording:\"{}\" AND artist:\"{}\"",
-        title.replace('"', ""),
-        artist_name.replace('"', "")
-    );
-
-    // Rate limit: respect MusicBrainz 1 req/sec policy
-    tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
-
-    let resp = client
-        .get(format!("{mb_base_url}/recording"))
-        .query(&[("query", query.as_str()), ("fmt", "json"), ("limit", "5")])
-        .send()
-        .await
-        .map_err(|e| format!("MusicBrainz request failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("MusicBrainz returned {}", resp.status()));
-    }
-
-    let search: MbRecordingSearch = resp
-        .json()
-        .await
-        .map_err(|e| format!("MusicBrainz parse error: {e}"))?;
-
-    Ok(search.recordings.and_then(|r| r.into_iter().next()))
 }
 
 /// Fetch cover art from Cover Art Archive for a release MBID.
@@ -330,17 +282,12 @@ struct WikidataSitelink {
 /// Returns (bio, image_url).
 async fn fetch_artist_bio_image(
     client: &Client,
+    mb_http: &MusicBrainzHttp,
     artist_mbid: &str,
     artist_name: &str,
     mb_base_url: &str,
 ) -> (Option<String>, Option<String>) {
-    // Rate limit before MusicBrainz request
-    tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
-
-    // 1. Fetch artist from MusicBrainz with URL relations
-    let mb_url = format!("{mb_base_url}/artist/{artist_mbid}?inc=url-rels&fmt=json");
-    tracing::info!("fetching MB artist relations: {mb_url}");
-    let resp = match client.get(&mb_url).send().await {
+    let resp = match musicbrainz::get_artist(mb_http, mb_base_url, artist_mbid).await {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
             tracing::warn!("MB artist lookup returned {}", r.status());
@@ -504,12 +451,61 @@ fn parse_wikipedia_url(url: &str) -> Option<(String, String)> {
 
 /// Enrich a single track with MusicBrainz metadata.
 /// Returns a `MetadataResult` describing what was found/updated.
+struct MetadataProvider {
+    client: Client,
+    mb_http: MusicBrainzHttp,
+    mb_base_url: String,
+    caa_base_url: String,
+}
+impl MetadataProvider {
+    async fn load(db: &DatabaseConnection) -> Result<Self, reqwest::Error> {
+        let (mb_base_url, agent, caa_base_url) = load_mb_config(db).await;
+        Ok(Self {
+            client: build_client_with_ua(&agent)?,
+            mb_http: MusicBrainzHttp::new(&agent)?,
+            mb_base_url,
+            caa_base_url,
+        })
+    }
+}
+
 pub async fn enrich_track(
     db: &DatabaseConnection,
     storage: &dyn StorageBackend,
     track_id: Uuid,
 ) -> MetadataResult {
+    enrich_track_choice(db, storage, track_id, None).await
+}
+
+pub async fn enrich_track_choice(
+    db: &DatabaseConnection,
+    storage: &dyn StorageBackend,
+    track_id: Uuid,
+    choice: Option<Uuid>,
+) -> MetadataResult {
+    let provider = MetadataProvider::load(db).await;
+    enrich_with_provider(db, storage, track_id, choice, provider.as_ref().ok()).await
+}
+
+// Local originals can be enriched even before their first federation projection.
+// Withdrawn publications and metadata owned by another catalogue are read-only here.
+fn enrichable_tracks() -> sea_orm::Select<track::Entity> {
+    track::Entity::find().filter(sea_orm::sea_query::Expr::cust(
+        "tracks.file_path <> '' AND tracks.file_path !~ '^[a-zA-Z][a-zA-Z0-9+.-]*:' AND NOT EXISTS (
+            SELECT FROM track_publications p LEFT JOIN federation_catalogs c ON c.id=p.catalog_id
+            WHERE p.track_id=tracks.id AND (c.is_local IS NOT TRUE OR p.state <> 'active'))",
+    ))
+}
+
+async fn enrich_with_provider(
+    db: &DatabaseConnection,
+    storage: &dyn StorageBackend,
+    track_id: Uuid,
+    choice: Option<Uuid>,
+    provider: Option<&MetadataProvider>,
+) -> MetadataResult {
     let base_result = MetadataResult {
+        candidates: Vec::new(),
         track_id,
         status: MetadataStatus::Error,
         recording_mbid: None,
@@ -524,7 +520,11 @@ pub async fn enrich_track(
     };
 
     // 1. Load track from DB
-    let track_model = match track::Entity::find_by_id(track_id).one(db).await {
+    let track_model = match enrichable_tracks()
+        .filter(track::Column::Id.eq(track_id))
+        .one(db)
+        .await
+    {
         Ok(Some(t)) => t,
         Ok(None) => {
             return MetadataResult {
@@ -535,10 +535,9 @@ pub async fn enrich_track(
         Err(_) => return base_result,
     };
 
-    // Skip if already has a MusicBrainz ID (already enriched by MB)
-    // But still allow AI enrichment for missing fields
+    // An explicit admin choice may replace an existing recording ID.
     let already_enriched_by_mb = track_model.musicbrainz_id.is_some();
-    if already_enriched_by_mb {
+    if already_enriched_by_mb && choice.is_none() {
         return MetadataResult {
             status: MetadataStatus::AlreadyEnriched,
             recording_mbid: track_model.musicbrainz_id.clone(),
@@ -555,72 +554,149 @@ pub async fn enrich_track(
         _ => return base_result,
     };
 
-    // 3. Search MusicBrainz
-    let (mb_base_url, mb_user_agent, caa_base_url) = load_mb_config(db).await;
-    let client = match build_client_with_ua(&mb_user_agent) {
-        Ok(c) => c,
-        Err(_) => return base_result,
-    };
-
-    let recording = match search_recording(
-        &client,
-        &track_model.title,
-        &artist_model.name,
-        &mb_base_url,
-    )
-    .await
-    {
-        Ok(Some(r)) => Some(r),
-        Ok(None) => {
-            tracing::info!(track_id = %track_id, "MusicBrainz found nothing, will try AI fallback");
-            None
-        }
-        Err(e) => {
-            tracing::warn!("MusicBrainz search failed for track {track_id}: {e}");
-            None
-        }
-    };
-
-    // AI fallback disabled — not accurate enough for production use.
-    // To re-enable, uncomment the block below.
-    // if recording.is_none() {
-    //     return enrich_track_with_ai_fallback(
-    //         db, &client, &track_model, &artist_model, base_result,
-    //     ).await;
-    // }
-    if recording.is_none() {
-        tracing::info!("No MusicBrainz match for track {track_id}, AI fallback is disabled");
+    let Some(provider) = provider else {
         return base_result;
-    }
-    let recording = recording.unwrap();
-
+    };
+    let MetadataProvider {
+        client,
+        mb_http,
+        mb_base_url,
+        caa_base_url,
+    } = provider;
+    let album_model = if let Some(id) = track_model.album_id {
+        match album::Entity::find_by_id(id).one(db).await {
+            Ok(album) => album,
+            Err(_) => return base_result,
+        }
+    } else {
+        None
+    };
+    let resolution = if let Some(mbid) = choice {
+        musicbrainz::get_recording(mb_http, mb_base_url, mbid)
+            .await
+            .map(|r| {
+                r.map(RecordingMatch::Reliable)
+                    .unwrap_or(RecordingMatch::Absent)
+            })
+    } else {
+        let (id, isrc) = match hints::load(db, storage, track_id, &track_model.file_path).await {
+            Ok(hints) => hints,
+            Err(error) => {
+                tracing::warn!(%track_id,%error,"failed to read recording identifiers");
+                return base_result;
+            }
+        };
+        let duration = track_model.duration_secs;
+        musicbrainz::resolve_tagged_recording(
+            mb_http,
+            mb_base_url,
+            id,
+            isrc.as_deref(),
+            &track_model.title,
+            (!artist_model.is_placeholder).then_some(artist_model.name.as_str()),
+            album_model.as_ref().map(|a| a.title.as_str()),
+            (duration.is_finite() && duration > 0.)
+                .then(|| (f64::from(duration) * 1000.).round() as u64),
+        )
+        .await
+    };
+    let recording = match resolution {
+        Ok(RecordingMatch::Reliable(r)) => r,
+        Ok(RecordingMatch::Absent) => {
+            return MetadataResult {
+                status: MetadataStatus::NotFound,
+                ..base_result
+            }
+        }
+        Ok(RecordingMatch::Ambiguous(rows)) => {
+            return MetadataResult {
+                status: MetadataStatus::Ambiguous,
+                candidates: rows.into_iter().take(5).map(Into::into).collect(),
+                ..base_result
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%track_id,%error,"MusicBrainz lookup unavailable");
+            return base_result;
+        }
+    };
     let recording_mbid = recording.id.clone();
-
-    // 4. Extract metadata from recording
-    let corrected_title = recording.title.clone();
+    let corrected_title = Some(recording.title.clone());
     let genre = recording
         .tags
-        .as_ref()
-        .and_then(|tags| tags.iter().max_by_key(|t| t.count))
+        .iter()
+        .max_by_key(|t| t.count)
         .map(|t| t.name.clone());
-
     let year = recording
         .first_release_date
-        .as_ref()
+        .as_deref()
         .and_then(|d| d.split('-').next())
-        .and_then(|y| y.parse::<i16>().ok());
-
-    let artist_credit = recording.artist_credit.as_ref().and_then(|ac| ac.first());
-    let mb_artist_name = artist_credit.and_then(|ac| ac.artist.name.clone());
-    let artist_mbid = artist_credit.map(|ac| ac.artist.id.clone());
-
-    let release = recording.releases.as_ref().and_then(|r| r.first());
-    let album_title = release.and_then(|r| r.title.clone());
+        .and_then(|s| s.parse::<i16>().ok());
+    let mb_artist_name = join_credit(&recording);
+    // An artist MBID identifies a single performer, not a combined credit.
+    let artist_mbid = match recording.artist_credit.as_slice() {
+        [entry]
+            if artist_model.is_placeholder
+                || same_label(&artist_model.name, &entry.artist.name)
+                || entry
+                    .name
+                    .as_deref()
+                    .is_some_and(|n| same_label(&artist_model.name, n)) =>
+        {
+            Some(entry.artist.id.clone())
+        }
+        _ => None,
+    };
+    let release = album_model.as_ref().and_then(|a| {
+        recording
+            .releases
+            .iter()
+            .find(|r| same_label(&a.title, &r.title))
+    });
     let album_mbid = release.map(|r| r.id.clone());
-
+    let album_title = release.map(|r| r.title.clone());
+    let tx = match crate::storage_catalog::begin_write(db).await {
+        Ok(tx) => tx,
+        Err(_) => return base_result,
+    };
+    let current = match enrichable_tracks()
+        .filter(track::Column::Id.eq(track_id))
+        .lock_exclusive()
+        .one(&tx)
+        .await
+    {
+        Ok(Some(row)) => row,
+        _ => return base_result,
+    };
+    if current.title != track_model.title
+        || current.artist_id != track_model.artist_id
+        || current.album_id != track_model.album_id
+        || current.musicbrainz_id != track_model.musicbrainz_id
+        || current.file_hash != track_model.file_hash
+        || current.content_hash != track_model.content_hash
+    {
+        return base_result;
+    }
+    let mut artist_model = artist_model;
+    let fill_credit = artist_model.is_placeholder && mb_artist_name.is_some();
+    if fill_credit {
+        let id = match crate::storage_catalog::releases::artist_id(&tx, mb_artist_name.as_deref())
+            .await
+        {
+            Ok(id) => id,
+            Err(_) => return base_result,
+        };
+        artist_model = match artist::Entity::find_by_id(id).one(&tx).await {
+            Ok(Some(a)) => a,
+            _ => return base_result,
+        };
+    }
     // 5. Update track with MusicBrainz ID and enriched data
     //    Only fill in fields that are currently empty (preserve upload metadata)
-    let mut track_update: track::ActiveModel = track_model.clone().into();
+    let mut track_update: track::ActiveModel = current.into();
+    if fill_credit {
+        track_update.artist_id = Set(artist_model.id);
+    }
     track_update.musicbrainz_id = Set(Some(recording_mbid.clone()));
     // Only update title if it looks like a filename or is very generic
     if let Some(ref title) = corrected_title {
@@ -644,12 +720,20 @@ pub async fn enrich_track(
     if year.is_some() && track_model.year.is_none() {
         track_update.year = Set(year);
     }
-    if let Err(e) = track_update.update(db).await {
+    if let Err(e) = track_update.update(&tx).await {
         tracing::warn!(error = %e, track_id = %track_id, "failed to update track metadata");
+        return base_result;
     }
 
+    if let Err(error) = tx.commit().await {
+        tracing::warn!(%track_id,%error,"failed to commit recording metadata");
+        return base_result;
+    }
     // 6. Update artist with MusicBrainz ID, bio, and image (only if not already set)
-    if artist_model.musicbrainz_id.is_none() {
+    if !artist_model.is_placeholder
+        && artist_model.musicbrainz_id.is_none()
+        && artist_mbid.is_some()
+    {
         let mut artist_update: artist::ActiveModel = artist_model.clone().into();
         if let Some(ref mbid) = artist_mbid {
             artist_update.musicbrainz_id = Set(Some(mbid.clone()));
@@ -657,7 +741,8 @@ pub async fn enrich_track(
             // Fetch bio and image from Wikipedia via MusicBrainz relations
             if artist_model.bio.is_none() || artist_model.image_url.is_none() {
                 let (bio, image) =
-                    fetch_artist_bio_image(&client, mbid, &artist_model.name, &mb_base_url).await;
+                    fetch_artist_bio_image(client, mb_http, mbid, &artist_model.name, mb_base_url)
+                        .await;
                 if artist_model.bio.is_none() {
                     if let Some(ref bio_text) = bio {
                         artist_update.bio = Set(Some(bio_text.clone()));
@@ -670,14 +755,6 @@ pub async fn enrich_track(
                 }
             }
         }
-        // Only overwrite artist name if the current one looks generic
-        if let Some(ref name) = mb_artist_name {
-            if !name.is_empty()
-                && (artist_model.name == "Unknown Artist" || artist_model.name == "Inconnu")
-            {
-                artist_update.name = Set(name.clone());
-            }
-        }
         if let Err(e) = artist_update.update(db).await {
             tracing::warn!(error = %e, "failed to update artist metadata");
         }
@@ -685,8 +762,10 @@ pub async fn enrich_track(
 
     // 7. Update album with MusicBrainz ID and cover art
     let mut result_cover_url = None;
-    if let Some(ref album_id) = track_model.album_id {
-        if let Ok(Some(album_model)) = album::Entity::find_by_id(*album_id).one(db).await {
+    if let Some(album_model) = album_model {
+        if album_mbid.is_some()
+            && (album_model.musicbrainz_id.is_none() || album_model.musicbrainz_id == album_mbid)
+        {
             let mut album_update: album::ActiveModel = album_model.clone().into();
 
             // Set album MusicBrainz ID
@@ -712,10 +791,10 @@ pub async fn enrich_track(
             if album_model.cover_url.is_none() {
                 if let Some(ref rel_mbid) = album_mbid {
                     if let Some(cover_url) =
-                        fetch_cover_art_url(&client, rel_mbid, &caa_base_url).await
+                        fetch_cover_art_url(client, rel_mbid, caa_base_url).await
                     {
                         // Download and store locally
-                        if let Some(cover_bytes) = download_cover(&client, &cover_url).await {
+                        if let Some(cover_bytes) = download_cover(client, &cover_url).await {
                             // Use the track uploader as owner; fall back to a nil UUID for system-enriched tracks
                             let owner_id = track_model.uploaded_by.unwrap_or_else(Uuid::nil);
                             if let Ok(relative) = storage
@@ -744,6 +823,7 @@ pub async fn enrich_track(
     }
 
     MetadataResult {
+        candidates: Vec::new(),
         track_id,
         status: MetadataStatus::Enriched,
         recording_mbid: Some(recording_mbid),
@@ -990,17 +1070,6 @@ Respond ONLY with valid JSON, no markdown, no explanation."#,
         }
     }
 
-    // Update artist name only if it looks generic
-    if let Some(ref corrected_artist) = ai_meta.corrected_artist {
-        if artist_model.name == "Unknown Artist" || artist_model.name == "Inconnu" {
-            let mut artist_update: artist::ActiveModel = artist_model.clone().into();
-            artist_update.name = Set(corrected_artist.clone());
-            if let Err(e) = artist_update.update(db).await {
-                tracing::warn!(error = %e, "failed to update artist name with AI metadata");
-            }
-        }
-    }
-
     // Update album title if we found one and the current one is empty/unknown
     if let Some(ref album_name) = ai_meta.album {
         if let Some(album_id) = track_model.album_id {
@@ -1017,6 +1086,7 @@ Respond ONLY with valid JSON, no markdown, no explanation."#,
     }
 
     MetadataResult {
+        candidates: Vec::new(),
         track_id,
         status: MetadataStatus::EnrichedByAi,
         recording_mbid: None,
@@ -1029,41 +1099,6 @@ Respond ONLY with valid JSON, no markdown, no explanation."#,
         year: ai_meta.year,
         cover_url: None,
     }
-}
-
-/// Enrich all tracks that don't have a MusicBrainz ID yet.
-/// Returns results for each track processed.
-/// Respects MusicBrainz rate limit (1 req/sec).
-pub async fn enrich_all_tracks(
-    db: &DatabaseConnection,
-    storage: &dyn StorageBackend,
-) -> Vec<MetadataResult> {
-    let mut results = Vec::new();
-    let mut page = 0u64;
-    let batch_size = 100u64;
-
-    loop {
-        let batch = track::Entity::find()
-            .filter(track::Column::MusicbrainzId.is_null())
-            .paginate(db, batch_size)
-            .fetch_page(page)
-            .await
-            .unwrap_or_default();
-
-        if batch.is_empty() {
-            break;
-        }
-
-        for t in batch {
-            let result = enrich_track(db, storage, t.id).await;
-            results.push(result);
-            tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
-        }
-
-        page += 1;
-    }
-
-    results
 }
 
 // ─── Metadata enrichment task tracker ──────────────────────────────
@@ -1092,7 +1127,7 @@ pub enum MetadataTaskStatus {
 ///
 /// Updated in the tracker before each track is processed, so the admin
 /// frontend can display a progress bar and per-category counters.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct MetadataTaskProgress {
     /// Number of tracks processed so far (0-indexed at the start of each track).
     pub processed: u64,
@@ -1102,6 +1137,7 @@ pub struct MetadataTaskProgress {
     pub enriched: u64,
     /// Tracks for which no MusicBrainz match was found.
     pub not_found: u64,
+    pub ambiguous: u64,
     /// Tracks that encountered an error during enrichment.
     pub errors: u64,
     /// Title of the track currently being processed, if any.
@@ -1112,7 +1148,7 @@ pub struct MetadataTaskProgress {
 ///
 /// Stored in the tracker until the admin dismisses it, so the result can
 /// be displayed even after the task has finished.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct MetadataTaskResult {
     /// Total number of tracks that were evaluated (including already-enriched ones).
     pub total_processed: u64,
@@ -1120,6 +1156,7 @@ pub struct MetadataTaskResult {
     pub enriched: u64,
     /// Tracks for which no external match was found.
     pub not_found: u64,
+    pub ambiguous: u64,
     /// Tracks that failed due to network or DB errors.
     pub errors: u64,
     /// Tracks skipped because they already had a MusicBrainz ID.
@@ -1144,99 +1181,69 @@ pub fn new_metadata_tracker() -> MetadataTaskTrackerHandle {
     Arc::new(Mutex::new(None))
 }
 
-/// Run metadata enrichment as a background task, updating the tracker with progress.
-///
-/// ## Flow
-///
-/// 1. Queries all tracks without a `musicbrainz_id` (not yet enriched).
-/// 2. Iterates each track, calling [`enrich_track`] to search MusicBrainz
-///    and optionally download cover art from Cover Art Archive.
-/// 3. Before processing each track, writes a `Running` snapshot into the
-///    tracker so the admin can poll real-time progress.
-/// 4. After all tracks are processed, returns a [`MetadataTaskResult`]
-///    summary. The caller (admin handler) writes `Completed` into the
-///    tracker.
-///
-/// ## Rate limiting
-///
-/// Sleeps [`MB_RATE_LIMIT_MS`] between tracks (on top of the per-request
-/// sleep inside `search_recording` / `fetch_cover_art_url`) to stay well
-/// under the MusicBrainz 1 req/sec policy.
+/// Freeze the import-time cutoff and advance by UUID through bounded pages.
+/// A miss stays eligible for the next operator run and cannot loop in this one.
 pub async fn enrich_all_tracks_background(
     db: &DatabaseConnection,
     storage: &dyn StorageBackend,
     tracker: &MetadataTaskTrackerHandle,
-) -> MetadataTaskResult {
-    let batch_size = 100u64;
-
-    // Get total count first for progress tracking
-    let total = track::Entity::find()
+) -> Result<MetadataTaskResult, DbErr> {
+    let cutoff = chrono::Utc::now().fixed_offset();
+    let candidates = enrichable_tracks()
         .filter(track::Column::MusicbrainzId.is_null())
-        .count(db)
+        .filter(track::Column::CreatedAt.lte(cutoff));
+    let total = candidates.clone().count(db).await?;
+    let mut result = MetadataTaskResult::default();
+    let provider = MetadataProvider::load(db)
         .await
-        .unwrap_or(0);
-
-    let mut enriched = 0u64;
-    let mut not_found = 0u64;
-    let mut errors = 0u64;
-    let mut already_enriched = 0u64;
-    let mut processed = 0u64;
-
+        .map_err(|e| DbErr::Custom(e.to_string()))?;
     tracing::info!(total, "starting background metadata enrichment");
 
+    let mut after = None;
     loop {
-        // Re-query each page because tracks get enriched (musicbrainz_id set)
-        // and drop out of the IS NULL filter — so always fetch page 0
-        let batch = track::Entity::find()
-            .filter(track::Column::MusicbrainzId.is_null())
-            .limit(batch_size)
-            .all(db)
-            .await
-            .unwrap_or_default();
-
-        if batch.is_empty() {
-            break;
+        let mut page = candidates
+            .clone()
+            .select_only()
+            .columns([track::Column::Id, track::Column::Title]);
+        if let Some(last) = after {
+            page = page.filter(track::Column::Id.gt(last));
         }
+        let rows = page
+            .order_by_asc(track::Column::Id)
+            .limit(64)
+            .into_tuple::<(Uuid, String)>()
+            .all(db)
+            .await?;
+        let Some((last, _)) = rows.last() else {
+            break;
+        };
+        after = Some(*last);
+        for (id, title) in rows {
+            *tracker.lock().await = Some(MetadataTaskStatus::Running {
+                progress: MetadataTaskProgress {
+                    processed: result.total_processed,
+                    total,
+                    enriched: result.enriched,
+                    not_found: result.not_found,
+                    ambiguous: result.ambiguous,
+                    errors: result.errors,
+                    current_track: Some(title),
+                },
+            });
 
-        for t in &batch {
-            // Update progress
+            match enrich_with_provider(db, storage, id, None, Some(&provider))
+                .await
+                .status
             {
-                let mut lock = tracker.lock().await;
-                *lock = Some(MetadataTaskStatus::Running {
-                    progress: MetadataTaskProgress {
-                        processed,
-                        total,
-                        enriched,
-                        not_found,
-                        errors,
-                        current_track: Some(t.title.clone()),
-                    },
-                });
+                MetadataStatus::Enriched | MetadataStatus::EnrichedByAi => result.enriched += 1,
+                MetadataStatus::NotFound => result.not_found += 1,
+                MetadataStatus::Ambiguous => result.ambiguous += 1,
+                MetadataStatus::Error => result.errors += 1,
+                MetadataStatus::AlreadyEnriched => result.already_enriched += 1,
             }
-
-            let result = enrich_track(db, storage, t.id).await;
-
-            match result.status {
-                MetadataStatus::Enriched | MetadataStatus::EnrichedByAi => enriched += 1,
-                MetadataStatus::NotFound => not_found += 1,
-                MetadataStatus::Error => errors += 1,
-                MetadataStatus::AlreadyEnriched => already_enriched += 1,
-            }
-
-            processed += 1;
-
-            // Rate limit between tracks
-            tokio::time::sleep(std::time::Duration::from_millis(MB_RATE_LIMIT_MS)).await;
+            result.total_processed += 1;
         }
     }
-
-    let result = MetadataTaskResult {
-        total_processed: processed,
-        enriched,
-        not_found,
-        errors,
-        already_enriched,
-    };
 
     tracing::info!(
         total_processed = result.total_processed,
@@ -1245,8 +1252,7 @@ pub async fn enrich_all_tracks_background(
         errors = result.errors,
         "background metadata enrichment completed"
     );
-
-    result
+    Ok(result)
 }
 
 // ─── Instance health check ──────────────────────────────────────────
@@ -1509,8 +1515,8 @@ async fn find_matching_local_track(
         }
     }
 
-    // Then try by title + artist name
-    let artists = artist::Entity::find()
+    // A remote recording's explicit credit can only match a credited artist.
+    let artists = artist::Entity::credited()
         .filter(artist::Column::Name.eq(artist_name))
         .all(db)
         .await

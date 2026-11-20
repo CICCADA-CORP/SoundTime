@@ -1,7 +1,10 @@
 //! Setup/onboarding API — first-time instance configuration
 
 use axum::{extract::State, http::StatusCode, Extension, Json};
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, FromQueryResult, PaginatorTrait,
+    QueryFilter, QuerySelect, Set, TransactionTrait,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -15,7 +18,7 @@ use soundtime_db::AppState;
 
 // ─── DTOs ───────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, FromQueryResult)]
 pub struct SetupStatusResponse {
     pub setup_complete: bool,
     pub has_admin: bool,
@@ -37,6 +40,7 @@ pub struct SetupInstanceRequest {
 
 #[derive(Deserialize)]
 pub struct SetupCompleteRequest {
+    pub instance_private: Option<bool>,
     pub p2p_enabled: bool,
     pub open_registrations: bool,
     pub max_upload_size_mb: u32,
@@ -55,7 +59,7 @@ async fn is_setup_complete(db: &sea_orm::DatabaseConnection) -> Result<bool, Sta
 }
 
 async fn upsert_setting(
-    db: &sea_orm::DatabaseConnection,
+    db: &impl ConnectionTrait,
     key: &str,
     value: &str,
 ) -> Result<(), StatusCode> {
@@ -93,38 +97,26 @@ async fn upsert_setting(
 pub async fn setup_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SetupStatusResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let setup_complete = is_setup_complete(&state.db).await.map_err(|s| {
-        (
-            s,
-            Json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            }),
-        )
-    })?;
-
-    let user_count = user::Entity::find().count(&state.db).await.map_err(|_| {
+    let status = SetupStatusResponse::find_by_statement(sea_orm::Statement::from_string(
+        state.db.get_database_backend(),
+        "SELECT EXISTS (SELECT FROM users) AS has_admin,
+                EXISTS (SELECT FROM instance_settings WHERE key = 'setup_complete' AND value = 'true') AS setup_complete,
+                EXISTS (SELECT FROM instance_settings WHERE key = 'instance_private' AND value = 'true') AS instance_private",
+    ))
+    .one(&state.db)
+    .await
+    .map_err(|error| {
+        tracing::error!(%error, "failed to read instance setup status");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: "Internal server error".to_string(),
             }),
         )
-    })?;
+    })?
+    .expect("SELECT of EXISTS expressions always returns one row");
 
-    let instance_private = instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq("instance_private"))
-        .one(&state.db)
-        .await
-        .ok()
-        .flatten()
-        .map(|s| s.value == "true")
-        .unwrap_or(false);
-
-    Ok(Json(SetupStatusResponse {
-        setup_complete,
-        has_admin: user_count > 0,
-        instance_private,
-    }))
+    Ok(Json(status))
 }
 
 /// POST /api/setup/admin — public, but only works if 0 users exist
@@ -312,23 +304,6 @@ pub async fn setup_complete(
             }),
         ));
     }
-    let already_complete = is_setup_complete(&state.db).await.map_err(|s| {
-        (
-            s,
-            Json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            }),
-        )
-    })?;
-    if already_complete {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ErrorResponse {
-                error: "Setup already complete".to_string(),
-            }),
-        ));
-    }
-
     let err = |s| {
         (
             s,
@@ -337,15 +312,43 @@ pub async fn setup_complete(
             }),
         )
     };
+    let tx = state
+        .db
+        .begin()
+        .await
+        .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR))?;
+    let complete = instance_setting::Entity::find()
+        .filter(instance_setting::Column::Key.eq("setup_complete"))
+        .lock_exclusive()
+        .one(&tx)
+        .await
+        .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR))?;
+    if complete.is_some_and(|setting| setting.value == "true") {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Setup already complete".to_string(),
+            }),
+        ));
+    }
+    if let Some(private) = body.instance_private {
+        upsert_setting(
+            &tx,
+            "instance_private",
+            if private { "true" } else { "false" },
+        )
+        .await
+        .map_err(err)?;
+    }
     upsert_setting(
-        &state.db,
+        &tx,
         "p2p_enabled",
         if body.p2p_enabled { "true" } else { "false" },
     )
     .await
     .map_err(err)?;
     upsert_setting(
-        &state.db,
+        &tx,
         "open_registrations",
         if body.open_registrations {
             "true"
@@ -356,15 +359,19 @@ pub async fn setup_complete(
     .await
     .map_err(err)?;
     upsert_setting(
-        &state.db,
+        &tx,
         "max_upload_size_mb",
         &body.max_upload_size_mb.to_string(),
     )
     .await
     .map_err(err)?;
-    upsert_setting(&state.db, "setup_complete", "true")
+    upsert_setting(&tx, "setup_complete", "true")
         .await
         .map_err(err)?;
+
+    tx.commit()
+        .await
+        .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR))?;
 
     tracing::info!("Setup complete! Instance is ready.");
 

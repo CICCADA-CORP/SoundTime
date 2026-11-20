@@ -13,6 +13,12 @@ pub enum P2pError {
     #[error("peer is blocked: {0}")]
     PeerBlocked(String),
 
+    #[error("peer policy changed during presence verification: {0}")]
+    PeerPolicyChanged(String),
+
+    #[error("the remote catalogue is preparing its publication journal")]
+    CatalogPreparing,
+
     #[error("track not found: {0}")]
     TrackNotFound(String),
 
@@ -21,6 +27,9 @@ pub enum P2pError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("local QUIC handshake budget exhausted")]
+    ConnectionPoolBusy,
 
     #[error("connection error: {0}")]
     Connection(String),

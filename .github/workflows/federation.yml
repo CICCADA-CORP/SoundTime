@@ -1,0 +1,91 @@
+name: Federation integration
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - backend/Cargo.*
+      - backend/crates/soundtime-p2p/**
+      - backend/crates/soundtime-audio/src/storage*
+      - backend/crates/soundtime-audio/src/storage/**
+      - backend/crates/soundtime-db/**
+      - backend/crates/soundtime-migration/**
+      - backend/crates/soundtime-server/src/api/audio.rs
+      - backend/crates/soundtime-server/src/api/cache_pins.rs
+      - backend/crates/soundtime-server/src/api/p2p.rs
+      - backend/crates/soundtime-server/src/api/playlists.rs
+      - backend/crates/soundtime-server/src/api/search*
+      - backend/crates/soundtime-server/src/api/search/**
+      - backend/crates/soundtime-server/src/api/tracks.rs
+      - backend/crates/soundtime-server/src/api/webradios.rs
+      - backend/crates/soundtime-server/src/api/webradios/**
+      - backend/crates/soundtime-server/src/cluster.rs
+      - backend/crates/soundtime-server/src/publications.rs
+      - backend/crates/soundtime-server/src/storage_*.rs
+      - backend/crates/soundtime-server/examples/federation*
+      - backend/crates/soundtime-server/examples/federation_upgrade/**
+      - backend/crates/soundtime-server/examples/fixtures/federation_*.sql
+      - frontend/src/lib/catalog/availability*
+      - frontend/src/lib/components/TrackList.svelte
+      - frontend/src/lib/stores/player.svelte.ts
+      - frontend/src/lib/stores/queue.svelte.ts
+      - frontend/src/routes/playlists/**
+      - frontend/src/routes/search/**
+      - frontend/src/lib/webradios/**
+      - frontend/src/routes/webradios/**
+      - docker/Dockerfile.*
+      - docker/nginx.conf
+      - scripts/federation/**
+      - scripts/test-p2p-federation.sh
+      - .github/workflows/federation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: federation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  three-instances:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      FEDERATION_BROWSER: container
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check navigation between browser documents
+        run: node --test scripts/federation/test_browser_document.mjs
+      - name: Check isolated Compose topology
+        env:
+          FEDERATION_SECRET: ci-validation-only
+        run: docker compose --env-file /dev/null -p st-fed-validate -f scripts/federation/compose.yml -f scripts/federation/browser.yml --profile measurement config --quiet
+
+      - name: Capture baseline on a fresh project
+        id: baseline
+        env:
+          FEDERATION_ARTIFACT_DIR: ${{ runner.temp }}/soundtime-federation/baseline
+        run: scripts/test-p2p-federation.sh baseline
+
+      - name: Check acceptance on a second fresh project
+        env:
+          FEDERATION_ARTIFACT_DIR: ${{ runner.temp }}/soundtime-federation/acceptance
+        run: scripts/test-p2p-federation.sh acceptance
+
+      - name: Check durable retention and reseeding after restart
+        if: ${{ !cancelled() && steps.baseline.outcome == 'success' }}
+        env:
+          FEDERATION_ARTIFACT_DIR: ${{ runner.temp }}/soundtime-federation/retention
+        run: scripts/test-p2p-federation.sh retention
+
+      - name: Retain scenario reports and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: federation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/soundtime-federation/
+          if-no-files-found: warn
+          retention-days: 7

@@ -23,6 +23,7 @@ RUN mkdir -p crates/soundtime-server/src && echo "fn main() {}" > crates/soundti
     && mkdir -p crates/soundtime-plugin/src && echo "" > crates/soundtime-plugin/src/lib.rs
 
 # 3. Build only dependencies (this layer is cached unless Cargo.toml/lock changes)
+ARG CARGO_BUILD_JOBS
 RUN cargo build --locked --release -p soundtime-server --features redis
 RUN rm -rf crates/*/src
 
@@ -36,7 +37,27 @@ ENV SOUNDTIME_BUILD_NUMBER=${SOUNDTIME_BUILD_NUMBER}
 RUN find crates -name "*.rs" -exec touch {} + \
     && cargo build --locked --release -p soundtime-server --features redis
 
-FROM debian:trixie-slim
+# Built only when the federation integration harness requests its own target.
+FROM builder AS federation-fixture-builder
+RUN cargo build --locked --release -p soundtime-server --features redis --example federation_upgrade
+
+FROM federation-fixture-builder AS federation-rust-tests
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN cargo test --locked --release --workspace --features soundtime-server/redis --lib --bins --tests --no-run
+
+# Keep the official relay binary out of the production image. Match the iroh
+# wire protocol pinned in Cargo.lock and build with its published crate lock.
+FROM builder AS federation-relay-builder
+RUN cargo install --locked --version '=1.5.0' --features server --bin iroh-relay --root /opt/relay iroh-relay
+
+FROM debian:trixie-slim AS federation-relay
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=federation-relay-builder /opt/relay/bin/iroh-relay /usr/local/bin/iroh-relay
+USER nobody
+ENTRYPOINT ["/usr/local/bin/iroh-relay"]
+CMD ["--dev"]
+
+FROM debian:trixie-slim AS runtime
 
 RUN apt-get update && apt-get install -y ca-certificates ffmpeg && rm -rf /var/lib/apt/lists/*
 RUN useradd -m appuser
@@ -54,3 +75,10 @@ USER appuser
 EXPOSE 8080
 
 CMD ["/app/soundtime-server"]
+
+FROM runtime AS federation-fixture
+COPY --from=federation-fixture-builder /app/target/release/examples/federation_upgrade /app/federation_upgrade
+ENTRYPOINT ["/app/federation_upgrade"]
+CMD []
+
+FROM runtime AS production

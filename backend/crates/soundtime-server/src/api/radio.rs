@@ -98,7 +98,7 @@ async fn enrich_tracks(
         .collect();
 
     let artists: HashMap<Uuid, artist::Model> = if !artist_ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(artist_ids))
             .all(db)
             .await
@@ -127,27 +127,10 @@ async fn enrich_tracks(
         .into_iter()
         .map(|t| {
             let artist_name = artists.get(&t.artist_id).map(|a| a.name.clone());
-            let (album_title, cover_url) = t
-                .album_id
-                .and_then(|aid| albums.get(&aid))
-                .map(|a| {
-                    (
-                        Some(a.title.clone()),
-                        a.cover_url.clone().map(|url| {
-                            if url.starts_with("/api/media/") || url.starts_with("http") {
-                                url
-                            } else {
-                                format!("/api/media/{url}")
-                            }
-                        }),
-                    )
-                })
-                .unwrap_or((None, None));
-
-            let mut resp = super::tracks::TrackResponse::from(t);
+            let album = t.album_id.and_then(|id| albums.get(&id));
+            let mut resp = super::tracks::TrackResponse::playable(t);
             resp.artist_name = artist_name;
-            resp.album_title = album_title;
-            resp.cover_url = cover_url;
+            resp.attach_album(album);
             resp
         })
         .collect();
@@ -170,11 +153,12 @@ async fn enrich_tracks(
 /// to `count`. The quota enforcement ensures each phase contributes its
 /// intended proportion even when one phase has abundant candidates.
 async fn seed_track(
-    db: &sea_orm::DatabaseConnection,
+    state: &AppState,
     seed_id: Uuid,
     count: u64,
     exclude: &HashSet<Uuid>,
 ) -> Result<Vec<track::Model>, (StatusCode, String)> {
+    let db = &state.db;
     let seed = track::Entity::find_by_id(seed_id)
         .one(db)
         .await
@@ -190,7 +174,9 @@ async fn seed_track(
     let phase3_quota = count as usize; // remainder, trimmed by final take
 
     // Phase 1 — Same artist (50%)
-    let mut phase1_query = track::Entity::find().filter(track::Column::ArtistId.eq(seed.artist_id));
+    let mut phase1_query = track::Entity::find()
+        .filter(super::tracks::playable_filter(state))
+        .filter(track::Column::ArtistId.eq(seed.artist_id));
     if !exclude_vec.is_empty() {
         phase1_query = phase1_query.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
     }
@@ -206,6 +192,7 @@ async fn seed_track(
     let mut phase2 = Vec::new();
     if let Some(ref genre) = seed.genre {
         let mut q = track::Entity::find()
+            .filter(super::tracks::playable_filter(state))
             .filter(track::Column::Genre.eq(genre.clone()))
             .filter(track::Column::ArtistId.ne(seed.artist_id));
         if !exclude_vec.is_empty() {
@@ -224,6 +211,7 @@ async fn seed_track(
     let mut phase3 = Vec::new();
     if let Some(year) = seed.year {
         let mut q = track::Entity::find()
+            .filter(super::tracks::playable_filter(state))
             .filter(track::Column::Year.gte(year - 5))
             .filter(track::Column::Year.lte(year + 5));
         if !exclude_vec.is_empty() {
@@ -265,11 +253,12 @@ async fn seed_track(
 /// The artist's existing tracks are scanned to determine their genres, which
 /// are then used to find similar music from other artists in Phase 2.
 async fn seed_artist(
-    db: &sea_orm::DatabaseConnection,
+    state: &AppState,
     seed_id: Uuid,
     count: u64,
     exclude: &HashSet<Uuid>,
 ) -> Result<Vec<track::Model>, (StatusCode, String)> {
+    let db = &state.db;
     let pool_size = count * 2;
     let exclude_vec: Vec<Uuid> = exclude.iter().copied().collect();
 
@@ -277,23 +266,23 @@ async fn seed_artist(
     let phase1_quota = (count as f64 * 0.6).ceil() as usize;
     let phase2_quota = (count as f64 * 0.4).ceil() as usize;
 
+    if artist::Entity::credited()
+        .filter(artist::Column::Id.eq(seed_id))
+        .one(db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
+        .is_none()
+    {
+        return Err((StatusCode::NOT_FOUND, "Seed artist not found".to_string()));
+    }
+
     // Get artist's tracks to determine genres
     let artist_tracks = track::Entity::find()
+        .filter(super::tracks::playable_filter(state))
         .filter(track::Column::ArtistId.eq(seed_id))
         .all(db)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
-
-    if artist_tracks.is_empty() {
-        // Check if artist exists
-        let artist_exists = artist::Entity::find_by_id(seed_id)
-            .one(db)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
-        if artist_exists.is_none() {
-            return Err((StatusCode::NOT_FOUND, "Seed artist not found".to_string()));
-        }
-    }
 
     let genres: Vec<String> = artist_tracks
         .iter()
@@ -303,7 +292,9 @@ async fn seed_artist(
         .collect();
 
     // Phase 1 — Artist's own tracks (60%)
-    let mut phase1_query = track::Entity::find().filter(track::Column::ArtistId.eq(seed_id));
+    let mut phase1_query = track::Entity::find()
+        .filter(super::tracks::playable_filter(state))
+        .filter(track::Column::ArtistId.eq(seed_id));
     if !exclude_vec.is_empty() {
         phase1_query = phase1_query.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
     }
@@ -319,6 +310,7 @@ async fn seed_artist(
     let mut phase2 = Vec::new();
     if !genres.is_empty() {
         let mut q = track::Entity::find()
+            .filter(super::tracks::playable_filter(state))
             .filter(track::Column::Genre.is_in(genres))
             .filter(track::Column::ArtistId.ne(seed_id));
         if !exclude_vec.is_empty() {
@@ -355,15 +347,18 @@ async fn seed_artist(
 /// the given genre, shuffles them, and returns `count`. No quota enforcement
 /// needed since there is only one phase.
 async fn seed_genre(
-    db: &sea_orm::DatabaseConnection,
+    state: &AppState,
     genre: &str,
     count: u64,
     exclude: &HashSet<Uuid>,
 ) -> Result<Vec<track::Model>, (StatusCode, String)> {
+    let db = &state.db;
     let pool_size = (count * 3).min(200);
     let exclude_vec: Vec<Uuid> = exclude.iter().copied().collect();
 
-    let mut query = track::Entity::find().filter(track::Column::Genre.eq(genre));
+    let mut query = track::Entity::find()
+        .filter(super::tracks::playable_filter(state))
+        .filter(track::Column::Genre.eq(genre));
     if !exclude_vec.is_empty() {
         query = query.filter(track::Column::Id.is_not_in(exclude_vec));
     }
@@ -408,11 +403,12 @@ async fn seed_genre(
 /// Falls back to fully random tracks when the user has no listening history
 /// or favorites.
 async fn seed_personal_mix(
-    db: &sea_orm::DatabaseConnection,
+    state: &AppState,
     user_id: Uuid,
     count: u64,
     exclude: &HashSet<Uuid>,
 ) -> Result<Vec<track::Model>, (StatusCode, String)> {
+    let db = &state.db;
     let pool_size = count * 2;
     let exclude_vec: Vec<Uuid> = exclude.iter().copied().collect();
 
@@ -452,6 +448,7 @@ async fn seed_personal_mix(
     if all_track_ids.is_empty() {
         // Fallback: random tracks
         let mut pool = track::Entity::find()
+            .filter(super::tracks::playable_filter(state))
             .order_by(Expr::cust("RANDOM()"), Order::Asc)
             .limit((count * 3).min(200))
             .all(db)
@@ -472,6 +469,7 @@ async fn seed_personal_mix(
 
     // Fetch the referenced tracks to extract artists and genres
     let referenced_tracks = track::Entity::find()
+        .filter(super::tracks::playable_filter(state))
         .filter(track::Column::Id.is_in(all_track_ids))
         .all(db)
         .await
@@ -535,8 +533,9 @@ async fn seed_personal_mix(
     // Phase 1 — Tracks from favorite artists (40%)
     let mut phase1 = Vec::new();
     if !top_artists.is_empty() {
-        let mut q =
-            track::Entity::find().filter(track::Column::ArtistId.is_in(top_artists.clone()));
+        let mut q = track::Entity::find()
+            .filter(super::tracks::playable_filter(state))
+            .filter(track::Column::ArtistId.is_in(top_artists.clone()));
         if !exclude_vec.is_empty() {
             q = q.filter(track::Column::Id.is_not_in(exclude_vec.clone()));
         }
@@ -552,7 +551,9 @@ async fn seed_personal_mix(
     // Phase 2 — Tracks from favorite genres, different artists (40%)
     let mut phase2 = Vec::new();
     if !top_genres.is_empty() {
-        let mut q = track::Entity::find().filter(track::Column::Genre.is_in(top_genres));
+        let mut q = track::Entity::find()
+            .filter(super::tracks::playable_filter(state))
+            .filter(track::Column::Genre.is_in(top_genres));
         if !top_artists.is_empty() {
             q = q.filter(track::Column::ArtistId.is_not_in(top_artists));
         }
@@ -569,7 +570,7 @@ async fn seed_personal_mix(
     let phase2: Vec<track::Model> = phase2.into_iter().take(phase2_quota).collect();
 
     // Phase 3 — Random tracks for discovery (20%)
-    let mut phase3_query = track::Entity::find();
+    let mut phase3_query = track::Entity::find().filter(super::tracks::playable_filter(state));
     if !exclude_vec.is_empty() {
         phase3_query = phase3_query.filter(track::Column::Id.is_not_in(exclude_vec));
     }
@@ -607,39 +608,25 @@ async fn seed_personal_mix(
 /// and artist characteristics in a 32-dimensional vector, so "similar"
 /// tracks share multiple metadata attributes — not just one dimension.
 async fn seed_similar(
-    db: &sea_orm::DatabaseConnection,
+    state: &AppState,
     seed_id: Uuid,
     count: u64,
     exclude: &HashSet<Uuid>,
 ) -> Result<Vec<track::Model>, (StatusCode, String)> {
-    // Get or generate the seed track's embedding
-    let embedding = match crate::embeddings::get_track_embedding(db, seed_id).await {
-        Ok(Some(emb)) => emb,
-        Ok(None) => {
-            // No embedding yet — try to generate one on the fly
-            let seed = track::Entity::find_by_id(seed_id)
-                .one(db)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
-                .ok_or((StatusCode::NOT_FOUND, "Seed track not found".to_string()))?;
-
-            if let Err(e) = crate::embeddings::generate_and_store_embedding(db, &seed).await {
-                tracing::warn!(error = %e, track_id = %seed_id, "failed to generate embedding on the fly, falling back to seed_track");
-                return seed_track(db, seed_id, count, exclude).await;
-            }
-
-            match crate::embeddings::get_track_embedding(db, seed_id).await {
-                Ok(Some(emb)) => emb,
-                _ => return seed_track(db, seed_id, count, exclude).await,
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, track_id = %seed_id, "failed to fetch embedding, falling back to seed_track");
-            return seed_track(db, seed_id, count, exclude).await;
+    let db = &state.db;
+    let mut excluded = exclude.clone();
+    excluded.insert(seed_id);
+    let exclude = &excluded;
+    // Explicitly choosing a seed makes a remote title eligible, just like a local one.
+    let embedding = match crate::embeddings::radio_seed_embedding(db, seed_id).await {
+        Ok(Some(embedding)) => embedding,
+        Ok(None) => return seed_track(state, seed_id, count, exclude).await,
+        Err(error) => {
+            tracing::warn!(%error, track_id = %seed_id, "failed to prepare radio seed embedding");
+            return seed_track(state, seed_id, count, exclude).await;
         }
     };
 
-    // Query pgvector for similar tracks (fetch extra to account for excludes)
     let exclude_vec: Vec<Uuid> = exclude.iter().copied().collect();
     let similar_ids = crate::embeddings::find_similar_tracks(
         db,
@@ -658,12 +645,13 @@ async fn seed_similar(
 
     if similar_ids.is_empty() {
         tracing::info!(track_id = %seed_id, "no similar tracks found via embeddings, falling back to seed_track");
-        return seed_track(db, seed_id, count, exclude).await;
+        return seed_track(state, seed_id, count, exclude).await;
     }
 
     // Fetch full track models for the returned IDs, preserving similarity order
     let ids: Vec<Uuid> = similar_ids.iter().map(|(id, _)| *id).collect();
     let tracks = track::Entity::find()
+        .filter(super::tracks::playable_filter(state))
         .filter(track::Column::Id.is_in(ids.clone()))
         .all(db)
         .await
@@ -675,6 +663,12 @@ async fn seed_similar(
         .into_iter()
         .filter_map(|id| track_map.get(&id).cloned())
         .collect();
+
+    if ordered.len() < count as usize {
+        let remaining = count - ordered.len() as u64;
+        excluded.extend(ordered.iter().map(|track| track.id));
+        ordered.extend(seed_track(state, seed_id, remaining, &excluded).await?);
+    }
 
     // Light shuffle — swap adjacent pairs with 30% probability for variety
     use rand::Rng;
@@ -721,13 +715,13 @@ pub async fn radio_next(
                 StatusCode::BAD_REQUEST,
                 "seed_id is required for seed_type=track".to_string(),
             ))?;
-            let result = seed_track(&state.db, seed_id, count, &exclude).await?;
+            let result = seed_track(&state, seed_id, count, &exclude).await?;
             if result.is_empty() {
                 tracing::info!(
                     seed_type = %seed_type_debug,
                     "radio wrapped around — clearing exclude list and retrying"
                 );
-                seed_track(&state.db, seed_id, count, &HashSet::new()).await?
+                seed_track(&state, seed_id, count, &HashSet::new()).await?
             } else {
                 result
             }
@@ -737,13 +731,13 @@ pub async fn radio_next(
                 StatusCode::BAD_REQUEST,
                 "seed_id is required for seed_type=artist".to_string(),
             ))?;
-            let result = seed_artist(&state.db, seed_id, count, &exclude).await?;
+            let result = seed_artist(&state, seed_id, count, &exclude).await?;
             if result.is_empty() {
                 tracing::info!(
                     seed_type = %seed_type_debug,
                     "radio wrapped around — clearing exclude list and retrying"
                 );
-                seed_artist(&state.db, seed_id, count, &HashSet::new()).await?
+                seed_artist(&state, seed_id, count, &HashSet::new()).await?
             } else {
                 result
             }
@@ -753,25 +747,25 @@ pub async fn radio_next(
                 StatusCode::BAD_REQUEST,
                 "genre is required for seed_type=genre".to_string(),
             ))?;
-            let result = seed_genre(&state.db, &genre, count, &exclude).await?;
+            let result = seed_genre(&state, &genre, count, &exclude).await?;
             if result.is_empty() {
                 tracing::info!(
                     seed_type = %seed_type_debug,
                     "radio wrapped around — clearing exclude list and retrying"
                 );
-                seed_genre(&state.db, &genre, count, &HashSet::new()).await?
+                seed_genre(&state, &genre, count, &HashSet::new()).await?
             } else {
                 result
             }
         }
         RadioSeedType::PersonalMix => {
-            let result = seed_personal_mix(&state.db, auth_user.0.sub, count, &exclude).await?;
+            let result = seed_personal_mix(&state, auth_user.0.sub, count, &exclude).await?;
             if result.is_empty() {
                 tracing::info!(
                     seed_type = %seed_type_debug,
                     "radio wrapped around — clearing exclude list and retrying"
                 );
-                seed_personal_mix(&state.db, auth_user.0.sub, count, &HashSet::new()).await?
+                seed_personal_mix(&state, auth_user.0.sub, count, &HashSet::new()).await?
             } else {
                 result
             }
@@ -781,28 +775,27 @@ pub async fn radio_next(
                 StatusCode::BAD_REQUEST,
                 "seed_id is required for seed_type=similar".to_string(),
             ))?;
-            let result = seed_similar(&state.db, seed_id, count, &exclude).await?;
+            let result = seed_similar(&state, seed_id, count, &exclude).await?;
             if result.is_empty() {
                 tracing::info!(
                     seed_type = %seed_type_debug,
                     "radio wrapped around — clearing exclude list and retrying"
                 );
-                seed_similar(&state.db, seed_id, count, &HashSet::new()).await?
+                seed_similar(&state, seed_id, count, &HashSet::new()).await?
             } else {
                 result
             }
         }
     };
 
-    let exhausted = selected.is_empty();
+    let tracks = enrich_tracks(&state.db, selected).await?;
+    let exhausted = tracks.is_empty();
     if exhausted {
         tracing::info!(
             seed_type = %seed_type_debug,
             "radio exhausted — no matching tracks in database"
         );
     }
-
-    let tracks = enrich_tracks(&state.db, selected).await?;
 
     Ok(Json(RadioNextResponse { tracks, exhausted }))
 }

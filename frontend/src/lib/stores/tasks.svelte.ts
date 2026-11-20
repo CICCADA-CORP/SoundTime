@@ -7,6 +7,7 @@ let taskType = $state<"sync" | "integrity" | null>(null);
 let status = $state<StorageTaskStatus | null>(null);
 let polling = $state(false);
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let generation = 0;
 let retryCount = $state(0);
 
 const POLL_INTERVAL = 1500;
@@ -17,19 +18,21 @@ const MAX_RETRIES = 3;
 
 async function poll() {
   if (!polling) return;
-
+  const request = generation;
   try {
     const result = await api.get<StorageTaskStatus>("/admin/storage/task-status");
+    if (generation !== request) return;
     status = result;
     retryCount = 0;
 
     if (result.status === "running") {
       pollTimer = setTimeout(poll, POLL_INTERVAL);
     } else {
-      // completed, error, or idle — stop polling but keep status visible
+      if (result.status === "completed") taskType = result.result.kind;
       polling = false;
     }
   } catch {
+    if (generation !== request) return;
     retryCount++;
     if (retryCount < MAX_RETRIES) {
       pollTimer = setTimeout(poll, RETRY_INTERVAL);
@@ -50,6 +53,7 @@ function startPolling(type: "sync" | "integrity") {
 }
 
 function stopPolling() {
+  generation++;
   if (pollTimer) {
     clearTimeout(pollTimer);
     pollTimer = null;
@@ -64,9 +68,10 @@ function dismiss() {
 }
 
 async function checkForRunningTask() {
+  const request = generation;
   try {
     const result = await api.get<StorageTaskStatus>("/admin/storage/task-status");
-    if (result.status === "running") {
+    if (request === generation && !polling && result.status === "running") {
       status = result;
       taskType = taskType ?? "sync";
       polling = true;
@@ -77,6 +82,8 @@ async function checkForRunningTask() {
     // silently ignore — we're just checking
   }
 }
+
+if (typeof window !== "undefined") window.addEventListener("soundtime:logout", dismiss);
 
 // ─── Public getter factory ─────────────────────────────────────────
 

@@ -1,0 +1,13 @@
+services:
+  rust-tests:
+    image: soundtime-federation-rust-tests:${COMPOSE_PROJECT_NAME}
+    pull_policy: never
+    build:
+      context: ../../backend
+      dockerfile: ../docker/Dockerfile.backend
+      target: federation-rust-tests
+    environment:
+      TEST_DATABASE_URL: postgres://soundtime:federation-test@db-a/soundtime_federation_rust
+      CARGO_NET_OFFLINE: "true"
+    # Configuration tests exercise both discovery settings on a private Docker network.
+    networks: [site-a]

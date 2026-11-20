@@ -52,6 +52,8 @@ vi.mock('$lib/api', () => ({
 vi.mock('$lib/i18n/index.svelte', () => ({
   t: (key: string) => {
     const translations: Record<string, string> = {
+      'track.play': 'Play',
+      'catalog.unavailable': 'This selection could not be loaded.',
       'track.title': 'Title',
       'track.album': 'Album',
       'track.artist': 'Artist',
@@ -138,8 +140,8 @@ describe('TrackList', () => {
   });
 
   it('renders empty list with no tracks', () => {
-    const { container } = render(TrackList, { props: { tracks: [] } });
-    const rows = container.querySelectorAll('[role="button"]');
+    render(TrackList, { props: { tracks: [] } });
+    const rows = screen.queryAllByRole('button', { name: /^Play / });
     expect(rows.length).toBe(0);
   });
 
@@ -151,6 +153,19 @@ describe('TrackList', () => {
     render(TrackList, { props: { tracks } });
     expect(screen.getByText('Song One')).toBeInTheDocument();
     expect(screen.getByText('Song Two')).toBeInTheDocument();
+  });
+
+  it('keeps withdrawn entries in place and allows the owner to remove one', async () => {
+    const remove = vi.fn();
+    const tracks = [createTrack({ availability: 'withdrawn', position: 4 })];
+    render(TrackList, { props: { tracks, source: 'playlist', onremove: remove } });
+    expect(screen.getByRole('button', { name: 'Play Song One' })).toBeDisabled();
+    expect(screen.getByText('track.withdrawn')).toBeInTheDocument();
+    expect(screen.getByText('5', { selector: '.track-number' })).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: 'Options Song One' }));
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'playlists.removeTrack' }));
+    expect(remove).toHaveBeenCalledWith('t1');
+    expect(mockQueueStore.playQueue).not.toHaveBeenCalled();
   });
 
   it('renders album column when showAlbum is true', () => {
@@ -225,33 +240,35 @@ describe('TrackList', () => {
   // --- Interactions ---
   it('plays track on click', async () => {
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.click(row);
     expect(mockQueueStore.playQueue).toHaveBeenCalledWith(tracks, 0, "collection");
   });
 
-  it('plays track on Enter key', async () => {
+  it('exposes a keyboard-focusable native play button named after the track', () => {
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
-    await fireEvent.keyDown(row, { key: 'Enter' });
-    expect(mockQueueStore.playQueue).toHaveBeenCalledWith(tracks, 0, "collection");
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
+    row.focus();
+    expect(row.tagName).toBe('BUTTON');
+    expect(row).toHaveFocus();
+    expect(row).toHaveAccessibleName('Play Song One');
   });
 
   it('highlights currently playing track', () => {
     const track = createTrack({ id: 'current-track' });
     mockPlayerStore.currentTrack = track;
-    const { container } = render(TrackList, { props: { tracks: [track] } });
-    const row = container.querySelector('[role="button"]');
-    expect(row?.classList.toString()).toContain('bg-');
+    render(TrackList, { props: { tracks: [track] } });
+    const row = screen.getByRole('button', { name: /^Play / });
+    expect(row.parentElement?.classList.toString()).toContain('bg-primary');
   });
 
   // --- Context menu ---
   it('shows right-click context menu', async () => {
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     expect(screen.getByText('Play Next')).toBeInTheDocument();
     expect(screen.getByText('Add to Queue')).toBeInTheDocument();
@@ -261,8 +278,8 @@ describe('TrackList', () => {
 
   it('play next adds track to queue and closes menu', async () => {
     const track = createTrack();
-    const { container } = render(TrackList, { props: { tracks: [track] } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks: [track] } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     const playNextBtn = screen.getByText('Play Next');
     await fireEvent.click(playNextBtn);
@@ -273,8 +290,8 @@ describe('TrackList', () => {
 
   it('add to queue adds track and closes menu', async () => {
     const track = createTrack();
-    const { container } = render(TrackList, { props: { tracks: [track] } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks: [track] } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     const addBtn = screen.getByText('Add to Queue');
     await fireEvent.click(addBtn);
@@ -284,8 +301,8 @@ describe('TrackList', () => {
 
   it('closes context menu on window click', async () => {
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     expect(screen.getByText('Play Next')).toBeInTheDocument();
     // Click on window to close
@@ -299,8 +316,8 @@ describe('TrackList', () => {
     mockAuthStore.isAuthenticated = true;
     mockAuthStore.user = { id: '1', username: 'alice' };
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     expect(screen.getByText('Report')).toBeInTheDocument();
     expect(screen.getByText('Add to Playlist')).toBeInTheDocument();
@@ -320,8 +337,8 @@ describe('TrackList', () => {
     });
 
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     const playlistBtn = screen.getByText('Add to Playlist');
     await fireEvent.click(playlistBtn);
@@ -344,8 +361,8 @@ describe('TrackList', () => {
     });
 
     const tracks = [createTrack({ id: 'track-42' })];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('Add to Playlist'));
 
@@ -359,6 +376,29 @@ describe('TrackList', () => {
     expect(mockApiPost).toHaveBeenCalledWith('/playlists/pl1/tracks', { track_id: 'track-42' });
   });
 
+  it('reaches a private playlist on page two and can retry a failed addition', async () => {
+    mockAuthStore.isAuthenticated = true;
+    mockAuthStore.user = { id: 'member' };
+    mockApiGet.mockImplementation(async (path: string) => {
+      if (!path.startsWith('/me/playlists?')) return [];
+      const first = path === '/me/playlists?page=1&per_page=20';
+      return { data: [{ id: first ? 'first' : 'last', name: first ? 'First page' : 'Private 21' }], total_pages: 2 };
+    });
+    mockApiPost.mockRejectedValueOnce(new Error('Temporary failure'));
+    render(TrackList, { props: { tracks: [createTrack()] } });
+    await fireEvent.click(screen.getByRole('button', { name: /^Options / }));
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Add to Playlist' }));
+    await screen.findByRole('button', { name: 'First page' });
+    await fireEvent.click(screen.getByRole('button', { name: 'admin.reports.next' }));
+    const list = await screen.findByRole('button', { name: 'Private 21' });
+    await fireEvent.click(list);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Temporary failure');
+    await fireEvent.click(list);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(mockApiPost).toHaveBeenCalledTimes(2);
+    expect(mockApiPost).toHaveBeenLastCalledWith('/playlists/last/tracks', { track_id: 't1' });
+  });
+
   it('shows empty playlist message', async () => {
     mockAuthStore.isAuthenticated = true;
     mockAuthStore.user = { id: '1', username: 'alice' };
@@ -370,8 +410,8 @@ describe('TrackList', () => {
     });
 
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('Add to Playlist'));
 
@@ -390,8 +430,8 @@ describe('TrackList', () => {
     });
 
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('View Credits'));
 
@@ -410,8 +450,8 @@ describe('TrackList', () => {
     });
 
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('View Credits'));
 
@@ -423,8 +463,8 @@ describe('TrackList', () => {
   // --- Share modal ---
   it('opens share modal', async () => {
     const tracks = [createTrack({ id: 'share-track' })];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('Share'));
 
@@ -442,8 +482,8 @@ describe('TrackList', () => {
     });
 
     const tracks = [createTrack({ id: 'share-track' })];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('Share'));
 
@@ -461,8 +501,8 @@ describe('TrackList', () => {
     mockAuthStore.user = { id: '1', username: 'alice' };
 
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('Report'));
 
@@ -477,8 +517,8 @@ describe('TrackList', () => {
     mockAuthStore.user = { id: '1', username: 'alice' };
 
     const tracks = [createTrack({ id: 'report-track' })];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('Report'));
 
@@ -486,7 +526,7 @@ describe('TrackList', () => {
       expect(screen.getByText('Report Track')).toBeInTheDocument();
     });
 
-    const textarea = container.querySelector('textarea')!;
+    const textarea = screen.getByRole('textbox', { name: 'Enter reason' });
     await fireEvent.input(textarea, { target: { value: 'Copyright violation' } });
     await tick();
 
@@ -504,8 +544,8 @@ describe('TrackList', () => {
     mockApiPost.mockRejectedValueOnce(new Error('Server error'));
 
     const tracks = [createTrack({ id: 'report-track' })];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('Report'));
 
@@ -513,14 +553,14 @@ describe('TrackList', () => {
       expect(screen.getByText('Report Track')).toBeInTheDocument();
     });
 
-    const textarea = container.querySelector('textarea')!;
+    const textarea = screen.getByRole('textbox', { name: 'Enter reason' });
     await fireEvent.input(textarea, { target: { value: 'Spam content' } });
     await tick();
 
     await fireEvent.click(screen.getByText('Send Report'));
 
     await waitFor(() => {
-      expect(container.textContent).toContain('Server error');
+      expect(screen.getByRole('alert')).toHaveTextContent('Server error');
     });
   });
 
@@ -572,8 +612,8 @@ describe('TrackList', () => {
     });
 
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('Add to Playlist'));
 
@@ -588,8 +628,8 @@ describe('TrackList', () => {
 
   it('closes share modal with close button', async () => {
     const tracks = [createTrack({ id: 'share-close' })];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('Share'));
 
@@ -642,8 +682,8 @@ describe('TrackList', () => {
     });
 
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('View Credits'));
 
@@ -668,8 +708,8 @@ describe('TrackList', () => {
     });
 
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('View Credits'));
 
@@ -686,14 +726,14 @@ describe('TrackList', () => {
     expect(screen.getByText('Artist')).toBeInTheDocument();
   });
 
-  it('matches playlist by owner_id', async () => {
+  it('loads private and public playlists from the signed-in member’s collection', async () => {
     mockAuthStore.isAuthenticated = true;
     mockAuthStore.user = { id: '1', username: 'alice' };
     mockApiGet.mockImplementation((url: string) => {
-      if (url.includes('/playlists')) {
+      if (url === '/me/playlists?page=1&per_page=20') {
         return Promise.resolve({
           data: [
-            { id: 'pl1', name: 'Owned Playlist', user_id: 'other', owner_id: '1' },
+            { id: 'pl1', name: 'Owned Playlist', user_id: '1', is_public: false },
           ],
         });
       }
@@ -701,8 +741,8 @@ describe('TrackList', () => {
     });
 
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('Add to Playlist'));
 
@@ -722,19 +762,19 @@ describe('TrackList', () => {
     });
 
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     await fireEvent.contextMenu(row);
     await fireEvent.click(screen.getByText('Add to Playlist'));
 
     await waitFor(() => {
-      expect(screen.getByText('No playlists')).toBeInTheDocument();
+      expect(screen.getByText('This selection could not be loaded.')).toBeInTheDocument();
     });
   });
 
   it('shows best_source badge only when not local', () => {
     const track = createTrack({ best_bitrate: 256, best_source: 'peer1.example.com', format: 'opus' });
-    const { container } = render(TrackList, { props: { tracks: [track] } });
+    render(TrackList, { props: { tracks: [track] } });
     expect(screen.getByText('Fed')).toBeInTheDocument();
   });
 
@@ -750,8 +790,8 @@ describe('TrackList', () => {
     Object.defineProperty(window, 'innerHeight', { value: 300, writable: true, configurable: true });
 
     const tracks = [createTrack()];
-    const { container } = render(TrackList, { props: { tracks } });
-    const row = container.querySelector('[role="button"]')!;
+    render(TrackList, { props: { tracks } });
+    const row = screen.getByRole('button', { name: /^Play / });
     // Right-click near edge
     await fireEvent.contextMenu(row, { clientX: 290, clientY: 290 });
     expect(screen.getByText('Play Next')).toBeInTheDocument();

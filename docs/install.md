@@ -2,6 +2,8 @@
 
 You can run the installer on the computer that will host your library or on another computer that you use to manage it. The quickest way to start is to copy the command for your terminal from the README. To keep a copy of the installer, download **SoundTime-CLI.zip**, extract the entire archive and keep the `bin` folder alongside the launchers. The archive includes native executables for Windows, macOS and Linux on Intel/AMD 64-bit and ARM64, including Apple silicon. The installer uses these executables for both local and SSH installations. You do not need to install Python. [Download and run the CLI](../README.md#guided-installation) · [Install manually with Docker Compose](../README.md#manual-installation)
 
+For a NAS LAN export from a Python source checkout, run `python -m pip install -r installer/requirements.txt` in your virtual environment before using `python installer/launcher.py export`. The portable CLI bundles this dependency.
+
 ## Start the installer
 
 If you downloaded the ZIP, open a terminal in the extracted folder and run the command for your system.

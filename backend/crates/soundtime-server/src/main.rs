@@ -8,7 +8,6 @@ use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
-use sea_orm_migration::MigratorTrait;
 use serde::Serialize;
 use soundtime_db::AppState;
 use std::net::SocketAddr;
@@ -24,11 +23,14 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 mod api;
 mod auth;
+mod cluster;
 #[allow(dead_code)] // Public API for future recommendation endpoints (Phase 4.5+)
 mod embeddings;
+mod legacy_singles;
 mod listing_worker;
 pub mod metadata_lookup;
 mod p2p_logs;
+mod publications;
 mod storage_catalog;
 mod storage_worker;
 mod trending;
@@ -81,19 +83,33 @@ async fn main() {
         .init();
 
     // Database connection
+    let role = cluster::Role::configured();
     let db_config = soundtime_db::DatabaseConfig::from_env();
     tracing::info!("connecting to database...");
-    let db = soundtime_db::connect(&db_config)
-        .await
-        .expect("failed to connect to database");
+    let db = match role {
+        cluster::Role::Worker => {
+            // Migration, lease acquisition and subsequent renewals are sequential.
+            // Keep one dedicated session available while the serving pool is busy.
+            let control = soundtime_db::DatabaseConfig {
+                min_connections: 1,
+                max_connections: 1,
+                ..db_config.clone()
+            };
+            soundtime_db::connect_named(&control, Some("soundtime/worker-lease".into())).await
+        }
+        cluster::Role::Catalogue => {
+            soundtime_db::connect_named(&db_config, Some("soundtime/catalog-http".into())).await
+        }
+        cluster::Role::Standalone => soundtime_db::connect(&db_config).await,
+    }
+    .expect("failed to connect to database");
 
     // Run migrations
     tracing::info!("running database migrations...");
-    soundtime_migration::Migrator::up(&db, None)
+    soundtime_migration::Migrator::up_locked(&db)
         .await
         .expect("failed to run migrations");
     tracing::info!("migrations complete");
-
     // Build application state
     let jwt_secret = std::env::var("JWT_SECRET")
         .unwrap_or_else(|_| "dev-secret-change-me-in-production".to_string());
@@ -105,6 +121,53 @@ async fn main() {
         tracing::warn!("JWT_SECRET is short or uses a documented placeholder");
     }
     let domain = std::env::var("SOUNDTIME_DOMAIN").unwrap_or_else(|_| "localhost:8080".to_string());
+    if role == cluster::Role::Catalogue {
+        cluster::serve_catalogue(db, domain, jwt_secret).await;
+        return;
+    }
+    // Returning to the standalone profile takes over the existing generation too.
+    let fenced = role == cluster::Role::Worker || cluster::has_lease(&db).await;
+    let db = if fenced {
+        let active = cluster::claim(db, &db_config).await;
+        tokio::spawn(soundtime_db::media_access::watch_policy(active.clone()));
+        active
+    } else {
+        db
+    };
+    let search_db = db.clone();
+    tokio::spawn(async move {
+        loop {
+            match soundtime_db::federation::refresh_search_batch(&search_db, 256).await {
+                Ok(processed) if processed > 0 => tokio::task::yield_now().await,
+                Ok(_) => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
+                Err(error) => {
+                    tracing::warn!(%error, "retrying the catalogue search index refresh");
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
+    let projection_db = db.clone();
+    tokio::spawn(async move {
+        loop {
+            match soundtime_db::federation::backfill_batch(&projection_db, 256).await {
+                Ok(0) => break,
+                Ok(_) => tokio::task::yield_now().await,
+                Err(error) => {
+                    tracing::warn!(%error, "retrying the publication backfill");
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+        // Historical original files now have a publication on standalone instances too.
+        match embeddings::backfill_embeddings(&projection_db).await {
+            Ok(count) if count > 0 => {
+                tracing::info!(count, "Local track embedding backfill complete")
+            }
+            Err(error) => tracing::warn!(%error, "Local track embedding backfill failed"),
+            _ => {}
+        }
+    });
 
     tracing::info!("instance domain: {}", domain);
 
@@ -160,12 +223,21 @@ async fn main() {
         if p2p_enabled {
             tracing::info!("starting P2P node (iroh)...");
             let p2p_config = soundtime_p2p::P2pConfig::from_env();
-            match soundtime_p2p::P2pNode::start(p2p_config, db.clone()).await {
+            match soundtime_p2p::P2pNode::start_with_storage(
+                p2p_config,
+                db.clone(),
+                storage.clone(),
+            )
+            .await
+            {
                 Ok(node) => {
                     tracing::info!(node_id = %node.node_id(), "P2P node started");
                     Some(node as Arc<dyn std::any::Any + Send + Sync>)
                 }
                 Err(e) => {
+                    if fenced {
+                        panic!("cannot start federation owner: {e}");
+                    }
                     tracing::error!("failed to start P2P node: {e}");
                     tracing::warn!("continuing without P2P support");
                     None
@@ -259,28 +331,11 @@ async fn main() {
     // Spawn the storage integrity / sync worker (runs daily)
     let storage_task_tracker = storage_worker::new_tracker();
     storage_worker::spawn(state.clone(), storage_task_tracker.clone());
+    publications::spawn_cleanup(state.clone());
+    api::cache_pins::spawn(state.clone());
 
     // Spawn the listing heartbeat worker (announces to public directory)
     listing_worker::spawn(state.clone());
-
-    // Backfill track embeddings (best-effort background task)
-    {
-        let db = state.db.clone();
-        tokio::spawn(async move {
-            // Small delay to let the server start first
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            match embeddings::backfill_embeddings(&db).await {
-                Ok(count) => {
-                    if count > 0 {
-                        tracing::info!(count, "Background embedding backfill completed");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Background embedding backfill failed (pgvector may not be available)");
-                }
-            }
-        });
-    }
 
     // Task tracker for async storage operations (sync, integrity check)
     let sync_task_tracker = soundtime_p2p::new_sync_tracker();
@@ -323,8 +378,12 @@ async fn main() {
         .route("/refresh", post(auth::routes::refresh))
         .layer(GovernorLayer::new(auth_governor_conf));
 
+    let media_logout =
+        Router::new().route("/media-session", axum::routing::delete(auth::media::clear));
+
     // Auth routes (protected)
     let auth_protected = Router::new()
+        .route("/media-session", post(auth::media::establish))
         .route("/me", get(auth::routes::me))
         .route("/email", axum::routing::put(auth::routes::change_email))
         .route(
@@ -341,7 +400,10 @@ async fn main() {
         ));
 
     // Public API routes (no auth required, but gated if instance is private)
+    let directory =
+        Arc::new(api::webradios::Directory::new().expect("build Radio Browser HTTP client"));
     let public_api = Router::new()
+        .merge(api::webradios::routes(directory.clone()))
         .route("/tos", get(api::reports::get_tos))
         .route("/tracks", get(api::tracks::list_tracks))
         .route("/tracks/popular", get(api::tracks::list_popular_tracks))
@@ -353,9 +415,7 @@ async fn main() {
         )
         .route("/tracks/{id}", get(api::tracks::get_track))
         .route("/tracks/{id}/credits", get(api::tracks::get_track_credits))
-        .route("/tracks/{id}/stream", get(api::audio::stream_track))
         .route("/tracks/{id}/lyrics", get(api::lyrics::get_track_lyrics))
-        .route("/media/{*path}", get(api::audio::serve_media))
         .route("/albums", get(api::albums::list_albums))
         .route("/albums/recent", get(api::albums::list_recent_albums))
         .route("/albums/{id}", get(api::albums::get_album))
@@ -369,6 +429,9 @@ async fn main() {
         .route("/libraries/{id}", get(api::libraries::get_library))
         .route("/users/{id}", get(api::users::get_user_profile))
         .route("/search", get(api::search::search))
+        .route("/p2p/search", get(api::p2p::network_search))
+        .route("/p2p/status", get(api::p2p::p2p_status))
+        .route("/p2p/network-graph", get(api::p2p::network_graph))
         .route("/genres", get(api::tracks::list_genres))
         .route(
             "/genres/{genre}/tracks",
@@ -383,6 +446,33 @@ async fn main() {
             state.clone(),
             auth::middleware::require_auth_if_private,
         ));
+
+    // Only native, read-only media handlers accept the restricted media cookie.
+    let stream_budget = auth::stream_budget::StreamBudget::configured();
+    let media_api = Router::new()
+        .route(
+            "/webradios/stations/{id}/stream",
+            get(api::webradios::stream_station)
+                .layer(Extension(directory))
+                .layer(axum_middleware::from_fn_with_state(
+                    (state.clone(), stream_budget.clone()),
+                    auth::middleware::require_stream_if_private,
+                )),
+        )
+        .route(
+            "/tracks/{id}/stream",
+            get(api::audio::stream_track).layer(axum_middleware::from_fn_with_state(
+                (state.clone(), stream_budget.clone()),
+                auth::middleware::require_stream_if_private,
+            )),
+        )
+        .route(
+            "/media/{*path}",
+            get(api::audio::serve_media).layer(axum_middleware::from_fn_with_state(
+                state.clone(),
+                auth::middleware::require_media_if_private,
+            )),
+        );
 
     // Always-public routes (setup, auth) — never gated by private mode
     let always_public_api = Router::new()
@@ -399,6 +489,7 @@ async fn main() {
                 .layer(DefaultBodyLimit::max(500 * 1024 * 1024)), // 500 MB for audio uploads
         )
         .route("/tracks/my-uploads", get(api::tracks::my_uploads))
+        .route("/me/playlists", get(api::playlists::my_playlists))
         .route("/playlists", post(api::playlists::create_playlist))
         .route(
             "/playlists/{id}",
@@ -440,6 +531,10 @@ async fn main() {
             axum::routing::delete(api::lastfm::lastfm_disconnect),
         )
         .route("/lastfm/now-playing", post(api::lastfm::lastfm_now_playing))
+        .route(
+            "/webradios/preference",
+            axum::routing::put(api::webradios::preference),
+        )
         .route("/radio/next", post(api::radio::radio_next))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
@@ -447,16 +542,16 @@ async fn main() {
         ));
 
     let api_routes = Router::new()
-        .nest("/auth", auth_public.merge(auth_protected))
+        .nest(
+            "/auth",
+            auth_public.merge(auth_protected).merge(media_logout),
+        )
+        .merge(media_api)
         .merge(always_public_api)
         .merge(public_api)
         .merge(protected_api)
         // Public node info endpoint (for listing server)
         .route("/nodeinfo", get(api::admin::nodeinfo))
-        // Public P2P status endpoint
-        .route("/p2p/status", get(api::p2p::p2p_status))
-        .route("/p2p/network-graph", get(api::p2p::network_graph))
-        .route("/p2p/search", get(api::p2p::network_search))
         // Public theme routes
         .route("/themes/active", get(api::themes::get_active_theme))
         .route("/themes/active.css", get(api::themes::serve_active_css))
@@ -468,6 +563,7 @@ async fn main() {
             "/admin",
             Router::new()
                 .route("/stats", get(api::admin::get_stats))
+                .route("/p2p/network-graph", get(api::p2p::admin_network_graph))
                 .route("/settings", get(api::admin::get_settings))
                 .route(
                     "/settings/{key}",
@@ -546,6 +642,16 @@ async fn main() {
                     "/tos",
                     axum::routing::put(api::reports::update_tos).delete(api::reports::reset_tos),
                 )
+                .route(
+                    "/cache/{scope}/{id}/pin",
+                    get(api::cache_pins::status)
+                        .put(api::cache_pins::pin)
+                        .delete(api::cache_pins::unpin),
+                )
+                .route(
+                    "/storage/cache",
+                    axum::routing::put(api::cache_pins::set_quota),
+                )
                 .route("/storage/status", get(api::admin::storage_status))
                 .route(
                     "/storage/integrity-check",
@@ -555,6 +661,8 @@ async fn main() {
                 .route("/storage/task-status", get(api::admin::storage_task_status))
                 .layer(Extension(storage_task_tracker))
                 // P2P admin routes
+                .route("/p2p/transport", get(api::p2p::transport_stats))
+                .route("/p2p/tracks/{id}/mirrors", get(api::p2p::track_mirrors))
                 .route(
                     "/p2p/peers",
                     get(api::p2p::list_peers).post(api::p2p::add_peer),
@@ -564,6 +672,10 @@ async fn main() {
                     axum::routing::delete(api::p2p::remove_peer),
                 )
                 .route("/p2p/peers/{node_id}/ping", post(api::p2p::ping_peer))
+                .route(
+                    "/p2p/peers/{node_id}/subscription",
+                    axum::routing::put(api::p2p::update_subscription),
+                )
                 // P2P library sync routes
                 .route("/p2p/library-sync", get(api::p2p::library_sync_overview))
                 .route(
@@ -641,7 +753,10 @@ async fn main() {
     {
         let directory = soundtime_p2p::rendezvous::Rendezvous::default();
         let rendezvous = Router::new()
-            .route("/p2p/rendezvous", post(api::p2p::rendezvous))
+            .route(
+                "/p2p/rendezvous",
+                get(api::p2p::sample_rendezvous).post(api::p2p::rendezvous),
+            )
             .layer(axum::Extension(Arc::new(tokio::sync::Mutex::new(
                 directory,
             ))))
@@ -742,6 +857,10 @@ async fn main() {
         ))
         .with_state(state);
 
+    serve(app).await;
+}
+
+async fn serve(app: Router) {
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())

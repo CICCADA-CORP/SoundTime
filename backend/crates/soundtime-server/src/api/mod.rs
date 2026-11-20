@@ -2,6 +2,7 @@ pub mod admin;
 pub mod albums;
 pub mod artists;
 pub mod audio;
+pub mod cache_pins;
 pub mod editorial;
 pub mod favorites;
 pub mod history;
@@ -19,6 +20,7 @@ pub mod stats;
 pub mod themes;
 pub mod tracks;
 pub mod users;
+pub mod webradios;
 
 use soundtime_db::AppState;
 use std::sync::Arc;

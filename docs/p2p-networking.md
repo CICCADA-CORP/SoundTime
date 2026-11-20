@@ -26,7 +26,7 @@ Each SoundTime instance runs an **iroh node** that communicates over **QUIC** (U
 |-----------|-----------|---------|
 | Transport | iroh 1.5 (QUIC over UDP) | Encrypted peer-to-peer connections |
 | Content storage | iroh-blobs 0.105 (BLAKE3, FsStore) | Content-addressed audio file storage |
-| Peer discovery | Opt-in rendezvous, seed peers, peer exchange | Finding SoundTime NodeIds |
+| Peer discovery | Public listing, rendezvous, LAN announcements, seeds and peer exchange | Finding SoundTime NodeIds |
 | Address lookup | DNS, Pkarr, optional Mainline DHT and mDNS | Connecting to known NodeIds |
 | Relay | n0.computer production relays | NAT traversal when direct connections fail |
 | Search | Bloom filters (~1.2 MB per peer) | Distributed query routing |
@@ -41,6 +41,12 @@ Each SoundTime instance has a persistent **Ed25519 keypair** that defines its **
 - The NodeId is used to address peers and is shared when connecting
 
 > **Tip**: Back up the secret key file to preserve your node's identity when migrating servers.
+
+## Storage used by music recommendations
+
+Following a peer adds its titles to the searchable catalogue. SoundTime generates a 32-dimensional similarity vector for a remote title when a listener chooses it as a similar-track radio seed, or when it appears in the most recent 500 plays used to update that listener’s taste profile. Existing vectors remain available after an upgrade. Radio can also draw playable titles from the catalogue by artist, genre and year while the similarity index is sparse.
+
+After historical publications have been restored at startup, each instance indexes its own active originals in pages of 64, with a half-second pause between pages. The same process runs when P2P is disabled. The similarity index resides in PostgreSQL and uses metadata only.
 
 ## Protocol
 
@@ -92,6 +98,12 @@ When a track is announced (via `AnnounceTrack` or `CatalogSync`), the following 
   "cover_hash": "blake3-cover-hash"
 }
 ```
+
+### Artist credits across versions
+
+An upload or scan with no artist credit has no artist label in the current HTTP catalog or player. Artists explicitly named `Unknown Artist` retain their own profile and are searchable under that name. Existing literal names in an older library may come from either an artist tag or the former upload fallback. The upgrade preserves ambiguous names and their IDs.
+
+V1 announcements send an empty `artist_name` for an absent credit. The archived v1 backend accepts that string. Signed v2 manifests have always required a nonempty `artist`, so the origin encodes an absent credit as one ASCII space in a new journal revision. Current receivers map that wire value to the internal placeholder and omit its label from search and track responses. Previously signed revisions retain their original bytes. An old issuer that sent the literal `Unknown Artist` supplied no way to distinguish those two meanings. The `compatibility` and `historical` bench profiles exchange an uncredited WAV and an explicitly credited homonym and inspect each receiver's public track response.
 
 ## Upgrading the P2P store
 
@@ -166,9 +178,13 @@ Two instances can find each other even if both use an iroh relay and neither has
 
 1. On a SoundTime backend reachable by both participants, set `P2P_RENDEZVOUS_SERVER=true` and recreate the backend with `docker compose up -d backend`. Configure HTTPS on this host. The directory can run with its own P2P node disabled.
 2. On **each** participating instance, set `P2P_ENABLED=true` and `P2P_RENDEZVOUS_URL=https://music.example.org/api/p2p/rendezvous`, replacing the example host with your directory host. Recreate each backend. The participants may keep `SOUNDTIME_DOMAIN=localhost` and leave `P2P_SEED_PEERS` empty.
-3. Check **Admin → P2P → Peers**. Each node registers its signed NodeId at startup and every five minutes. The directory returns up to eight other participating NodeIds. SoundTime verifies a peer over iroh before adding it and synchronizing its catalog.
+3. In explicit catalogue mode, enable `P2P_RENDEZVOUS_ANNOUNCE=true` on the instances that want to be found. They sign their registrations. Other instances read the directory with HTTP GET, including operators who keep their instance private. Check **Admin → P2P → Peers** for authenticated peers and choose which catalogues to follow.
 
-The directory can see the request IP and signed NodeId. Registrations stay in memory and expire 15 minutes after their signed timestamp. Keep host clocks synchronized. To stop renewing a registration, clear `P2P_RENDEZVOUS_URL` and recreate the backend. Previously connected peers remain in the peer registry.
+The directory sees each caller's IP address. Only registrations include the caller's NodeId. Each reply samples up to eight current entries. Registrations expire 15 minutes after signing and disappear on a directory restart. Keep host clocks synchronized. Legacy clients continue to register when configured with a rendezvous URL. Read-only discovery requires a server supporting GET.
+
+### Read the public SoundTime listing
+
+In explicit catalogue mode, the instance periodically reads `GET /api/nodes` on the configured SoundTime listing service. It samples up to eight online, P2P-enabled nodes with valid NodeIds and authenticates each candidate over iroh. It uses the normal signed-in administrator controls for catalogue subscriptions. Reading the listing transmits no registration or NodeId to the listing service. Publishing your own domain still requires enabling the separate public listing setting. The setting `P2P_LISTING_DISCOVERY` controls reading. The public lookup default follows `P2P_PUBLIC_DISCOVERY`. [SoundTime Listing API](https://github.com/CICCADA-CORP/SoundTime-Listing/blob/main/server.js)
 
 ### 3. Local Swarm Discovery (mDNS)
 
@@ -178,7 +194,7 @@ Optional LAN-based discovery for instances on the same network.
 P2P_LOCAL_DISCOVERY=true
 ```
 
-Uses `iroh_mdns_address_lookup::MdnsAddressLookup` to find peers via multicast DNS. Useful for home lab setups where multiple instances run on the same network.
+Explicit catalogue instances listen for LAN announcements and authenticate new SoundTime peers. Enable `P2P_LOCAL_ADVERTISE=true` on at least one instance to make it visible on the LAN. Browsing, LAN advertising, signed rendezvous registration and consent for other peers to redistribute your NodeId are separate choices. Each peer you contact sees your authenticated identity. Legacy mode retains LAN advertising when local discovery is enabled.
 
 ### 4. Seed Peers
 
@@ -188,20 +204,13 @@ Explicitly configured peers that are connected on startup:
 P2P_SEED_PEERS=node_id_1,node_id_2,node_id_3
 ```
 
-On startup, the node:
-1. Pings each seed peer
-2. Registers them in the peer registry
-3. Exchanges peer lists (PEX)
-4. Sends a full catalog sync
+On startup, the node authenticates available seeds. In explicit catalogue mode it resumes existing subscriptions. Legacy mode also synchronizes the catalogue.
 
 ### 5. Peer Exchange (PEX)
 
-Peers periodically share their known peer lists with each other:
+Compatible peers exchange a bounded sample of consenting identities every five minutes. Enable `P2P_SHARE_IDENTITY=true` to allow this redistribution. In explicit catalogue mode each instance admits up to 32 new discovery probes per minute across PEX, rendezvous, the listing and LAN announcements. Repeated hints about an identity share one attempt per minute. A successful authenticated probe records presence, and a persistent ban prevents a new probe.
 
-- Runs every **5 minutes** on a background timer
-- Sends `PeerExchange` messages containing all known peer NodeIds
-- Newly discovered peers are automatically pinged and registered
-- Creates a gossip-like mesh for organic peer discovery
+The public network graph shows a sample of neighbors that permitted redistribution. The administrator's graph includes the full local registry. A private instance requires login for P2P status and the graph. Its public login metadata exposes its NodeId only when the operator enables public listing.
 
 ```
 Node A ──PEX──► Node B ──PEX──► Node C
@@ -363,11 +372,44 @@ curl -X POST http://localhost:8080/api/admin/blocked-domains \
 | `P2P_BIND_PORT` | `11204` | Bind port (0 = random) |
 | `P2P_BLOBS_DIR` | `data/p2p/blobs` | iroh-blobs persistent storage path |
 | `P2P_SECRET_KEY_PATH` | `data/p2p/secret_key` | Path to the Ed25519 secret key |
+| `P2P_PUBLIC_DISCOVERY` | `true` | Use the public iroh lookups and relays. Turning it off also disables Mainline DHT. LAN discovery and explicitly configured rendezvous are independent. |
+| `P2P_RELAY_URL` | empty | Use one explicitly configured HTTP(S) iroh relay and seed known peers on it. |
+| `P2P_RELAY_ONLY` | `false` | Disable direct IP transports and use only the configured relay. |
+| `P2P_EXPLICIT_CATALOG` | `false` | Opt in to the control protocol which separates presence and catalogue subscription. |
+| `P2P_VERSIONED_CATALOG` | `false` | Enable signed publication inventories on peers that also enable explicit catalogues. |
+| `P2P_SHARE_CACHED` | `false` | With versioned catalogues and range streaming enabled, announce renewable leases for complete verified cache admissions. |
+| `P2P_SHARE_IDENTITY` | `false` | Give compatible peers permission to include this node's identity in their peer-exchange sample. |
 | `P2P_DHT_DISCOVERY` | `true` | Resolve known NodeIds via Pkarr on the Mainline DHT |
 | `P2P_RENDEZVOUS_URL` | — | Shared endpoint for opt-in discovery of SoundTime NodeIds |
+| `P2P_RENDEZVOUS_ANNOUNCE` | `false` in explicit mode | Register your signed identity on the configured rendezvous. Legacy mode registers by default. |
 | `P2P_RENDEZVOUS_SERVER` | `false` | Host the signed, expiring rendezvous directory |
-| `P2P_LOCAL_DISCOVERY` | `true` | Enable mDNS local network discovery |
+| `P2P_LISTING_DISCOVERY` | Follows `P2P_PUBLIC_DISCOVERY` | Discover candidates from the configured public listing in explicit mode. |
+| `P2P_LOCAL_DISCOVERY` | `true` | Listen for LAN peers via mDNS |
+| `P2P_LOCAL_ADVERTISE` | `false` in explicit mode | Publish this instance's presence on the LAN. Legacy mode advertises by default when LAN discovery is enabled. |
 | `P2P_SEED_PEERS` | — | Comma-separated NodeIds for auto-connect |
+
+Run `scripts/test-p2p-federation.sh discovery` to exercise LAN discovery, a read-only rendezvous participant, explicit registration and an isolated copy of the public listing API. The three-instance scenario checks authenticated presence, zero catalogue imports and persistent peer blocking across a restart.
+
+### Verified range streaming pilot
+
+For a small instance that can index remote tracks but has no disk space for remote audio, set these values in the deployment’s `.env` on participating instances. For an exported QNAP Container Station project, use `qnap/backend.env`. Recreate the backend, then follow the desired peers in the admin panel.
+
+```dotenv
+P2P_EXPLICIT_CATALOG=true
+P2P_VERSIONED_CATALOG=true
+P2P_RANGE_STREAMING=true
+P2P_CACHE_MAX_SIZE=0
+```
+
+Set `P2P_RANGE_STREAMING=true` on participants to advertise `soundtime/range/2` alongside the existing control protocol. The default is `false`. The receiver needs a current catalogue entry with the origin, publication UUID, revision, BLAKE3 hash and size, and an unexpired provider offer. When the option is enabled, an identified publication requires this range protocol. A provider error returns HTTP 503 before the first verified window, or terminates an already started response if all providers fail later. Historical records without an identified publication use the legacy path.
+
+The receiver validates Bao proofs for aligned 64 KiB windows before emitting any bytes. Concurrent requests for an overlapping window of the same publication share its in-flight QUIC stream. A slow or unavailable provider can be replaced at the current window. The pilot admits 32 active downloads and 32 uploads per process, with four per peer in each direction. Waiting windows are bounded at 512. Cancelling the last reader cancels the upstream operation. A partial range read creates no durable cache or offer.
+
+Set `P2P_CACHE_MAX_SIZE` to the storage budget (for example `512MB` or `0`) and `P2P_CACHE_MIN_FREE` to the required free space on the P2P volume (default `256MB`). The cache reserves the file, its Bao outboard and allocation overhead before writing. It protects pinned files and current readers, removes unused files in least-recently-used order and rechecks space before admission. On restart it reconciles complete assets and drops interrupted staging directories. Old mixed iroh stores retain their original and cover tags. Database pages and unclassified legacy bytes count against the new budget. The administrator can see these amounts under Storage and set a persistent budget up to the configured ceiling. Existing pins or active reservations can prevent a reduction until they are released.
+
+With `P2P_CACHE_ON_PLAY=true`, a complete sequential remote HTTP read can retain and verify a file when space permits. Enable `P2P_SHARE_CACHED=true` to advertise retained publications to authorized peers. Both switches default to false. A zero disk budget still serves verified windows in memory. Administrators can keep a track or an album from its page. The admin API supports GET, PUT and DELETE on `/api/admin/cache/tracks/{id}/pin` and `/api/admin/cache/albums/{id}/pin`. It reserves the album budget before fetching audio, reports HTTP 507 on insufficient disk and preserves overlapping track and album pins. Owner withdrawals apply to every retained version of that publication.
+
+The authenticated transport statistics expose `range_windows_verified` and `range_proof_bytes_received`. The latter includes excess Bao leaf bytes outside a short requested window and framing in the Bao response. QUIC packet headers and retransmissions are excluded.
 
 ## Monitoring
 
@@ -401,6 +443,18 @@ curl http://localhost:8080/api/p2p/network-graph
 ```
 
 ### Peer Management
+
+The optional catalogue pilot negotiates `soundtime/control/2` through QUIC. Two pilot nodes can exchange an authenticated presence message without sending track announcements. To discover without following, call `POST /api/admin/p2p/peers` with the node ID and `"follow_catalog": false`. To start or stop following, send `{"followed": true}` or `{"followed": false}` with `PUT /api/admin/p2p/peers/{node_id}/subscription`. The local subscription survives a restart. The admin transport status includes `explicit_catalog` and the process-wide `catalog_entries_received` counter.
+
+The historic mode still sends its original ping and catalogues. A pilot connecting to an older host negotiates the original ALPN and requires an explicit local follow before sending its catalogue-producing ping. A pilot answering a legacy ping sends its catalogue only when it follows the caller. A separate legacy catalogue request remains supported. Compatible peers sample up to eight identities. Third-party entries need the owner's consent from authenticated presence and are filtered against the local bans. Older software can retain and forward identifiers it already learned.
+
+Two versioned peers use `soundtime/catalog/2` after subscription. A snapshot has a fixed commit cursor and an explicit final page. The receiver uses its saved page number and publication UUID to resume, and removes missing offers only after accepting that final page. Each page holds up to 64 signed manifests and carries metadata only. A subsequent pull reads changes after the last committed cursor. The origin signs its publication identity and revision with its iroh key. A signed withdrawal can therefore arrive through another authorized provider. Retained playlists, libraries and favourites are checked periodically against reachable issuers and known providers. A disconnected instance acts on its last verified information until a path becomes available.
+
+While an upgraded peer prepares its historical journal, adding it with catalogue follow or enabling its subscription returns HTTP 202. The peer stays online and the last complete inventory remains available under its existing leases. Synchronization resumes from the saved cursor automatically. Each instance checks up to eight online followed sources every 15 seconds and continues receiving remote updates while preparing its own journal.
+
+Cache admission binds a complete verified file to the particular publication that was read or pinned. A local listener can keep using that admission after losing the supplier. With sharing enabled, the mirror signs its own one-hour lease for the publication, revision, hash and size. An origin can relay this lease to its other subscribers. A higher provider generation revokes an older lease on eviction; expiry limits the lifetime of an offer whose revocation was lost. Private instances restrict versioned catalogue and range export to peers their administrator follows. Administrators can inspect eligible signed providers with `GET /api/admin/p2p/tracks/{local_track_id}/mirrors`.
+
+The admin endpoint `GET /api/admin/p2p/transport` reports the local transport's numeric addresses and cumulative audio payload bytes written to and read from QUIC since process startup. A partially transferred file contributes its accepted bytes. Covers, protocol headers and retransmissions are excluded. On a private network, an admin can pass a `direct_addresses` list (for example `["10.0.0.2:11204"]`) alongside the peer's `node_id`. The endpoint verifies the remote identity when establishing the connection. The explicit address list is kept in memory.
 
 From the admin panel or API:
 
@@ -444,3 +498,29 @@ If most traffic goes through relays, direct connections may be failing:
 1. Open UDP port 11204 on both ends
 2. Check if your ISP supports QUIC (some block UDP)
 3. Consider hosting peers on the same network for best performance
+
+### Read replicas and a single P2P owner
+
+Use the standalone configuration for one server. A deployment serving more catalogue reads can run the same backend image with the optional `docker/compose.public.yml` overlay. Both images must contain the federation migrations. For example, `docker compose -f docker-compose.yml -f docker/compose.public.yml up -d --scale catalog-http=2` starts two read processes. Supply the same database, signing secret and catalogue policy flags to each process.
+
+Nginx distributes indexed GET requests for search, tracks, albums and artists across the replicas. Searches requesting external peers, account changes, uploads, media and cache operations go to the owner. Each catalogue replica defaults to eight PostgreSQL connections. Readers query the same primary and enforce the private-instance authentication middleware.
+
+The public overlay gives the active worker 24 serving connections and one dedicated connection for migration and lease renewal. Two catalogue readers therefore use at most 41 application connections. PostgreSQL allows 64 connections, leaving 20 ordinary slots after its three default reserved slots. Each additional standby needs one lease connection. Each additional catalogue reader needs its own pool allowance. When scaling, keep the sum of the serving, reader and lease budgets below the available PostgreSQL slots including room for monitoring and maintenance. The overlay accepts `PUBLIC_WORKER_DB_MAX_CONNECTIONS`, `CATALOG_DB_MAX_CONNECTIONS` and `PUBLIC_POSTGRES_MAX_CONNECTIONS`.
+
+PostgreSQL has a 256 MiB shared-memory mount for parallel query work, configurable through `PUBLIC_POSTGRES_SHM_SIZE`, and allows one parallel worker per gather. The mount is a memory ceiling and consumes space as PostgreSQL writes to it. Nginx allows 4,096 connections and 8,192 open file descriptors per worker. Each proxied audio response occupies a client and an upstream connection. These limits apply to the optional public profile.
+
+An owner configured with `SOUNDTIME_ROLE=worker` acquires a database lease before opening its P2P identity and cache. A standby needs the same original files, blob volume, persistent secret key and service endpoint. In Docker, both owners can advertise the `backend` network alias to the SoundTime proxy. Nginx refreshes that alias using Docker DNS. The standby starts serving HTTP after it acquires the lease. An interrupted client can then resume by requesting the remaining byte range at its original URL.
+
+On takeover PostgreSQL issues a higher generation and rejects writes from the former owner. PostgreSQL grants a 15-second lease. The owner retries transient renewal failures within 13 seconds of sending its last confirmed request, including the time spent opening its serving pool. A renewal that matches no row stops the owner immediately. Its supervisor can then restart it. Returning to the standalone role on a database with a lease also acquires a new generation. Roll back the feature flags using a binary that understands withdrawals and bans.
+
+`P2P_MAX_RANGE_TRANSFERS` limits active verified transfers per direction and `P2P_MAX_RANGES_PER_PEER` limits one remote identity. Set `P2P_UPLOAD_BYTES_PER_SECOND` and `P2P_PEER_UPLOAD_BYTES_PER_SECOND` to bound encoded range responses. The corresponding download settings pace useful incoming audio. Each limited direction permits a burst of one encoded window. A rate of zero disables that rate limit. These settings cover the versioned range protocol. Legacy full-file transfers and browser-facing HTTP consume separate bandwidth.
+
+### Original files and object storage
+
+An HTTP read of an S3 original captures its version ID or ETag and sends one conditional range request for the selected bytes. A local or mounted original keeps an open file descriptor and SoundTime checks the file's size and timestamps after reading each window. A detected change ends that response. The next request opens a fresh version.
+
+Scanning an S3 object for tags and waveform uses a temporary file under `S3_CACHE_PATH`. The defaults allow 512 MiB per analysis and keep 256 MiB free. Configure `S3_ANALYSIS_MAX_BYTES` and `S3_ANALYSIS_MIN_FREE_BYTES` in bytes. One scanner can hold the staging directory at a time. Completion and the next scan after an interruption reclaim the temporary files.
+
+PostgreSQL stores the Bao verification tree for local publications (about 4 KiB per MiB of audio). Each 64 KiB peer request selects only the 64-byte hash pairs along its verification paths and reads the corresponding audio leaf groups from the filesystem or a conditional S3 range. A later replacement cannot supply bytes for the earlier revision. A persistent queue indexes historical originals once, including rows that already have a BLAKE3 hash. A move or a restored mount can resume indexing. A mismatch with an existing SHA-256 or BLAKE3 fingerprint makes the source unavailable and preserves the publication and its listeners' references.
+
+Set `P2P_REFERENCE_IMMUTABLE_UPLOADS=true` only on an instance whose managed filesystem uploads remain immutable at their recorded paths. Large eligible uploads can then also be referenced in place by iroh-blobs. The legacy blob volume counts existing payloads and proofs toward its physical usage, including copies protected by a publication tag.

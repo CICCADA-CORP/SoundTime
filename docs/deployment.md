@@ -107,7 +107,7 @@ S3_ACCESS_KEY=your-access-key
 S3_SECRET_KEY=your-secret-key
 S3_BUCKET=soundtime-music
 S3_PREFIX=audio/                         # optional key prefix
-S3_CACHE_PATH=/tmp/soundtime-s3-cache    # local cache for streaming
+S3_CACHE_PATH=/tmp/soundtime-s3-cache    # artwork and temporary metadata analysis
 ```
 
 ### P2P Networking

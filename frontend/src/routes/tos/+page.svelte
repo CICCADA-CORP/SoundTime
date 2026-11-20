@@ -1,56 +1,75 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { api } from "$lib/api";
   import type { TosResponse } from "$lib/types";
   import { t } from "$lib/i18n/index.svelte";
+  import { catalogQuery } from "$lib/catalog/query.svelte";
+  import CatalogHeader from "$lib/components/catalog/CatalogHeader.svelte";
+  import CatalogState from "$lib/components/catalog/CatalogState.svelte";
 
-  let content = $state("");
-  let loading = $state(true);
+  const terms = catalogQuery(() => api.get<TosResponse>("/tos"));
+  const source = $derived(terms.data?.content.trim() ?? "");
+  const heading = $derived(/^# (.+)(?:\r?\n|$)/.exec(source));
+  const body = $derived(heading ? source.slice(heading[0].length) : source);
 
-  onMount(async () => {
-    try {
-      const tos = await api.get<TosResponse>("/tos");
-      content = tos.content;
-    } catch {
-      content = t('tos.loadError');
-    } finally {
-      loading = false;
+  type Block =
+    | { kind: "h2" | "h3" | "p"; text: string }
+    | { kind: "list"; items: string[] }
+    | { kind: "rule" };
+
+  function parseBlocks(source: string): Block[] {
+    const blocks: Block[] = [];
+    let items: string[] | null = null;
+    for (const line of source.split(/\r?\n/)) {
+      if (line.startsWith("- ")) {
+        if (!items) {
+          items = [];
+          blocks.push({ kind: "list", items });
+        }
+        items.push(line.slice(2));
+      } else {
+        items = null;
+        if (line.startsWith("### ")) blocks.push({ kind: "h3", text: line.slice(4) });
+        else if (/^#{1,2} /.test(line)) blocks.push({ kind: "h2", text: line.replace(/^#{1,2} /, "") });
+        else if (line.trim() === "---") blocks.push({ kind: "rule" });
+        else if (line.trim()) blocks.push({ kind: "p", text: line });
+      }
     }
-  });
-
-  function renderMarkdown(md: string): string {
-    // Simple Markdown → HTML renderer for ToS content
-    return md
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/^### (.+)$/gm, '<h3 class="text-lg font-semibold mt-6 mb-2">$1</h3>')
-      .replace(/^## (.+)$/gm, '<h2 class="text-xl font-semibold mt-8 mb-3">$1</h2>')
-      .replace(/^# (.+)$/gm, '<h1 class="text-2xl font-bold mt-8 mb-4">$1</h1>')
-      .replace(/^\*\*(.+?)\*\*$/gm, '<p class="font-semibold">$1</p>')
-      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*(.+?)\*/g, "<em>$1</em>")
-      .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
-      .replace(/^---$/gm, '<hr class="border-[hsl(var(--border))] my-6" />')
-      .replace(/\n{2,}/g, "</p><p>")
-      .replace(/^(?!<[hHlL])/gm, (match) => (match ? `<p>${match}` : ""))
-      .replace(/<p><\/p>/g, "");
+    return blocks;
   }
+  const blocks = $derived(parseBlocks(body));
 </script>
 
-<svelte:head>
-  <title>{t('tos.title')}</title>
-</svelte:head>
+{#snippet inline(value: string)}
+  {#each value.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g) as part, index (index)}
+    {#if index % 2 === 0}{part}{:else if part.startsWith("**")}<strong>{part.slice(2, -2)}</strong>{:else}<em>{part.slice(1, -1)}</em>{/if}
+  {/each}
+{/snippet}
 
-<div class="max-w-3xl mx-auto py-8 px-4">
-  {#if loading}
-    <div class="flex justify-center py-20">
-      <div class="w-8 h-8 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full animate-spin"></div>
-    </div>
+<svelte:head><title>{t("tos.title")}</title></svelte:head>
+<div class="max-w-3xl space-y-6">
+  <CatalogHeader title={heading?.[1] ?? t("authShell.terms")} />
+  {#if terms.loading || terms.failed}
+    <CatalogState loading={terms.loading} failed={terms.failed} retry={terms.retry} />
   {:else}
-    <div class="prose prose-invert max-w-none space-y-2 text-[hsl(var(--foreground))] leading-relaxed text-sm">
-      <!-- SECURITY: renderMarkdown() escapes &, <, > before applying transforms — safe from XSS -->
-      {@html renderMarkdown(content)}
-    </div>
+    <article class="terms">
+      {#each blocks as block, index (index)}
+        {#if block.kind === "list"}
+          <ul>{#each block.items as item, position (position)}<li>{@render inline(item)}</li>{/each}</ul>
+        {:else if block.kind === "rule"}
+          <hr>
+        {:else}
+          <svelte:element this={block.kind}>{@render inline(block.text)}</svelte:element>
+        {/if}
+      {/each}
+    </article>
   {/if}
 </div>
+
+<style>
+  .terms { font-size: .9375rem; line-height: 1.7; overflow-wrap: anywhere; }
+  .terms :global(p), .terms ul { margin: .6rem 0; }
+  .terms ul { list-style: disc; padding-inline-start: 1.5rem; }
+  .terms :global(h2), .terms :global(h3) { margin-block: 1.4rem .4rem; font-weight: 600; }
+  .terms :global(h2) { font-size: 1.125rem; }
+  .terms hr { margin-block: 1.5rem; border-color: hsl(var(--border)); }
+</style>

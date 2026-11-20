@@ -3,7 +3,6 @@
   import type { Track } from "$lib/types";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
-  import { t } from "$lib/i18n/index.svelte";
 
   let { track, tracks, index }: { track: Track; tracks?: Track[]; index?: number } = $props();
 
@@ -41,7 +40,7 @@
     </div>
   </div>
   <h3 class="text-sm font-medium truncate">{track.title}</h3>
-  <p class="text-xs text-[hsl(var(--muted-foreground))] truncate mt-0.5">
-    {track.artist_name ?? t('track.unknownArtist')}
-  </p>
+  {#if track.artist_name}
+    <p class="text-xs text-[hsl(var(--muted-foreground))] truncate mt-0.5">{track.artist_name}</p>
+  {/if}
 </button>

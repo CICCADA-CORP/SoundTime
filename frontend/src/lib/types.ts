@@ -1,6 +1,10 @@
 // TypeScript interfaces for SoundTime
 
+export type TrackAvailability = "playable" | "withdrawn" | "temporarily_unavailable" | "unavailable_on_instance";
+
 export interface Track {
+  availability?: TrackAvailability;
+  position?: number;
   id: string;
   title: string;
   artist_id: string;
@@ -24,7 +28,7 @@ export interface Track {
   best_bitrate?: number | null;
   best_source?: string | null;
   // Joined fields
-  artist_name?: string;
+  artist_name?: string | null;
   album_title?: string;
   cover_url?: string;
 }
@@ -39,7 +43,7 @@ export interface Album {
   year: number | null;
   created_at: string;
   // Joined
-  artist_name?: string;
+  artist_name?: string | null;
   tracks?: Track[];
 }
 
@@ -153,6 +157,11 @@ export interface SearchResults {
 
 /** A search result from a remote P2P peer. */
 export interface NetworkSearchResult {
+  authority_node?: string;
+  publication_id?: string;
+  revision?: number;
+  track_id?: string;
+  track?: Track;
   hash: string;
   title: string;
   artist_name: string;
@@ -197,7 +206,8 @@ export interface UploadResponse {
 }
 
 export interface ApiError {
-  error: string;
+  error?: string;
+  message?: string;
 }
 
 // ─── Admin / P2P Types ──────────────────────────────────────────────
@@ -231,6 +241,7 @@ export interface KnownInstance {
 
 export interface P2pStatus {
   enabled: boolean;
+  explicit_catalog?: boolean;
   node_id: string | null;
   relay_url: string | null;
   relay_connected: boolean;
@@ -243,6 +254,7 @@ export interface P2pStatus {
 
 export interface P2pPeer {
   node_id: string;
+  catalog_followed?: boolean | null;
   name: string | null;
   version: string | null;
   track_count: number;
@@ -296,7 +308,17 @@ export interface MetadataStatus {
   available_remote_tracks: number;
 }
 
+export interface MetadataRecordingCandidate {
+  recording_mbid: string;
+  title: string;
+  artist_name?: string | null;
+  album_title?: string | null;
+  duration_ms?: number | null;
+  disambiguation?: string | null;
+}
+
 export interface MetadataResult {
+  candidates?: MetadataRecordingCandidate[];
   track_id: string;
   status: string;
   recording_mbid: string | null;
@@ -350,7 +372,7 @@ export interface TrackCredits {
   uploaded_by_username?: string | null;
   created_at: string;
   artist_id: string;
-  artist_name: string;
+  artist_name: string | null;
   artist?: string;
   artist_bio: string | null;
   artist_image: string | null;
@@ -386,6 +408,7 @@ export interface SetupInstanceRequest {
 }
 
 export interface SetupCompleteRequest {
+  instance_private?: boolean;
   open_registrations: boolean;
   max_upload_size_mb: number;
   p2p_enabled: boolean;
@@ -459,7 +482,19 @@ export interface TosResponse {
 
 // ─── Storage Types ──────────────────────────────────────────────────
 
+export interface CacheUsage {
+  configured_ceiling_bytes: number;
+  maximum_bytes: number;
+  reserve_free_bytes: number;
+  available_bytes: number;
+  evictable_bytes: number;
+  pinned_bytes: number;
+  reserved_bytes: number;
+  legacy_and_unclassified_bytes: number;
+}
+
 export interface StorageStatus {
+  cache?: CacheUsage | null;
   backend: string;
   total_tracks: number;
   total_size_bytes: number;
@@ -505,6 +540,7 @@ export type StorageTaskStatus =
 // ─── Metadata Task Types ────────────────────────────────────────────
 
 export interface MetadataTaskProgress {
+  ambiguous?: number;
   processed: number;
   total: number;
   enriched: number;
@@ -514,6 +550,7 @@ export interface MetadataTaskProgress {
 }
 
 export interface MetadataTaskResult {
+  ambiguous?: number;
   total_processed: number;
   enriched: number;
   not_found: number;

@@ -1,63 +1,54 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { signInLink } from "$lib/access/navigation";
+  import { page } from "$app/state";
+  import { currentCatalogPage, selectCatalogPage } from "$lib/catalog/pagination";
+  import { Disc3, Play } from "lucide-svelte";
+  import { availabilityLabel, canPlay } from "$lib/catalog/availability";
   import { api } from "$lib/api";
+  import { catalogQuery } from "$lib/catalog/query.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
-  import { formatDuration, formatDate } from "$lib/utils";
   import { getPlayerStore } from "$lib/stores/player.svelte";
-  import { t } from "$lib/i18n/index.svelte";
-  import type { Track } from "$lib/types";
-
-  interface HistoryEntry {
-    id: string;
-    track_id: string;
-    listened_at: string;
-    track?: {
-      id: string;
-      title: string;
-      duration_secs: number;
-      artist_name?: string;
-    };
-  }
+  import { formatDuration } from "$lib/utils";
+  import { getLocale, t } from "$lib/i18n/index.svelte";
+  import type { HistoryEntry, PaginatedResponse } from "$lib/types";
+  import { Button } from "$lib/components/ui/button";
+  import CatalogHeader from "$lib/components/catalog/CatalogHeader.svelte";
+  import CatalogState from "$lib/components/catalog/CatalogState.svelte";
+  import PageControls from "$lib/components/catalog/PageControls.svelte";
 
   const auth = getAuthStore();
   const player = getPlayerStore();
-  let history: HistoryEntry[] = $state([]);
-  let loading = $state(true);
-
-  onMount(async () => {
-    if (!auth.isAuthenticated) { loading = false; return; }
-    try {
-      const res = await api.get<{ data: HistoryEntry[] }>("/history");
-      history = res.data ?? [];
-    } catch (e) { console.error('Failed to load history:', e); } finally { loading = false; }
-  });
+  const current = $derived(currentCatalogPage());
+  const history = catalogQuery(signal => auth.isAuthenticated ? api.get<PaginatedResponse<HistoryEntry>>(`/history?page=${current}&per_page=50`, signal) : null);
+  let date = $derived(new Intl.DateTimeFormat(getLocale(), { day: "numeric", month: "short", year: "numeric" }));
 </script>
 
-<svelte:head><title>History — SoundTime</title></svelte:head>
+<svelte:head><title>{t("history.title")} — SoundTime</title></svelte:head>
 
 <div class="space-y-6">
-  <h1 class="text-2xl font-bold">{t('history.title')}</h1>
-
+  <CatalogHeader title={t("history.title")} />
   {#if !auth.isAuthenticated}
-    <p class="text-[hsl(var(--muted-foreground))] text-center py-10">Sign in to see your history.</p>
-  {:else if loading}
-    <div class="flex justify-center py-10">
-      <div class="w-8 h-8 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full animate-spin"></div>
-    </div>
-  {:else if history.length > 0}
-    <div class="space-y-1">
-      {#each history as entry}
-        <button class="w-full flex items-center gap-4 px-4 py-3 rounded-lg hover:bg-[hsl(var(--secondary))] transition text-left" onclick={() => entry.track && player.play(entry.track as Track)}>
-          <div class="flex-1 min-w-0">
-            <p class="text-sm font-medium truncate">{entry.track?.title ?? "Unknown"}</p>
-            <p class="text-xs text-[hsl(var(--muted-foreground))]">{entry.track?.artist_name ?? ""}</p>
-          </div>
-          <span class="text-xs text-[hsl(var(--muted-foreground))]">{formatDate(entry.listened_at)}</span>
-          <span class="text-xs text-[hsl(var(--muted-foreground))] w-12 text-right">{formatDuration(entry.track?.duration_secs ?? 0)}</span>
+    <CatalogState message={t("library.signInPrompt")}><Button href={signInLink(page.url)}>{t("auth.signIn")}</Button></CatalogState>
+  {:else if history.data?.data.length}
+    <div class="divide-y divide-border">
+      {#each history.data.data as { id, track, listened_at } (id)}
+        <button disabled={!canPlay(track)} class="group flex w-full items-center gap-3 rounded-md p-2 text-left hover:bg-secondary" onclick={() => player.play(track)}>
+          <span class="relative grid size-11 shrink-0 place-items-center overflow-hidden rounded-md bg-secondary text-muted-foreground">
+            {#if track.cover_url}<img src={track.cover_url} loading="lazy" alt="" class="size-full object-cover" />
+            {:else}<Disc3 size={21} />{/if}
+            <span class="absolute inset-0 hidden place-items-center bg-black/60 text-white group-hover:grid group-focus-visible:grid"><Play size={15} fill="currentColor" /></span>
+          </span>
+          <span class="min-w-0 flex-1"><span class="block truncate text-sm font-medium">{track.title}</span>
+            {#if !canPlay(track)}<span class="block text-xs text-muted-foreground">{availabilityLabel(track)}</span>{/if}
+            {#if track.artist_name}<span class="block truncate text-xs text-muted-foreground">{track.artist_name}</span>{/if}
+          </span>
+          <time datetime={listened_at} class="text-xs text-muted-foreground">{date.format(new Date(listened_at))}</time>
+          <span class="hidden w-12 text-right text-xs tabular-nums text-muted-foreground sm:inline">{formatDuration(track.duration_secs)}</span>
         </button>
       {/each}
     </div>
+    <PageControls page={current} total={history.data.total_pages} select={selectCatalogPage} />
   {:else}
-    <p class="text-[hsl(var(--muted-foreground))] text-center py-10">No listening history yet.</p>
+    <CatalogState loading={history.loading} failed={history.failed} status={history.status} retry={history.retry} message={t("catalog.historyEmpty")} />
   {/if}
 </div>

@@ -1,0 +1,40 @@
+# Apply with docker-compose.yml when running a SoundTime image with catalogue workers.
+services:
+  postgres:
+    shm_size: ${PUBLIC_POSTGRES_SHM_SIZE:-256m}
+    command: [postgres, -c, "max_connections=${PUBLIC_POSTGRES_MAX_CONNECTIONS:-64}", -c, "max_parallel_workers_per_gather=1"]
+  backend:
+    ulimits:
+      nofile: {soft: 8192, hard: 8192}
+    environment:
+      SOUNDTIME_ROLE: worker
+      SOUNDTIME_MAX_ACTIVE_STREAMS: ${PUBLIC_MAX_ACTIVE_STREAMS:-1536}
+      SOUNDTIME_MAX_STREAMS_PER_ACCOUNT: ${PUBLIC_MAX_STREAMS_PER_ACCOUNT:-48}
+      SOUNDTIME_MAX_ANONYMOUS_STREAMS: ${PUBLIC_MAX_ANONYMOUS_STREAMS:-256}
+      DB_MIN_CONNECTIONS: 2
+      DB_MAX_CONNECTIONS: ${PUBLIC_WORKER_DB_MAX_CONNECTIONS:-24}
+  catalog-http:
+    ulimits:
+      nofile: {soft: 8192, hard: 8192}
+    image: ghcr.io/ciccada-corp/soundtime-backend:latest
+    restart: unless-stopped
+    environment:
+      SOUNDTIME_ROLE: catalog-http
+      DATABASE_URL: postgres://${POSTGRES_USER:-soundtime}:${POSTGRES_PASSWORD:-soundtime}@postgres:5432/${POSTGRES_DB:-soundtime}
+      JWT_SECRET: ${JWT_SECRET}
+      SOUNDTIME_DOMAIN: ${SOUNDTIME_DOMAIN:-localhost}
+      P2P_ENABLED: ${P2P_ENABLED:-true}
+      P2P_EXPLICIT_CATALOG: ${P2P_EXPLICIT_CATALOG:-false}
+      DB_MIN_CONNECTIONS: 1
+      DB_MAX_CONNECTIONS: ${CATALOG_DB_MAX_CONNECTIONS:-8}
+    depends_on:
+      postgres: {condition: service_healthy}
+  nginx:
+    ulimits:
+      nofile: {soft: 8192, hard: 8192}
+    volumes:
+      - ./docker/nginx-public.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/catalog-upstreams.conf:/etc/nginx/conf.d/catalog-upstreams.conf:ro
+      - ./docker/catalog-read.conf:/etc/nginx/soundtime-catalog.d/read.conf:ro
+    depends_on:
+      - catalog-http

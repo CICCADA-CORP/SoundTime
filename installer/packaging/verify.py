@@ -78,7 +78,7 @@ def verify(directory):
             raise ValueError("The packaged wizard must offer the English NAS flow and allow cancellation")
         if run(["invalid-command"]).returncode == 0:
             raise ValueError("Wrapper swallowed a command error")
-        result = run(["export", "--target", "nas", "--directory", "/volume1/docker/soundtime",
+        result = run(["export", "--target", "nas", "--access", "lan", "--directory", "/volume1/docker/soundtime",
                       "--output", "NAS project.zip"])
         if result.returncode:
             raise RuntimeError(f"Packaged NAS export failed: {result.stdout!r}, {result.stderr!r}")
@@ -86,6 +86,8 @@ def verify(directory):
             for name in ("compose.yaml", ".env", "qnap-compose.yaml", "docker/nginx.conf", "README.txt"):
                 if not project.read(name).strip():
                     raise ValueError(f"Empty NAS project file: {name}")
+            if not project.read("docker/access/users").startswith(b"soundtime:$2b$12$"):
+                raise ValueError("The packaged NAS LAN export must include a bcrypt bootstrap credential")
             if b"Install SoundTime on your NAS" not in project.read("README.txt"):
                 raise ValueError("The exported NAS guide must be in English")
         if system == "windows":

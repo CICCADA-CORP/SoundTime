@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: soundtime
+      POSTGRES_PASSWORD: ${QA_SECRET:?}
+      POSTGRES_DB: soundtime
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "soundtime"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+  backend:
+    image: ${QA_BACKEND_IMAGE:?}
+    build:
+      context: ../../backend
+      dockerfile: ../docker/Dockerfile.backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://soundtime:${QA_SECRET}@postgres:5432/soundtime
+      JWT_SECRET: ${QA_SECRET}
+      P2P_ENABLED: "false"
+      PLUGIN_ENABLED: "false"
+      AUDIO_STORAGE_PATH: /data/music
+  frontend:
+    image: ${QA_FRONTEND_IMAGE:?}
+    build:
+      context: ../../frontend
+      dockerfile: ../docker/Dockerfile.frontend
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "127.0.0.1::80"
+    volumes:
+      - ../../docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on: [backend, frontend]

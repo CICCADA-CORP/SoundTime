@@ -5,7 +5,7 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 use soundtime_db::entities::remote_track;
 use soundtime_db::AppState;
@@ -17,6 +17,17 @@ use soundtime_p2p::{
 use soundtime_p2p::{P2pMessage, P2pNode, PeerInfo};
 use std::sync::Arc;
 use uuid::Uuid;
+
+pub async fn sample_rendezvous(
+    Extension(directory): Extension<Arc<tokio::sync::Mutex<Rendezvous>>>,
+) -> Json<Vec<soundtime_p2p::NodeId>> {
+    Json(
+        directory
+            .lock()
+            .await
+            .sample(chrono::Utc::now().timestamp(), None),
+    )
+}
 
 /// POST /api/p2p/rendezvous on instances that explicitly host a directory.
 pub async fn rendezvous(
@@ -47,6 +58,7 @@ fn get_p2p_node(state: &AppState) -> Option<Arc<P2pNode>> {
 #[derive(Serialize)]
 pub struct P2pStatus {
     pub enabled: bool,
+    pub explicit_catalog: bool,
     pub node_id: Option<String>,
     pub relay_url: Option<String>,
     pub relay_connected: bool,
@@ -61,6 +73,16 @@ pub struct P2pStatus {
 pub struct AddPeerRequest {
     /// iroh NodeId (public key) of the peer to add
     pub node_id: String,
+    /// Optional numeric transport addresses supplied by the administrator.
+    #[serde(default)]
+    pub direct_addresses: Vec<std::net::SocketAddr>,
+    #[serde(default)]
+    pub follow_catalog: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct SubscriptionRequest {
+    pub followed: bool,
 }
 
 #[derive(Serialize)]
@@ -75,6 +97,7 @@ pub async fn p2p_status(State(state): State<Arc<AppState>>) -> Json<P2pStatus> {
     let Some(node) = get_p2p_node(&state) else {
         return Json(P2pStatus {
             enabled: false,
+            explicit_catalog: false,
             node_id: None,
             relay_url: None,
             relay_connected: false,
@@ -92,6 +115,7 @@ pub async fn p2p_status(State(state): State<Arc<AppState>>) -> Json<P2pStatus> {
 
     Json(P2pStatus {
         enabled: true,
+        explicit_catalog: node.explicit_catalog(),
         node_id: Some(node.node_id().to_string()),
         relay_url,
         relay_connected,
@@ -103,21 +127,85 @@ pub async fn p2p_status(State(state): State<Arc<AppState>>) -> Json<P2pStatus> {
     })
 }
 
-/// GET /api/admin/p2p/peers — list known peers (admin only)
-pub async fn list_peers(State(state): State<Arc<AppState>>) -> Json<Vec<PeerInfo>> {
-    let Some(node) = get_p2p_node(&state) else {
-        return Json(vec![]);
-    };
+/// Transport diagnostics include private addresses and are only visible to admins.
+pub async fn transport_stats(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<soundtime_p2p::node::TransportStats>, StatusCode> {
+    let node = get_p2p_node(&state).ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    Ok(Json(node.transport_stats()))
+}
 
+#[derive(Serialize)]
+pub struct MirrorProviders {
+    providers: Vec<String>,
+}
+
+/// Inspect usable, signed mirror leases for the current version of a local track ID.
+pub async fn track_mirrors(
+    State(state): State<Arc<AppState>>,
+    Path(track): Path<Uuid>,
+) -> Result<Json<MirrorProviders>, StatusCode> {
+    use sea_orm::{ConnectionTrait, DbBackend, Statement};
+    let rows=state.db.query_all(Statement::from_sql_and_values(DbBackend::Postgres,
+        "SELECT DISTINCT l.provider FROM federation_mirror_leases l JOIN track_publications p ON p.track_id=l.track_id AND p.revision=l.revision AND p.state='active'
+         JOIN federation_track_providers s ON s.track_id=p.track_id AND s.provider=l.provider AND s.allowed AND s.followed AND s.online
+         WHERE l.track_id=$1 AND l.active AND l.expires_at>now() ORDER BY l.provider LIMIT 32",
+         [track.into()])).await.map_err(|_|StatusCode::SERVICE_UNAVAILABLE)?;
+    let providers = rows
+        .into_iter()
+        .map(|r| r.try_get("", "provider"))
+        .collect::<Result<_, _>>()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(MirrorProviders { providers }))
+}
+
+#[derive(Serialize)]
+pub struct ManagedPeer {
+    #[serde(flatten)]
+    peer: PeerInfo,
+    /// The subscription control is available on instances using explicit catalogues.
+    catalog_followed: Option<bool>,
+}
+
+/// GET /api/admin/p2p/peers — list known peers and local subscriptions.
+pub async fn list_peers(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<ManagedPeer>>, StatusCode> {
+    use soundtime_db::entities::federation_peer_policy as policy;
+    let Some(node) = get_p2p_node(&state) else {
+        return Ok(Json(vec![]));
+    };
     let peers = node.registry().list_peers().await;
-    Json(peers)
+    let explicit = node.explicit_catalog();
+    let followed: std::collections::HashSet<String> = if explicit && !peers.is_empty() {
+        policy::Entity::find()
+            .filter(policy::Column::IsFollowed.eq(true))
+            .filter(policy::Column::NodeId.is_in(peers.iter().map(|peer| peer.node_id.clone())))
+            .all(&state.db)
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?
+            .into_iter()
+            .map(|p| p.node_id)
+            .collect()
+    } else {
+        Default::default()
+    };
+    Ok(Json(
+        peers
+            .into_iter()
+            .map(|peer| ManagedPeer {
+                catalog_followed: explicit.then(|| followed.contains(&peer.node_id)),
+                peer,
+            })
+            .collect(),
+    ))
 }
 
 /// POST /api/admin/p2p/peers — add a peer by NodeId (admin only)
 pub async fn add_peer(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AddPeerRequest>,
-) -> Result<Json<MessageResponse>, (StatusCode, Json<MessageResponse>)> {
+) -> Result<(StatusCode, Json<MessageResponse>), (StatusCode, Json<MessageResponse>)> {
     let Some(node) = get_p2p_node(&state) else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -136,45 +224,167 @@ pub async fn add_peer(
         )
     })?;
 
-    let peer_addr = soundtime_p2p::NodeAddr::new(node_id);
+    if payload.direct_addresses.len() > 16
+        || payload.direct_addresses.iter().any(|addr| {
+            addr.port() == 0
+                || addr.ip().is_unspecified()
+                || addr.ip().is_multicast()
+                || matches!(addr.ip(), std::net::IpAddr::V4(ip) if ip.is_broadcast())
+        })
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(MessageResponse {
+                message: "Expected at most 16 unicast addresses with nonzero ports".into(),
+            }),
+        ));
+    }
+    if payload.follow_catalog == Some(false) && !node.explicit_catalog() {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(MessageResponse {
+                message: "Presence-only discovery requires explicit catalogue mode".into(),
+            }),
+        ));
+    }
+    let follow = payload.follow_catalog.unwrap_or(true);
+    if node.explicit_catalog() {
+        node.set_followed(node_id, follow)
+            .await
+            .map_err(peer_policy_error)?;
+    }
+    let mut peer_addr = soundtime_p2p::NodeAddr::new(node_id);
+    for address in payload.direct_addresses {
+        peer_addr = peer_addr.with_ip_addr(address);
+    }
+    let started = chrono::Utc::now();
     match node.ping_peer(peer_addr).await {
-        Ok(P2pMessage::Pong {
-            node_id: peer_nid,
-            track_count,
-            version,
-        }) => {
-            node.registry()
-                .upsert_peer_versioned(&peer_nid, None, track_count, version)
-                .await;
+        Ok(P2pMessage::Pong { track_count, .. }) => {
+            let preparing = if node.explicit_catalog() && follow {
+                match node.request_catalog_from_peer(node_id).await {
+                    Ok(()) => false,
+                    Err(soundtime_p2p::P2pError::CatalogPreparing) => true,
+                    Err(error) => return Err(peer_policy_error(error)),
+                }
+            } else {
+                false
+            };
             // Trigger peer exchange in background to discover wider network
             let p2p_clone = Arc::clone(&node);
             tokio::spawn(async move {
                 p2p_clone.discover_via_peer(node_id).await;
             });
-            Ok(Json(MessageResponse {
-                message: format!(
-                    "peer {} added and responded to ping ({} tracks)",
-                    payload.node_id, track_count
-                ),
-            }))
+            if preparing {
+                return Ok(catalog_preparing());
+            }
+            Ok((
+                StatusCode::OK,
+                Json(MessageResponse {
+                    message: format!(
+                        "peer {} added and responded to ping ({} tracks)",
+                        payload.node_id, track_count
+                    ),
+                }),
+            ))
         }
         Ok(_) => {
             // Got a response but not a Pong — register anyway
             node.registry().upsert_peer(&payload.node_id, None, 0).await;
-            Ok(Json(MessageResponse {
-                message: format!("peer {} added (unexpected response type)", payload.node_id),
-            }))
+            Ok((
+                StatusCode::OK,
+                Json(MessageResponse {
+                    message: format!("peer {} added (unexpected response type)", payload.node_id),
+                }),
+            ))
         }
         Err(e) => {
-            // Register as offline peer
-            node.registry().upsert_peer(&payload.node_id, None, 0).await;
-            node.registry().mark_offline(&payload.node_id).await;
+            if matches!(
+                e,
+                soundtime_p2p::P2pError::Connection(_)
+                    | soundtime_p2p::P2pError::Endpoint(_)
+                    | soundtime_p2p::P2pError::Io(_)
+            ) {
+                node.registry()
+                    .failed_since(&payload.node_id, started, true)
+                    .await;
+            }
             tracing::warn!(peer = %payload.node_id, "ping failed: {e}");
-            Ok(Json(MessageResponse {
-                message: format!("peer {} added but ping failed: {e}", payload.node_id),
-            }))
+            Ok((
+                StatusCode::OK,
+                Json(MessageResponse {
+                    message: format!("peer {} added but ping failed: {e}", payload.node_id),
+                }),
+            ))
         }
     }
+}
+
+fn catalog_preparing() -> (StatusCode, Json<MessageResponse>) {
+    (StatusCode::ACCEPTED, Json(MessageResponse {
+        message: "Catalogue followed. The remote journal is preparing. Synchronization will resume automatically.".into(),
+    }))
+}
+
+fn peer_policy_error(error: soundtime_p2p::P2pError) -> (StatusCode, Json<MessageResponse>) {
+    let code = match error {
+        soundtime_p2p::P2pError::PeerBlocked(_) => StatusCode::FORBIDDEN,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    (
+        code,
+        Json(MessageResponse {
+            message: error.to_string(),
+        }),
+    )
+}
+
+/// Persist the local subscription before notifying the remote provider.
+pub async fn update_subscription(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(payload): Json<SubscriptionRequest>,
+) -> Result<(StatusCode, Json<MessageResponse>), (StatusCode, Json<MessageResponse>)> {
+    let node = get_p2p_node(&state)
+        .filter(|n| n.explicit_catalog())
+        .ok_or_else(|| {
+            (
+                StatusCode::CONFLICT,
+                Json(MessageResponse {
+                    message: "Explicit catalogue mode is disabled".into(),
+                }),
+            )
+        })?;
+    let id = id.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(MessageResponse {
+                message: "Invalid node ID".into(),
+            }),
+        )
+    })?;
+    let notified = match node.update_subscription(id, payload.followed).await {
+        Ok(notified) => notified,
+        Err(soundtime_p2p::P2pError::CatalogPreparing) => return Ok(catalog_preparing()),
+        Err(error) => return Err(peer_policy_error(error)),
+    };
+    Ok((
+        StatusCode::OK,
+        Json(MessageResponse {
+            message: format!(
+                "Catalogue {}{}",
+                if payload.followed {
+                    "followed"
+                } else {
+                    "unfollowed"
+                },
+                if notified {
+                    ""
+                } else {
+                    " locally (peer not notified)"
+                }
+            ),
+        }),
+    ))
 }
 
 /// POST /api/admin/p2p/peers/{node_id}/ping — ping a specific peer (admin only)
@@ -215,13 +425,26 @@ pub async fn ping_peer(
 pub async fn remove_peer(
     State(state): State<Arc<AppState>>,
     Path(peer_node_id): Path<String>,
-) -> Json<MessageResponse> {
+) -> Result<Json<MessageResponse>, (StatusCode, Json<MessageResponse>)> {
     if let Some(node) = get_p2p_node(&state) {
+        if node.explicit_catalog() {
+            let nid = peer_node_id.parse().map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(MessageResponse {
+                        message: "Invalid node ID".into(),
+                    }),
+                )
+            })?;
+            node.update_subscription(nid, false)
+                .await
+                .map_err(peer_policy_error)?;
+        }
         node.registry().remove_peer(&peer_node_id).await;
     }
-    Json(MessageResponse {
+    Ok(Json(MessageResponse {
         message: format!("peer {peer_node_id} removed"),
-    })
+    }))
 }
 
 // ── Network graph types ─────────────────────────────────────────
@@ -257,7 +480,15 @@ pub struct NetworkGraph {
 
 /// GET /api/p2p/network-graph — P2P network topology for D3 visualization
 pub async fn network_graph(State(state): State<Arc<AppState>>) -> Json<NetworkGraph> {
-    let Some(node) = get_p2p_node(&state) else {
+    graph(&state, false).await
+}
+
+pub async fn admin_network_graph(State(state): State<Arc<AppState>>) -> Json<NetworkGraph> {
+    graph(&state, true).await
+}
+
+async fn graph(state: &AppState, admin: bool) -> Json<NetworkGraph> {
+    let Some(node) = get_p2p_node(state) else {
         return Json(NetworkGraph {
             nodes: vec![],
             links: vec![],
@@ -313,8 +544,11 @@ pub async fn network_graph(State(state): State<Arc<AppState>>) -> Json<NetworkGr
         });
     }
 
-    // Peers from registry
-    let peers = node.registry().list_peers().await;
+    let peers = if admin {
+        node.registry().list_peers().await
+    } else {
+        node.public_peer_sample().await
+    };
     for peer in &peers {
         let short_peer_id = if peer.node_id.len() > 8 {
             &peer.node_id[..8]
@@ -355,7 +589,7 @@ pub struct NetworkSearchQuery {
 
 #[derive(Serialize)]
 pub struct NetworkSearchResponse {
-    pub results: Vec<soundtime_p2p::SearchResultItem>,
+    pub results: Vec<super::search::RemoteSearchHit>,
     pub total: usize,
 }
 
@@ -383,7 +617,9 @@ pub async fn network_search(
     }
 
     let limit = params.limit.unwrap_or(20).min(100);
-    let results = node.distributed_search(query, limit).await;
+    let results = super::search::network_results(&state, node, query, limit)
+        .await
+        .map_err(|(code, message)| (code, Json(MessageResponse { message })))?;
     let total = results.len();
 
     Ok(Json(NetworkSearchResponse { results, total }))
@@ -571,6 +807,7 @@ mod tests {
     fn test_serialize_p2p_status_disabled() {
         let status = P2pStatus {
             enabled: false,
+            explicit_catalog: false,
             node_id: None,
             relay_url: None,
             relay_connected: false,
@@ -591,6 +828,7 @@ mod tests {
     fn test_serialize_p2p_status_enabled() {
         let status = P2pStatus {
             enabled: true,
+            explicit_catalog: true,
             node_id: Some("abc123".to_string()),
             relay_url: Some("https://relay.example.com".to_string()),
             relay_connected: true,
@@ -613,6 +851,16 @@ mod tests {
         let json = r#"{"node_id":"abc123def456"}"#;
         let req: AddPeerRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.node_id, "abc123def456");
+        assert!(req.direct_addresses.is_empty());
+        let with_ip =
+            r#"{"node_id":"abc123def456","direct_addresses":["127.0.0.1:11204","[::1]:11204"]}"#;
+        assert_eq!(
+            serde_json::from_str::<AddPeerRequest>(with_ip)
+                .unwrap()
+                .direct_addresses
+                .len(),
+            2
+        );
     }
 
     // 4. MessageResponse serialization

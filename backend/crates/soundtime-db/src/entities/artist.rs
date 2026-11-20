@@ -7,6 +7,8 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
     pub name: String,
+    #[sea_orm(default_value = false)]
+    pub is_placeholder: bool,
     pub musicbrainz_id: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
     pub bio: Option<String>,
@@ -31,6 +33,15 @@ impl Related<super::album::Entity> for Entity {
 impl Related<super::track::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Track.def()
+    }
+}
+
+/// Internal label for tracks that have no artist credit in their source.
+pub const UNATTRIBUTED_NAME: &str = "Unknown Artist";
+
+impl Entity {
+    pub fn credited() -> sea_orm::Select<Self> {
+        Self::find().filter(Column::IsPlaceholder.eq(false))
     }
 }
 

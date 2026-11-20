@@ -174,6 +174,18 @@ describe('Radio Store', () => {
 	});
 
 	describe('stopRadio', () => {
+		it('discards tracks that arrive after a pending station is stopped', async () => {
+			let resolve!: (value: { tracks: ReturnType<typeof mockTrack>[]; exhausted: boolean }) => void;
+			vi.mocked(radioApi.next).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+			const start = radio.startRadio('genre', { genre: 'Jazz', label: 'Jazz' });
+			radio.stopRadio();
+			resolve({ tracks: [mockTrack('late')], exhausted: false });
+			await start;
+			expect(mockQueueStore.playQueue).not.toHaveBeenCalled();
+			expect(radio.active).toBe(false);
+			expect(radio.loading).toBe(false);
+		});
+
 		it('should stop radio and preserve queue', async () => {
 			vi.mocked(radioApi.next).mockResolvedValueOnce({
 				tracks: [mockTrack('t1')],

@@ -1,0 +1,29 @@
+services:
+  browser:
+    profiles: [measurement]
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    image: soundtime-federation-browser:${COMPOSE_PROJECT_NAME}
+    pull_policy: never
+    init: true
+    shm_size: 256mb
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [ingress]
+  load-generator:
+    profiles: [measurement]
+    image: soundtime-federation-browser:${COMPOSE_PROJECT_NAME}
+    pull_policy: never
+    user: node
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [ingress]
+    environment:
+      SOUNDTIME_LOAD_INGRESS: "true"
+      SOUNDTIME_TEST_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME}
+    ulimits:
+      nofile: {soft: 4096, hard: 4096}
+    entrypoint: ["sleep", "infinity"]

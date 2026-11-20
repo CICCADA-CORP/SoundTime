@@ -1,50 +1,27 @@
-describe('Settings', () => {
-	beforeEach(() => {
-		cy.loginAsAdmin();
-	});
+describe("Settings", () => {
+  beforeEach(() => {
+    cy.loginAsAdmin();
+    cy.visit("/settings", {
+      onBeforeLoad(win) { win.localStorage.setItem("soundtime_lang", "en"); },
+    });
+  });
 
-	it('settings page loads', () => {
-		cy.visit('/settings');
-		cy.url().should('include', '/settings');
-	});
+  it("persists the volume, autoplay and language changed from the preferences", () => {
+    cy.get('input[type="range"][aria-label="Volume"]').as("volume");
+    cy.get("@volume").invoke("val", "32").trigger("input");
+    cy.contains("label", "Autoplay").find('[role="switch"]').check();
+    cy.reload();
+    cy.get('input[type="range"][aria-label="Volume"]').should("have.value", "32");
+    cy.contains("label", "Autoplay").find('[role="switch"]').should("be.checked");
+    cy.contains("label", "Display Language").find("select").select("fr");
+    cy.reload();
+    cy.get("main select").should("have.value", "fr");
+  });
 
-	it('settings page shows language selector', () => {
-		cy.visit('/settings');
-		// Look for language/locale selection
-		cy.get('select, [data-testid="language-selector"], button:contains("English"), button:contains("Français")')
-			.should('exist');
-	});
-
-	it('user profile section is visible', () => {
-		cy.visit('/settings');
-		cy.get('body').should('not.be.empty');
-	});
-
-	it('auth/me endpoint returns user data', () => {
-		cy.window().then((win) => {
-			const token = win.localStorage.getItem('soundtime_access_token');
-			cy.request({
-				url: '/api/auth/me',
-				headers: { Authorization: `Bearer ${token}` },
-				failOnStatusCode: false
-			}).then((res) => {
-				if (res.status === 200) {
-					expect(res.body).to.have.property('username');
-					expect(res.body).to.have.property('email');
-				}
-			});
-		});
-	});
-
-	it('language preference persists', () => {
-		cy.visit('/settings');
-		// Change language and verify it persists
-		cy.window().then((win) => {
-			win.localStorage.setItem('soundtime_lang', 'fr');
-		});
-		cy.reload();
-		cy.window().then((win) => {
-			expect(win.localStorage.getItem('soundtime_lang')).to.eq('fr');
-		});
-	});
+  it("cancels the account confirmation and returns focus to its trigger", () => {
+    cy.contains("button", "Delete my account").as("trigger").click();
+    cy.get('[role="dialog"]').should("be.visible").contains("button", "Cancel").click();
+    cy.get('[role="dialog"]').should("not.exist");
+    cy.get("@trigger").should("be.focused");
+  });
 });

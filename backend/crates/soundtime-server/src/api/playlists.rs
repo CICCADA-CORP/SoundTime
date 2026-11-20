@@ -4,10 +4,11 @@ use axum::{
     Json,
 };
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set,
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use uuid::Uuid;
 
 use super::tracks::PaginationParams;
@@ -74,17 +75,41 @@ pub struct AddTrackRequest {
     pub position: Option<i32>,
 }
 
+fn database_error(error: sea_orm::DbErr) -> (StatusCode, String) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("DB error: {error}"),
+    )
+}
+
 /// GET /api/playlists (public playlists)
 pub async fn list_playlists(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<super::tracks::PaginatedResponse<PlaylistResponse>>, (StatusCode, String)> {
-    let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(20).min(100);
+    playlist_page(&state, params, playlist::Column::IsPublic.eq(true)).await
+}
 
+/// GET /api/me/playlists (only the authenticated member's playlists)
+pub async fn my_playlists(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(user): axum::Extension<AuthUser>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<super::tracks::PaginatedResponse<PlaylistResponse>>, (StatusCode, String)> {
+    playlist_page(&state, params, playlist::Column::UserId.eq(user.0.sub)).await
+}
+
+async fn playlist_page(
+    state: &AppState,
+    params: PaginationParams,
+    scope: sea_orm::sea_query::SimpleExpr,
+) -> Result<Json<super::tracks::PaginatedResponse<PlaylistResponse>>, (StatusCode, String)> {
+    let page = params.page.unwrap_or(1).max(1);
+    let per_page = params.per_page.unwrap_or(20).clamp(1, 100);
     let paginator = playlist::Entity::find()
-        .filter(playlist::Column::IsPublic.eq(true))
+        .filter(scope)
         .order_by_desc(playlist::Column::UpdatedAt)
+        .order_by_asc(playlist::Column::Id)
         .paginate(&state.db, per_page);
 
     let total = paginator
@@ -97,18 +122,32 @@ pub async fn list_playlists(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
-    // Populate track counts
-    let mut data: Vec<PlaylistResponse> = Vec::with_capacity(playlists.len());
-    for p in playlists {
-        let count = playlist_track::Entity::find()
-            .filter(playlist_track::Column::PlaylistId.eq(p.id))
-            .count(&state.db)
+    let ids: Vec<_> = playlists.iter().map(|item| item.id).collect();
+    let counts: HashMap<Uuid, i64> = if ids.is_empty() {
+        HashMap::new()
+    } else {
+        playlist_track::Entity::find()
+            .select_only()
+            .column(playlist_track::Column::PlaylistId)
+            .column_as(playlist_track::Column::TrackId.count(), "count")
+            .filter(playlist_track::Column::PlaylistId.is_in(ids))
+            .group_by(playlist_track::Column::PlaylistId)
+            .into_tuple()
+            .all(&state.db)
             .await
-            .unwrap_or(0);
-        let mut resp = PlaylistResponse::from(p);
-        resp.track_count = Some(count);
-        data.push(resp);
-    }
+            .map_err(database_error)?
+            .into_iter()
+            .collect()
+    };
+    let data = playlists
+        .into_iter()
+        .map(|playlist| {
+            let count = counts.get(&playlist.id).copied().unwrap_or(0) as u64;
+            let mut response = PlaylistResponse::from(playlist);
+            response.track_count = Some(count);
+            response
+        })
+        .collect();
 
     let total_pages = total.div_ceil(per_page);
 
@@ -158,19 +197,23 @@ pub async fn get_playlist(
         vec![]
     } else {
         track::Entity::find()
-            .filter(track::Column::Id.is_in(track_ids.clone()))
+            .filter(track::Column::Id.is_in(track_ids))
             .all(&state.db)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
     };
 
-    // Reorder tracks by position
-    let mut ordered_tracks: Vec<super::tracks::TrackResponse> = Vec::new();
-    for tid in &track_ids {
-        if let Some(t) = tracks.iter().find(|t| &t.id == tid) {
-            ordered_tracks.push(super::tracks::TrackResponse::from(t.clone()));
-        }
-    }
+    let mut tracks: std::collections::HashMap<_, _> =
+        tracks.into_iter().map(|t| (t.id, t)).collect();
+    let mut ordered_tracks: Vec<_> = pt_entries
+        .into_iter()
+        .filter_map(|entry| {
+            let mut response = super::tracks::TrackResponse::from(tracks.remove(&entry.track_id)?);
+            response.position = Some(entry.position);
+            Some(response)
+        })
+        .collect();
+    super::tracks::attach_availability(&state, &mut ordered_tracks).await?;
 
     Ok(Json(PlaylistDetailResponse {
         playlist: PlaylistResponse::from(playlist_model),
@@ -293,39 +336,47 @@ pub async fn add_track_to_playlist(
     Path(id): Path<Uuid>,
     Json(body): Json<AddTrackRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    let txn = state.db.begin().await.map_err(database_error)?;
     let existing = playlist::Entity::find_by_id(id)
-        .one(&state.db)
+        .lock_exclusive()
+        .one(&txn)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
+        .map_err(database_error)?
         .ok_or((StatusCode::NOT_FOUND, "Playlist not found".to_string()))?;
-
     if existing.user_id != auth_user.0.sub {
         return Err((StatusCode::FORBIDDEN, "Not your playlist".to_string()));
     }
 
-    // Determine position
-    let max_pos: i32 = playlist_track::Entity::find()
-        .filter(playlist_track::Column::PlaylistId.eq(id))
-        .all(&state.db)
+    // An interrupted client may retry a successful POST. Preserve its original position.
+    if playlist_track::Entity::find_by_id((id, body.track_id))
+        .one(&txn)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
-        .iter()
-        .map(|pt| pt.position)
-        .max()
-        .unwrap_or(-1);
+        .map_err(database_error)?
+        .is_some()
+    {
+        txn.commit().await.map_err(database_error)?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
 
-    let position = body.position.unwrap_or(max_pos + 1);
-
-    let new_entry = playlist_track::ActiveModel {
+    let position = match body.position {
+        Some(position) => position,
+        None => playlist_track::Entity::find()
+            .filter(playlist_track::Column::PlaylistId.eq(id))
+            .order_by_desc(playlist_track::Column::Position)
+            .one(&txn)
+            .await
+            .map_err(database_error)?
+            .map_or(0, |last| last.position.saturating_add(1)),
+    };
+    playlist_track::ActiveModel {
         playlist_id: Set(id),
         track_id: Set(body.track_id),
         position: Set(position),
-    };
-
-    new_entry
-        .insert(&state.db)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
+    }
+    .insert(&txn)
+    .await
+    .map_err(database_error)?;
+    txn.commit().await.map_err(database_error)?;
 
     Ok(StatusCode::CREATED)
 }

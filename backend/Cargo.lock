@@ -6053,6 +6053,7 @@ dependencies = [
  "async-trait",
  "aws-sdk-s3",
  "lofty",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -6077,6 +6078,7 @@ dependencies = [
  "serde",
  "serde_json",
  "soundtime-audio",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -6095,16 +6097,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bao-tree",
  "bloomfilter",
  "bytes",
  "chrono",
  "data-encoding",
+ "futures-util",
  "iroh",
  "iroh-blobs",
  "iroh-mainline-address-lookup",
  "iroh-mdns-address-lookup",
  "rand 0.9.5",
  "reqwest 0.12.28",
+ "rustix",
  "sea-orm",
  "serde",
  "serde_json",
@@ -6117,7 +6122,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "urlencoding",
+ "unicode-normalization",
  "uuid",
  "wiremock",
 ]
@@ -6150,6 +6155,7 @@ name = "soundtime-server"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "anyhow",
  "argon2",
  "axum 0.8.8",
  "axum-test",
@@ -6158,6 +6164,7 @@ dependencies = [
  "chrono",
  "deadpool-redis",
  "dotenvy",
+ "futures-util",
  "git2",
  "hkdf",
  "jsonwebtoken",
@@ -6189,6 +6196,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "wiremock",
+ "xml-rs",
 ]
 
 [[package]]

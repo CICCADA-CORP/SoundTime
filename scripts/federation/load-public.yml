@@ -1,0 +1,46 @@
+# The same roles and Nginx routes as docker/compose.public.yml, on disposable site B.
+services:
+  db-b:
+    shm_size: ${PUBLIC_POSTGRES_SHM_SIZE:-256m}
+    command: [postgres, -c, "max_connections=${PUBLIC_POSTGRES_MAX_CONNECTIONS:-64}", -c, "max_parallel_workers_per_gather=1"]
+  backend-b:
+    ulimits:
+      nofile: {soft: 8192, hard: 8192}
+    environment:
+      SOUNDTIME_ROLE: worker
+      SOUNDTIME_MAX_ACTIVE_STREAMS: ${PUBLIC_MAX_ACTIVE_STREAMS:-1536}
+      SOUNDTIME_MAX_STREAMS_PER_ACCOUNT: ${PUBLIC_MAX_STREAMS_PER_ACCOUNT:-48}
+      SOUNDTIME_MAX_ANONYMOUS_STREAMS: ${PUBLIC_MAX_ANONYMOUS_STREAMS:-256}
+      DB_MIN_CONNECTIONS: "2"
+      DB_MAX_CONNECTIONS: ${PUBLIC_WORKER_DB_MAX_CONNECTIONS:-24}
+  catalog-http:
+    ulimits:
+      nofile: {soft: 8192, hard: 8192}
+    image: soundtime-federation-backend:${COMPOSE_PROJECT_NAME}
+    pull_policy: never
+    environment:
+      SOUNDTIME_ROLE: catalog-http
+      DATABASE_URL: postgres://soundtime:federation-test@db-b/soundtime
+      JWT_SECRET: ${FEDERATION_SECRET}-b
+      SOUNDTIME_DOMAIN: b.federation.test
+      P2P_ENABLED: "true"
+      P2P_EXPLICIT_CATALOG: "true"
+      DB_MIN_CONNECTIONS: "1"
+      DB_MAX_CONNECTIONS: ${CATALOG_DB_MAX_CONNECTIONS:-8}
+    networks: [site-b]
+    depends_on:
+      db-b: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '^HTTP/1.[01] 200 '"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+  proxy-b:
+    depends_on: [backend-b, frontend-b, catalog-http]
+    ulimits:
+      nofile: {soft: 8192, hard: 8192}
+    volumes:
+      - ../../docker/nginx-public.conf:/etc/nginx/nginx.conf:ro
+      - ../../docker/catalog-upstreams.conf:/etc/nginx/conf.d/catalog-upstreams.conf:ro
+      - ../../docker/catalog-read.conf:/etc/nginx/soundtime-catalog.d/read.conf:ro
+      - ./load-upstreams-log.conf:/etc/nginx/conf.d/load-upstreams-log.conf:ro

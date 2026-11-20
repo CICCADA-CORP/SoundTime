@@ -126,7 +126,7 @@ Open `http://localhost:8880/setup` and create the first administrator account. O
 
 #### 3. Play your first track
 
-Sign in, open **Upload**, and add an audio file. Open **Tracks** and press **Play**. SoundTime reads artist, album and cover tags during import. A track without an album stays in **Tracks** and on its artist’s page. An explicitly named album appears in **Albums**, even when you own only one of its tracks.
+Sign in, open **Upload**, and add an audio file. Open **Tracks** and press **Play**. SoundTime reads artist, album and cover tags during import. A track without an album stays in **Tracks** and on its artist’s page. An explicitly named album appears in **Albums**, even when you own only one of its tracks. Tracks with no artist credit remain playable and searchable by title. The artist directory lists credited artists.
 
 ## Library and playback
 
@@ -134,8 +134,9 @@ Sign in, open **Upload**, and add an audio file. Open **Tracks** and press **Pla
 
 - **Import a collection.** Upload MP3, FLAC, Ogg, WAV, AAC, Opus, M4A or AIFF files. SoundTime converts AIFF uploads to FLAC. On Linux, you can also mount an existing SMB or NFS library read-only and import its files from the administration panel. [Network library setup](docs/deployment.md#read-only-smb-and-nfs-music-libraries)
 - **Choose what plays next.** Search for a track, album or artist, build a playlist, or start a radio station from a track, artist or genre. The player keeps the queue available as you browse and supports seeking, shuffle, repeat and lock-screen controls on compatible browsers.
+- **Listen to radio and podcasts.** Open **Radio & podcasts** below **Radio** for live stations and Apple’s podcast charts. Search stations by name or genre, or search for a show or creator in a selected country. Episodes stream from the publisher and support pause and seeking. These directories are enabled by default, with individual preferences and an instance-wide switch. [Radio Browser](https://www.radio-browser.info/) · [Apple Podcasts](https://podcasts.apple.com/)
 - **Keep a personal collection.** Save favorites, revisit listening history and make playlists public or private. Explore brings together recent releases, trending tracks and genres from the catalog.
-- **Fill in missing metadata.** Administrators can look up a track on MusicBrainz or run a batch for tracks missing a recording ID. Each run checks its starting list once and reports matches, empty results and provider errors separately.
+- **Fill in missing metadata.** Administrators can look up a track on MusicBrainz or run a batch for tracks missing a recording ID. SoundTime checks embedded recording IDs and ISRCs, then compares titles, artists, releases, versions and durations. Ambiguous matches can be reviewed and confirmed individually.
 
 ## Operating an instance
 
@@ -162,7 +163,7 @@ To check a running instance, request `/healthz` through Nginx. If it fails, insp
 
 ### Connecting peers
 
-Web access and federation have separate controls. With P2P enabled, SoundTime instances can exchange catalog information and transfer audio over encrypted iroh connections. An administrator can add a known peer by its node ID. Operators can also configure a shared rendezvous for discovery. Keep the peer identity volume across restarts so other operators can continue to reach the same node. [Peer networking guide](docs/p2p-networking.md)
+Web access and federation have separate controls. With P2P enabled, SoundTime instances can exchange catalog information and transfer audio over encrypted iroh connections. An administrator can add a known peer by its node ID. Operators can also configure a shared rendezvous for discovery. Keep the peer identity volume across restarts so other operators can continue to reach the same node. The opt-in streaming mode lets a small instance follow catalogues and play remote tracks with a zero-byte audio cache. [Peer networking guide](docs/p2p-networking.md#verified-range-streaming-pilot)
 
 ## Development
 

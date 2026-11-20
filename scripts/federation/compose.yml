@@ -1,0 +1,167 @@
+# A fresh project name on every invocation scopes all networks and volumes.
+x-db: &db
+  image: pgvector/pgvector:pg16
+  environment:
+    POSTGRES_USER: soundtime
+    POSTGRES_PASSWORD: federation-test
+    POSTGRES_DB: soundtime
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U soundtime -d soundtime"]
+    interval: 2s
+    timeout: 3s
+    retries: 60
+
+x-backend: &backend
+  image: soundtime-federation-backend:${COMPOSE_PROJECT_NAME}
+  pull_policy: never
+
+x-env: &env
+  AUDIO_STORAGE_PATH: /data/music
+  P2P_BLOBS_DIR: /data/p2p-blobs
+  P2P_ENABLED: "true"
+  P2P_PUBLIC_DISCOVERY: "false"
+  P2P_LOCAL_DISCOVERY: "false"
+  P2P_DHT_DISCOVERY: "false"
+  P2P_SHARE_IDENTITY: "false"
+  P2P_VERSIONED_CATALOG: ${FEDERATION_VERSIONED:-false}
+  P2P_SHARE_CACHED: ${FEDERATION_SHARE_CACHED:-false}
+  P2P_BIND_PORT: "11204"
+  PLUGIN_ENABLED: "false"
+  SOUNDTIME_SCHEME: http
+  P2P_CACHE_MAX_SIZE: ${FEDERATION_CACHE_SIZE:-1GB}
+  P2P_RANGE_STREAMING: ${FEDERATION_RANGES:-false}
+  RUST_LOG: ${FEDERATION_RUST_LOG:-info}
+
+x-frontend: &frontend
+  image: soundtime-federation-frontend:${COMPOSE_PROJECT_NAME}
+  pull_policy: never
+
+x-proxy: &proxy
+  image: nginx:alpine
+  volumes:
+    - ../../docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+  ports:
+    - "127.0.0.1::80"
+  healthcheck:
+    test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+    interval: 2s
+    timeout: 3s
+    retries: 90
+
+services:
+  migration-fixture:
+    profiles: [migration]
+    build:
+      context: ../../backend
+      dockerfile: ../docker/Dockerfile.backend
+      target: federation-fixture
+    image: soundtime-federation-migration:${COMPOSE_PROJECT_NAME}
+    pull_policy: never
+    environment:
+      TEST_DATABASE_URL: postgres://soundtime:federation-test@db-a/soundtime_federation_history
+    networks: [site-a]
+
+  db-a:
+    <<: *db
+    volumes: [postgres-a:/var/lib/postgresql/data]
+    networks: [site-a]
+  db-b:
+    <<: *db
+    volumes: [postgres-b:/var/lib/postgresql/data]
+    networks: [site-b]
+  db-c:
+    <<: *db
+    volumes: [postgres-c:/var/lib/postgresql/data]
+    networks: [site-c]
+
+  backend-a:
+    <<: *backend
+    build:
+      context: ../../backend
+      dockerfile: ../docker/Dockerfile.backend
+    environment:
+      <<: *env
+      JWT_SECRET: ${FEDERATION_SECRET:?run the test script}-a
+      DATABASE_URL: postgres://soundtime:federation-test@db-a/soundtime
+      SOUNDTIME_DOMAIN: a.federation.test
+      P2P_EXPLICIT_CATALOG: ${FEDERATION_EXPLICIT_A:-false}
+    volumes: [files-a:/data]
+    depends_on:
+      db-a: {condition: service_healthy}
+    networks:
+      site-a: {aliases: [backend]}
+      peers: {}
+  backend-b:
+    <<: *backend
+    environment:
+      <<: *env
+      JWT_SECRET: ${FEDERATION_SECRET:?run the test script}-b
+      DATABASE_URL: postgres://soundtime:federation-test@db-b/soundtime
+      SOUNDTIME_DOMAIN: b.federation.test
+      P2P_EXPLICIT_CATALOG: ${FEDERATION_EXPLICIT_B:-false}
+      P2P_CACHE_ON_PLAY: ${FEDERATION_RETAIN_B:-false}
+      P2P_SHARE_CACHED: ${FEDERATION_RETAIN_B:-false}
+    volumes: [files-b:/data]
+    depends_on:
+      db-b: {condition: service_healthy}
+    networks:
+      site-b: {aliases: [backend]}
+      peers: {}
+  backend-c:
+    <<: *backend
+    environment:
+      <<: *env
+      JWT_SECRET: ${FEDERATION_SECRET:?run the test script}-c
+      DATABASE_URL: postgres://soundtime:federation-test@db-c/soundtime
+      SOUNDTIME_DOMAIN: c.federation.test
+      P2P_EXPLICIT_CATALOG: ${FEDERATION_EXPLICIT_C:-false}
+    volumes: [files-c:/data]
+    depends_on:
+      db-c: {condition: service_healthy}
+    networks:
+      site-c: {aliases: [backend]}
+      peers: {}
+
+  frontend-a:
+    <<: *frontend
+    build:
+      context: ../../frontend
+      dockerfile: ../docker/Dockerfile.frontend
+    networks:
+      site-a: {aliases: [frontend]}
+  frontend-b:
+    <<: *frontend
+    networks:
+      site-b: {aliases: [frontend]}
+  frontend-c:
+    <<: *frontend
+    networks:
+      site-c: {aliases: [frontend]}
+
+  proxy-a:
+    <<: *proxy
+    depends_on: [backend-a, frontend-a]
+    networks: [site-a, ingress]
+  proxy-b:
+    <<: *proxy
+    depends_on: [backend-b, frontend-b]
+    networks: [site-b, ingress]
+  proxy-c:
+    <<: *proxy
+    depends_on: [backend-c, frontend-c]
+    networks: [site-c, ingress]
+
+networks:
+  site-a: {internal: true}
+  site-b: {internal: true}
+  site-c: {internal: true}
+  peers: {internal: true}
+  ingress: {}
+
+volumes:
+  postgres-a: {}
+  postgres-b: {}
+  postgres-c: {}
+  files-a: {}
+  files-b: {}
+  files-c: {}

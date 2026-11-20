@@ -84,10 +84,11 @@ describe('TrackCard', () => {
     expect(screen.getByText('Cool Artist')).toBeInTheDocument();
   });
 
-  it('renders i18n key "track.unknownArtist" when artist_name is undefined', () => {
+  it('shows the track without an artist caption when the name is missing', () => {
     const track = createTrack({ artist_name: undefined });
     render(TrackCard, { props: { track } });
-    expect(screen.getByText('track.unknownArtist')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Test Track' })).toBeInTheDocument();
+    expect(screen.queryByText('track.unknownArtist')).toBeNull();
   });
 
   it('renders cover image when cover_url is set', () => {

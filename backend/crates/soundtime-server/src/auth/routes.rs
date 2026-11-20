@@ -7,9 +7,7 @@ use uuid::Uuid;
 use super::jwt::{generate_token_pair, validate_token, TokenPair, TokenType};
 use super::middleware::AuthUser;
 use super::password::{hash_password, verify_password};
-use soundtime_db::entities::{
-    favorite, instance_setting, listen_history, playlist, playlist_track, track, track_report, user,
-};
+use soundtime_db::entities::{track, track_report, user};
 use soundtime_db::AppState;
 
 // ─── Request/Response DTOs ──────────────────────────────────────────
@@ -62,38 +60,23 @@ pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<AuthResponse>), (StatusCode, Json<ErrorResponse>)> {
-    // Block registration during setup (before setup_complete = true)
-    let setup_complete = instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq("setup_complete"))
-        .one(&state.db)
-        .await
-        .ok()
-        .flatten()
-        .map(|s| s.value == "true")
-        .unwrap_or(false);
-
-    let user_count: u64 = user::Entity::find().count(&state.db).await.unwrap_or(0);
-
-    if !setup_complete && user_count > 0 {
-        return Err((
-            StatusCode::FORBIDDEN,
+    let policy_error = |error: sea_orm::DbErr| {
+        tracing::error!("reading registration policy: {error}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: "Instance is being configured. Registration is disabled until setup is complete.".to_string(),
+                error: "Unable to read registration policy".into(),
             }),
-        ));
-    }
-
-    // Block registration on private instances (admin creates accounts manually)
-    let is_private = instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq("instance_private"))
-        .one(&state.db)
+        )
+    };
+    let user_count = user::Entity::find()
+        .count(&state.db)
         .await
-        .ok()
-        .flatten()
-        .map(|s| s.value == "true")
-        .unwrap_or(false);
-
-    if is_private {
+        .map_err(policy_error)?;
+    if !super::registration::registrations_open(&state.db, user_count)
+        .await
+        .map_err(policy_error)?
+    {
         return Err((
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
@@ -757,123 +740,67 @@ pub async fn delete_account(
         ));
     }
 
-    // Prevent admin from deleting their own account if they are the only admin
-    if found.role == user::UserRole::Admin {
-        let admin_count = user::Entity::find()
+    let db_error = |e: sea_orm::DbErr| {
+        tracing::error!(%user_id, %e, "account withdrawal failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to delete account".into(),
+            }),
+        )
+    };
+    let tx = crate::storage_catalog::begin_write(&state.db)
+        .await
+        .map_err(db_error)?;
+    if found.role == user::UserRole::Admin
+        && user::Entity::find()
             .filter(user::Column::Role.eq(user::UserRole::Admin))
-            .count(&state.db)
+            .count(&tx)
             .await
-            .unwrap_or(1);
-        if admin_count <= 1 {
-            return Err((StatusCode::FORBIDDEN, Json(ErrorResponse {
-                error: "Vous êtes le seul administrateur. Promouvez un autre utilisateur avant de supprimer votre compte.".to_string(),
-            })));
+            .map_err(db_error)?
+            <= 1
+    {
+        return Err((StatusCode::FORBIDDEN, Json(ErrorResponse {
+            error: "Vous êtes le seul administrateur. Promouvez un autre utilisateur avant de supprimer votre compte.".into()
+        })));
+    }
+    let tracks = track::Entity::find()
+        .filter(track::Column::UploadedBy.eq(user_id))
+        .all(&tx)
+        .await
+        .map_err(db_error)?;
+    let mut changes = Vec::with_capacity(tracks.len());
+    for trk in tracks {
+        if crate::publications::local(&tx, trk.id)
+            .await
+            .map_err(db_error)?
+        {
+            changes.push(
+                crate::publications::remove(&tx, &trk, true)
+                    .await
+                    .map_err(db_error)?,
+            );
         }
     }
-
-    tracing::info!("Deleting account for user {} ({})", found.username, user_id);
-
-    // Delete in order of dependencies:
-    // 1. Favorites
-    favorite::Entity::delete_many()
-        .filter(favorite::Column::UserId.eq(user_id))
-        .exec(&state.db)
+    // FK cascades remove only this account's collections and listens. Its uploads
+    // retain their track IDs, with uploaded_by set to NULL by the existing FK.
+    track_report::Entity::update_many()
+        .col_expr(
+            track_report::Column::ResolvedBy,
+            sea_orm::sea_query::Expr::value(None::<Uuid>),
+        )
+        .filter(track_report::Column::ResolvedBy.eq(user_id))
+        .exec(&tx)
         .await
-        .ok();
-
-    // 2. Listen history
-    listen_history::Entity::delete_many()
-        .filter(listen_history::Column::UserId.eq(user_id))
-        .exec(&state.db)
-        .await
-        .ok();
-
-    // 3. Track reports by this user
-    track_report::Entity::delete_many()
-        .filter(track_report::Column::UserId.eq(user_id))
-        .exec(&state.db)
-        .await
-        .ok();
-
-    // 4. Playlist tracks for user's playlists, then playlists
-    let user_playlists: Vec<Uuid> = playlist::Entity::find()
-        .filter(playlist::Column::UserId.eq(user_id))
-        .all(&state.db)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .map(|p| p.id)
-        .collect();
-
-    if !user_playlists.is_empty() {
-        playlist_track::Entity::delete_many()
-            .filter(playlist_track::Column::PlaylistId.is_in(user_playlists.clone()))
-            .exec(&state.db)
-            .await
-            .ok();
-
-        playlist::Entity::delete_many()
-            .filter(playlist::Column::UserId.eq(user_id))
-            .exec(&state.db)
-            .await
-            .ok();
-    }
-
-    // 5. User's uploaded tracks — remove from all references first
-    let user_tracks: Vec<Uuid> = track::Entity::find()
-        .filter(track::Column::UploadedBy.eq(user_id))
-        .all(&state.db)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .map(|t| t.id)
-        .collect();
-
-    if !user_tracks.is_empty() {
-        // Remove favorites/history/playlist_tracks referencing these tracks
-        favorite::Entity::delete_many()
-            .filter(favorite::Column::TrackId.is_in(user_tracks.clone()))
-            .exec(&state.db)
-            .await
-            .ok();
-        listen_history::Entity::delete_many()
-            .filter(listen_history::Column::TrackId.is_in(user_tracks.clone()))
-            .exec(&state.db)
-            .await
-            .ok();
-        playlist_track::Entity::delete_many()
-            .filter(playlist_track::Column::TrackId.is_in(user_tracks.clone()))
-            .exec(&state.db)
-            .await
-            .ok();
-        track_report::Entity::delete_many()
-            .filter(track_report::Column::TrackId.is_in(user_tracks.clone()))
-            .exec(&state.db)
-            .await
-            .ok();
-
-        // Delete tracks (audio files stay on storage for now, admin can clean up)
-        track::Entity::delete_many()
-            .filter(track::Column::UploadedBy.eq(user_id))
-            .exec(&state.db)
-            .await
-            .ok();
-    }
-
-    // 6. Finally, delete the user
+        .map_err(db_error)?;
     user::Entity::delete_by_id(user_id)
-        .exec(&state.db)
+        .exec(&tx)
         .await
-        .map_err(|e| {
-            tracing::error!("Failed to delete user {user_id}: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "Failed to delete account".to_string(),
-                }),
-            )
-        })?;
-
+        .map_err(db_error)?;
+    tx.commit().await.map_err(db_error)?;
+    for change in changes {
+        change.committed(&state).await;
+    }
     tracing::info!("Account deleted for user {user_id}");
     Ok(StatusCode::NO_CONTENT)
 }

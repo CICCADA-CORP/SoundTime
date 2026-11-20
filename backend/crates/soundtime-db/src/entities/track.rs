@@ -9,6 +9,8 @@ pub struct Model {
     pub title: String,
     pub artist_id: Uuid,
     pub album_id: Option<Uuid>,
+    /// Artwork attached to the recording, including tracks without a release.
+    pub cover_url: Option<String>,
     pub track_number: Option<i16>,
     pub disc_number: Option<i16>,
     pub duration_secs: f32,

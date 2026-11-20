@@ -7,9 +7,10 @@ license.workspace = true
 [dependencies]
 iroh = "1.5"
 iroh-blobs = "0.105"
+bao-tree = { version = "0.17", default-features = false }
 iroh-mainline-address-lookup = "0.6"
 iroh-mdns-address-lookup = "0.6"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "io-util"] }
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -18,19 +19,23 @@ chrono = { version = "0.4", features = ["serde"] }
 sea-orm.workspace = true
 thiserror = "2"
 bytes = "1"
+futures-util = "0.3"
 rand = "0.9"
 bloomfilter = "1"
 siphasher = "1"
 data-encoding = "2"
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-urlencoding = "2"
+unicode-normalization = "0.1"
 anyhow = "1"
 tokio-util = { version = "0.7", features = ["io"] }
 async-trait = "0.1"
 
 soundtime-db = { path = "../soundtime-db" }
 soundtime-audio = { path = "../soundtime-audio" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,0 +1,72 @@
+# The peers bridge is isolated and has no default route. Keep a network
+# namespace per backend so multicast remains available across server restarts.
+x-lan: &lan
+  image: nginx:alpine
+  entrypoint: [/bin/sh, -ec]
+  command: ["ip -4 route replace 224.0.0.251/32 dev lan0 && exec tail -f /dev/null"]
+  cap_drop: [ALL]
+  cap_add: [NET_ADMIN]
+  healthcheck:
+    test: [CMD-SHELL, 'ip -4 route get 224.0.0.251 | grep -q "dev lan0" && test -z "$$(ip -4 route show default)"']
+    interval: 1s
+    timeout: 2s
+    retries: 20
+
+services:
+  # A advertises on LAN and hosts a rendezvous, without registering itself.
+  lan-a:
+    <<: *lan
+    networks:
+      peers: {interface_name: lan0, aliases: [backend-a]}
+      site-a: {aliases: [backend, backend-a]}
+  backend-a:
+    networks: !reset []
+    network_mode: service:lan-a
+    depends_on:
+      lan-a: {condition: service_healthy}
+    environment:
+      P2P_LOCAL_ADVERTISE: "true"
+      P2P_RENDEZVOUS_SERVER: "true"
+  # B is a private LAN listener. It never transmits a signed directory registration.
+  lan-b:
+    <<: *lan
+    networks:
+      peers: {interface_name: lan0, aliases: [backend-b]}
+      site-b: {aliases: [backend, backend-b]}
+  backend-b:
+    networks: !reset []
+    network_mode: service:lan-b
+    depends_on:
+      lan-b: {condition: service_healthy}
+    environment:
+      P2P_LOCAL_DISCOVERY: "true"
+      P2P_LOCAL_ADVERTISE: "false"
+      P2P_RENDEZVOUS_URL: http://listing/api/p2p/rendezvous
+      P2P_RENDEZVOUS_ANNOUNCE: "false"
+  # C resolves known IDs over LAN without consuming passive discovery events. A
+  # can only be learned from the local copy of the public directory response.
+  lan-c:
+    <<: *lan
+    networks:
+      peers: {interface_name: lan0, aliases: [backend-c]}
+      site-c: {aliases: [backend, backend-c]}
+  backend-c:
+    networks: !reset []
+    network_mode: service:lan-c
+    depends_on:
+      lan-c: {condition: service_healthy}
+      db-c: {condition: service_healthy}
+      listing: {condition: service_started}
+    environment:
+      P2P_LOCAL_DISCOVERY: "false"
+      P2P_LOCAL_ADVERTISE: "true"
+      P2P_LISTING_DISCOVERY: "true"
+      LISTING_URL: http://listing
+      P2P_RENDEZVOUS_URL: http://listing/api/p2p/rendezvous
+      P2P_RENDEZVOUS_ANNOUNCE: "true"
+  listing:
+    image: nginx:alpine
+    networks: [peers]
+    volumes:
+      - ./discovery-nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    tmpfs: [/usr/share/nginx/html]

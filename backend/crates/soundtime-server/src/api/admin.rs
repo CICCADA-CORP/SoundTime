@@ -5,10 +5,9 @@ use axum::{
     http::StatusCode,
     Extension, Json,
 };
-use sea_orm::sea_query::Expr;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, FromQueryResult, PaginatorTrait, QueryFilter,
-    QueryOrder, QuerySelect, Set,
+    QueryOrder, Set,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -67,47 +66,35 @@ pub async fn update_setting(
     Path(key): Path<String>,
     Json(body): Json<UpdateSettingRequest>,
 ) -> Result<Json<SettingResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let existing = instance_setting::Entity::find()
-        .filter(instance_setting::Column::Key.eq(&key))
-        .one(&state.db)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "DB error" })),
-            )
-        })?;
-
-    match existing {
-        Some(s) => {
-            let mut update: instance_setting::ActiveModel = s.into();
-            update.value = Set(body.value.clone());
-            update.updated_at = Set(chrono::Utc::now().into());
-            update.update(&state.db).await.map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": "Update failed" })),
-                )
-            })?;
-        }
-        None => {
-            // Create new setting
-            instance_setting::ActiveModel {
-                id: Set(Uuid::new_v4()),
-                key: Set(key.clone()),
-                value: Set(body.value.clone()),
-                updated_at: Set(chrono::Utc::now().into()),
-            }
-            .insert(&state.db)
-            .await
-            .map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": "Insert failed" })),
-                )
-            })?;
-        }
+    if key == super::webradios::SETTING && !matches!(body.value.as_str(), "true" | "false") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"Expected true or false"})),
+        ));
     }
+    // A simultaneous first write on another frontend follows the same update path.
+    instance_setting::Entity::insert(instance_setting::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        key: Set(key.clone()),
+        value: Set(body.value.clone()),
+        updated_at: Set(chrono::Utc::now().into()),
+    })
+    .on_conflict(
+        sea_orm::sea_query::OnConflict::column(instance_setting::Column::Key)
+            .update_columns([
+                instance_setting::Column::Value,
+                instance_setting::Column::UpdatedAt,
+            ])
+            .to_owned(),
+    )
+    .exec(&state.db)
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error":"Setting update failed"})),
+        )
+    })?;
 
     Ok(Json(SettingResponse {
         key,
@@ -198,6 +185,7 @@ pub async fn block_domain(
         )
     })?;
 
+    soundtime_db::media_access::revoke_peer(&body.domain);
     Ok((
         StatusCode::CREATED,
         Json(BlockedDomainResponse {
@@ -287,7 +275,7 @@ pub async fn import_blocked_domains(
         let now = chrono::Utc::now();
         blocked_domain::ActiveModel {
             id: Set(Uuid::new_v4()),
-            domain: Set(domain),
+            domain: Set(domain.clone()),
             reason: Set(entry.reason),
             blocked_by: Set(Some(user.0.sub)),
             created_at: Set(now.into()),
@@ -301,6 +289,7 @@ pub async fn import_blocked_domains(
             )
         })?;
 
+        soundtime_db::media_access::revoke_peer(&domain);
         imported += 1;
     }
 
@@ -367,19 +356,23 @@ pub struct NodeInfo {
 
 /// GET /api/nodeinfo — public instance info consumed by the listing server
 pub async fn nodeinfo(State(state): State<Arc<AppState>>) -> Result<Json<NodeInfo>, StatusCode> {
-    let total_tracks = track::Entity::find().count(&state.db).await.unwrap_or(0);
+    let total_tracks = track::Entity::find()
+        .count(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let total_users = user::Entity::find().count(&state.db).await.unwrap_or(0);
+    let total_users = user::Entity::find()
+        .count(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let p2p_node = get_p2p_node(&state);
     let p2p_enabled = p2p_node.is_some();
-    let p2p_node_id = p2p_node.map(|n| n.node_id().to_string());
-
     // Read instance settings
     let settings = instance_setting::Entity::find()
         .all(&state.db)
         .await
-        .unwrap_or_default();
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let name = settings
         .iter()
@@ -393,11 +386,11 @@ pub async fn nodeinfo(State(state): State<Arc<AppState>>) -> Result<Json<NodeInf
         .map(|s| s.value.clone())
         .unwrap_or_default();
 
-    let open_registration = settings
-        .iter()
-        .find(|s| s.key == "instance_private")
-        .map(|s| s.value != "true")
-        .unwrap_or(true);
+    let open_registration = crate::auth::registration::from_settings(&settings, total_users);
+    let flag = |key| settings.iter().any(|s| s.key == key && s.value == "true");
+    let p2p_node_id = p2p_node
+        .filter(|_| !flag("instance_private") || flag("listing_public"))
+        .map(|n| n.node_id().to_string());
 
     Ok(Json(NodeInfo {
         name,
@@ -641,12 +634,28 @@ pub async fn unban_user(
 
 // ─── Metadata Enrichment ────────────────────────────────────────────
 
+#[derive(serde::Deserialize)]
+pub struct RecordingChoice {
+    pub recording_id: Option<Uuid>,
+}
+
 /// POST /api/admin/metadata/enrich/:track_id — enrich a single track via MusicBrainz
 pub async fn enrich_track_metadata(
     State(state): State<Arc<AppState>>,
     Path(track_id): Path<Uuid>,
+    Query(choice): Query<RecordingChoice>,
 ) -> Result<Json<metadata_lookup::MetadataResult>, (StatusCode, Json<serde_json::Value>)> {
-    let result = metadata_lookup::enrich_track(&state.db, &*state.storage, track_id).await;
+    let result = if choice.recording_id.is_some() {
+        metadata_lookup::enrich_track_choice(
+            &state.db,
+            &*state.storage,
+            track_id,
+            choice.recording_id,
+        )
+        .await
+    } else {
+        metadata_lookup::enrich_track(&state.db, &*state.storage, track_id).await
+    };
     Ok(Json(result))
 }
 
@@ -667,43 +676,36 @@ pub async fn enrich_all_metadata(
     State(state): State<Arc<AppState>>,
     Extension(tracker): Extension<metadata_lookup::MetadataTaskTrackerHandle>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    // Reject if a task is already running
     {
-        let lock = tracker.lock().await;
+        let mut lock = tracker.lock().await;
         if let Some(metadata_lookup::MetadataTaskStatus::Running { .. }) = &*lock {
             return Err((
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({ "error": "Metadata enrichment is already running" })),
             ));
         }
-    }
-
-    // Mark as running
-    {
-        let mut lock = tracker.lock().await;
         *lock = Some(metadata_lookup::MetadataTaskStatus::Running {
-            progress: metadata_lookup::MetadataTaskProgress {
-                processed: 0,
-                total: 0,
-                enriched: 0,
-                not_found: 0,
-                errors: 0,
-                current_track: None,
-            },
+            progress: metadata_lookup::MetadataTaskProgress::default(),
         });
     }
 
-    let tracker_clone = tracker.clone();
     tokio::spawn(async move {
-        let result = metadata_lookup::enrich_all_tracks_background(
+        let status = match metadata_lookup::enrich_all_tracks_background(
             &state.db,
             &*state.storage,
-            &tracker_clone,
+            &tracker,
         )
-        .await;
-
-        let mut lock = tracker_clone.lock().await;
-        *lock = Some(metadata_lookup::MetadataTaskStatus::Completed { result });
+        .await
+        {
+            Ok(result) => metadata_lookup::MetadataTaskStatus::Completed { result },
+            Err(error) => {
+                tracing::error!(%error, "could not load tracks for metadata enrichment");
+                metadata_lookup::MetadataTaskStatus::Error {
+                    message: "Could not load tracks for metadata enrichment".into(),
+                }
+            }
+        };
+        *tracker.lock().await = Some(status);
     });
 
     Ok(Json(
@@ -742,10 +744,19 @@ pub async fn metadata_task_status(
 /// reviewed the completed or errored task result.
 pub async fn metadata_task_dismiss(
     Extension(tracker): Extension<metadata_lookup::MetadataTaskTrackerHandle>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let mut lock = tracker.lock().await;
+    if matches!(
+        *lock,
+        Some(metadata_lookup::MetadataTaskStatus::Running { .. })
+    ) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "Metadata enrichment is still running" })),
+        ));
+    }
     *lock = None;
-    Json(serde_json::json!({ "status": "dismissed" }))
+    Ok(Json(serde_json::json!({ "status": "dismissed" })))
 }
 
 /// GET /api/admin/metadata/status — metadata enrichment status overview
@@ -911,44 +922,32 @@ pub struct StorageStatusResponse {
     pub storage_path_or_bucket: String,
     pub remote_track_count: u64,
     pub remote_available_count: u64,
+    pub cache: Option<soundtime_p2p::blob_cache::CacheUsage>,
 }
 
 /// GET /api/admin/storage/status
 pub async fn storage_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<StorageStatusResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let local_tracks = track::Entity::find().filter(track::Column::FilePath.not_like("p2p://%"));
-    let total_tracks = local_tracks.clone().count(&state.db).await.map_err(|e| {
-        tracing::error!(error = %e, "storage_status: failed to count tracks");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Failed to query track count" })),
-        )
-    })?;
-
     #[derive(Debug, FromQueryResult)]
-    struct SizeSum {
-        total_size: Option<i64>,
+    struct LocalUsage {
+        total_tracks: i64,
+        total_size: i64,
     }
-
-    let size_result = local_tracks
-        .select_only()
-        .column_as(
-            Expr::cust("COALESCE(SUM(file_size)::bigint, 0)"),
-            "total_size",
-        )
-        .into_model::<SizeSum>()
-        .one(&state.db)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "storage_status: failed to sum file sizes");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Failed to query storage size" })),
-            )
-        })?;
-
-    let total_size: i64 = size_result.map(|r| r.total_size.unwrap_or(0)).unwrap_or(0);
+    let usage = LocalUsage::find_by_statement(sea_orm::Statement::from_string(
+        sea_orm::DbBackend::Postgres,
+        "SELECT coalesce(sum(publications),0)::bigint AS total_tracks, coalesce(sum(bytes),0)::bigint AS total_size
+         FROM (SELECT t.file_path,count(*) AS publications,max(t.file_size) AS bytes FROM tracks t
+               LEFT JOIN track_publications p ON p.track_id=t.id
+               WHERE t.file_path NOT LIKE 'p2p://%' AND p.state IS DISTINCT FROM 'withdrawn'
+                 AND NOT EXISTS (SELECT FROM federation_missing_sources m WHERE m.track_id=t.id)
+               GROUP BY t.file_path) paths",
+    )).one(&state.db).await.map_err(|e| {
+        tracing::error!(%e,"storage_status: failed to measure original files");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error":"Failed to query storage size"})))
+    })?.expect("aggregate returns one row");
+    let total_tracks = usage.total_tracks as u64;
+    let total_size = usage.total_size;
 
     let remote_track_count = remote_track::Entity::find()
         .count(&state.db)
@@ -967,7 +966,19 @@ pub async fn storage_status(
         std::env::var("AUDIO_STORAGE_PATH").unwrap_or_else(|_| "./data/music".to_string())
     };
 
+    let cache = if let Some(node) = get_p2p_node(&state) {
+        Some(node.blob_cache().usage().map_err(|e| {
+            tracing::error!(%e,"could not inspect cache volume");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error":"Cache volume unavailable"})),
+            )
+        })?)
+    } else {
+        None
+    };
     Ok(Json(StorageStatusResponse {
+        cache,
         backend: backend_type,
         total_tracks,
         total_size_bytes: total_size,
@@ -1246,6 +1257,7 @@ mod tests {
     #[test]
     fn test_serialize_storage_status_response() {
         let resp = StorageStatusResponse {
+            cache: None,
             backend: "local".to_string(),
             total_tracks: 50,
             total_size_bytes: 1_000_000,

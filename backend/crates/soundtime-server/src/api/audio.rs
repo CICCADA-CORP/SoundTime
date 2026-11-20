@@ -5,18 +5,21 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
+use futures_util::{stream, StreamExt};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use soundtime_audio::extract_metadata_from_file;
 use soundtime_audio::metadata::normalize_genre;
-use soundtime_db::entities::{album, artist, remote_track, track};
+use soundtime_db::entities::{album, track};
+use soundtime_db::media_access::{self, PlaybackState, ReadGuard};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::auth::middleware::AuthUser;
+use crate::storage_catalog::releases;
 use soundtime_db::AppState;
 
 /// Extract p2p node from type-erased state
@@ -135,6 +138,7 @@ pub async fn stream_track(
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let grant = ReadGuard::track(id);
     let track_record = track::Entity::find_by_id(id)
         .one(&state.db)
         .await
@@ -165,14 +169,43 @@ pub async fn stream_track(
         _ => "application/octet-stream",
     };
 
-    // Parse Range header
-    let range = headers
-        .get(header::RANGE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_range_header);
-
-    // P2P tracks: file_path starts with "p2p://<hash>"
-    if let Some(hash_str) = file_path_str.strip_prefix("p2p://") {
+    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+    let hash_hint = file_path_str
+        .strip_prefix("p2p://")
+        .or(track_record.content_hash.as_deref());
+    let access = media_access::playback_state(&state.db, id, hash_hint)
+        .await
+        .map_err(|e| {
+            tracing::error!(%id, error=%e, "could not evaluate playback policy");
+            stream_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Publication policy unavailable",
+            )
+        })?;
+    match access {
+        PlaybackState::Withdrawn => {
+            return Err(stream_error(StatusCode::GONE, "Publication withdrawn"))
+        }
+        PlaybackState::Blocked => {
+            return Err(stream_error(
+                StatusCode::FORBIDDEN,
+                "Unavailable on this instance",
+            ))
+        }
+        PlaybackState::SourceMissing if hash_hint.is_none() => {
+            return Err(stream_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Audio source unavailable",
+            ));
+        }
+        _ => {}
+    }
+    let remote_hash = if access == PlaybackState::SourceMissing {
+        hash_hint
+    } else {
+        file_path_str.strip_prefix("p2p://")
+    };
+    if let Some(hash_str) = remote_hash {
         let p2p_node = get_p2p_node(&state).ok_or_else(|| {
             (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -180,26 +213,17 @@ pub async fn stream_track(
             )
         })?;
 
-        // FIX-16: Check if the remote track is marked unavailable before attempting fetch
-        let remote_record = remote_track::Entity::find()
-            .filter(remote_track::Column::RemoteUri.ends_with(format!("/{hash_str}")))
-            .one(&state.db)
-            .await
-            .map_err(|e| {
-                tracing::error!("DB error looking up remote track: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": format!("DB error: {e}") })),
+        if p2p_node.range_streaming() {
+            let manifest = p2p_node.range_manifest(id).await.map_err(|error| {
+                tracing::debug!(%id, %error, "publication manifest unavailable");
+                stream_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Publication version unavailable",
                 )
             })?;
-
-        if let Some(ref rt) = remote_record {
-            if !rt.is_available {
-                tracing::warn!(%hash_str, "P2P track marked unavailable, returning 410 Gone");
-                return Err((
-                    StatusCode::GONE,
-                    Json(serde_json::json!({ "error": "P2P track is no longer available" })),
-                ));
+            if let Some(manifest) = manifest {
+                return remote_media_response(p2p_node, id, manifest, content_type, range, grant)
+                    .await;
             }
         }
 
@@ -210,173 +234,295 @@ pub async fn stream_track(
             )
         })?;
 
-        // FIX-15: When fetch fails, trigger auto_repair_on_failure for health tracking
-        let data = match p2p_node.get_or_fetch_track(hash).await {
-            Ok(data) => data,
-            Err(e) => {
-                tracing::warn!(%hash, error = %e, "failed to fetch P2P track");
-
-                // Determine origin node from the remote_track record
-                let origin_node = remote_record
-                    .as_ref()
-                    .map(|rt| {
-                        rt.instance_domain
-                            .strip_prefix("p2p://")
-                            .unwrap_or(&rt.instance_domain)
-                            .to_string()
-                    })
-                    .unwrap_or_default();
-
-                if !origin_node.is_empty() {
-                    let health_manager = Arc::clone(p2p_node.health_manager());
-                    let p2p_clone = Arc::clone(&p2p_node);
-                    let hash_string = hash_str.to_string();
-                    tokio::spawn(async move {
-                        soundtime_p2p::auto_repair_on_failure(
-                            &health_manager,
-                            &p2p_clone,
-                            &hash_string,
-                            &origin_node,
-                        )
-                        .await;
-                    });
-                }
-
-                return Err((
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({ "error": "P2P track data not available" })),
-                ));
-            }
-        };
-
-        let file_size = data.len() as u64;
-
-        let (start, end) = match range {
-            Some((s, e)) => {
-                let end = e.unwrap_or(file_size - 1).min(file_size - 1);
-                (s, end)
-            }
-            None => (0, file_size - 1),
-        };
-
-        let content_length = end - start + 1;
-        let slice = data.slice(start as usize..(start + content_length) as usize);
-        let body = Body::from(slice);
-
-        let status = if range.is_some() {
-            StatusCode::PARTIAL_CONTENT
-        } else {
-            StatusCode::OK
-        };
-
-        let mut response_headers = HeaderMap::new();
-        response_headers.insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_str(content_type)
-                .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-        );
-        response_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(content_length));
-        response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-
-        if range.is_some() {
-            response_headers.insert(
-                header::CONTENT_RANGE,
-                HeaderValue::from_str(&format!("bytes {start}-{end}/{file_size}"))
-                    .unwrap_or_else(|_| HeaderValue::from_static("bytes */*")),
-            );
-        }
-
-        return Ok((status, response_headers, body));
-    }
-
-    // Regular filesystem track
-    let file_path = soundtime_audio::ensure_local_file(state.storage.as_ref(), file_path_str)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "Audio file not found" })),
-            )
-        })?;
-
-    let file_size = tokio::fs::metadata(&file_path)
-        .await
-        .map_err(|_| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Cannot read file" })),
-            )
-        })?
-        .len();
-
-    let (start, end) = match range {
-        Some((s, e)) => {
-            let end = e.unwrap_or(file_size - 1).min(file_size - 1);
-            (s, end)
-        }
-        None => (0, file_size - 1),
-    };
-
-    let content_length = end - start + 1;
-
-    let mut file = tokio::fs::File::open(&file_path).await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Cannot open file" })),
-        )
-    })?;
-
-    if start > 0 {
-        use tokio::io::AsyncSeekExt;
-        file.seek(std::io::SeekFrom::Start(start))
+        let (data, raw_grant) = grant
+            .during(p2p_node.get_or_fetch_track(id, hash))
             .await
-            .map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": "Seek error" })),
-                )
+            .map_err(|_| stream_error(StatusCode::GONE, "Playback authorization revoked"))?
+            .map_err(|e| {
+                tracing::warn!(%id,%hash,error=%e,"legacy publication unavailable");
+                stream_error(StatusCode::SERVICE_UNAVAILABLE, "Audio source unavailable")
             })?;
+        let size = data.len() as u64;
+        return media_response(
+            std::io::Cursor::new(data),
+            size,
+            content_type,
+            range,
+            grant,
+            raw_grant,
+        )
+        .await;
     }
 
-    let limited = file.take(content_length);
-    let stream = ReaderStream::new(limited);
-    let body = Body::from_stream(stream);
-
-    let status = if range.is_some() {
-        StatusCode::PARTIAL_CONTENT
-    } else {
-        StatusCode::OK
-    };
-
-    let mut response_headers = HeaderMap::new();
-    response_headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(content_type)
-            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-    );
-    response_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(content_length));
-    response_headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-
-    if range.is_some() {
-        response_headers.insert(
-            header::CONTENT_RANGE,
-            HeaderValue::from_str(&format!("bytes {start}-{end}/{file_size}"))
-                .unwrap_or_else(|_| HeaderValue::from_static("bytes */*")),
-        );
+    let original = grant
+        .during(state.storage.open_media(file_path_str))
+        .await
+        .map_err(|_| stream_error(StatusCode::GONE, "Playback authorization revoked"))?
+        .map_err(|error| {
+            tracing::warn!(%id, %error, "could not open audio original");
+            stream_error(StatusCode::SERVICE_UNAVAILABLE, "Audio source unavailable")
+        })?;
+    let (status, headers, start, length) = media_headers(original.size(), content_type, range);
+    if length == 0 {
+        return Ok((status, headers, Body::empty()));
     }
-
-    Ok((status, response_headers, body))
+    let reader = grant
+        .during(original.range(start, length))
+        .await
+        .map_err(|_| stream_error(StatusCode::GONE, "Playback authorization revoked"))?
+        .map_err(|error| {
+            tracing::warn!(%id,%error,"could not open original range");
+            stream_error(StatusCode::SERVICE_UNAVAILABLE, "Audio version unavailable")
+        })?;
+    let chunks = stream::try_unfold((reader, grant), |(mut reader, grant)| async move {
+        let chunk = grant.during(reader.next_chunk()).await??;
+        Ok::<_, std::io::Error>(chunk.map(|data| (data, (reader, grant))))
+    });
+    Ok((status, headers, Body::from_stream(chunks)))
 }
 
-/// Parse "bytes=start-end" range header
-fn parse_range_header(header: &str) -> Option<(u64, Option<u64>)> {
-    let range = header.strip_prefix("bytes=")?;
-    let mut parts = range.splitn(2, '-');
-    let start: u64 = parts.next()?.parse().ok()?;
-    let end: Option<u64> = parts
+type StreamError = (StatusCode, Json<serde_json::Value>);
+
+fn stream_error(status: StatusCode, text: &'static str) -> StreamError {
+    (status, Json(serde_json::json!({"error": text})))
+}
+
+async fn media_response<R>(
+    mut reader: R,
+    size: u64,
+    content_type: &'static str,
+    range: Option<&str>,
+    grant: ReadGuard,
+    raw_grant: Option<ReadGuard>,
+) -> Result<(StatusCode, HeaderMap, Body), StreamError>
+where
+    R: tokio::io::AsyncRead + tokio::io::AsyncSeek + Unpin + Send + 'static,
+{
+    use tokio::io::AsyncSeekExt;
+
+    let (status, headers, start, length) = media_headers(size, content_type, range);
+    if length == 0 {
+        return Ok((status, headers, Body::empty()));
+    }
+    if start != 0 {
+        reader
+            .seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(|_| {
+                stream_error(StatusCode::INTERNAL_SERVER_ERROR, "Cannot seek audio file")
+            })?;
+    }
+    let reader = ReaderStream::with_capacity(reader.take(length), 64 * 1024);
+    let chunks = stream::try_unfold(
+        (reader, grant, raw_grant),
+        |(mut reader, grant, raw_grant)| async move {
+            let read = grant.during(reader.next());
+            let next = match &raw_grant {
+                Some(raw) => raw.during(read).await??,
+                None => read.await?,
+            }
+            .transpose()?;
+            Ok::<_, std::io::Error>(next.map(|chunk| (chunk, (reader, grant, raw_grant))))
+        },
+    );
+    Ok((status, headers, Body::from_stream(chunks)))
+}
+
+fn media_headers(
+    size: u64,
+    content_type: &'static str,
+    range: Option<&str>,
+) -> (StatusCode, HeaderMap, u64, u64) {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    headers.insert("x-accel-buffering", HeaderValue::from_static("no"));
+
+    let span = match byte_range(range, size) {
+        Ok(span) => span,
+        Err(()) => {
+            headers.insert(
+                header::CONTENT_RANGE,
+                format!("bytes */{size}").parse().unwrap(),
+            );
+            return (StatusCode::RANGE_NOT_SATISFIABLE, headers, 0, 0);
+        }
+    };
+    let (status, start, length) = if let Some((start, end)) = span {
+        headers.insert(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{size}").parse().unwrap(),
+        );
+        (StatusCode::PARTIAL_CONTENT, start, end - start + 1)
+    } else {
+        (StatusCode::OK, 0, size)
+    };
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    (status, headers, start, length)
+}
+
+async fn remote_media_response(
+    node: Arc<soundtime_p2p::P2pNode>,
+    id: Uuid,
+    manifest: soundtime_p2p::range_transport::WindowRequest,
+    content_type: &'static str,
+    range: Option<&str>,
+    grant: ReadGuard,
+) -> Result<(StatusCode, HeaderMap, Body), StreamError> {
+    let (status, headers, start, length) = media_headers(manifest.file_size, content_type, range);
+    if length == 0 {
+        return Ok((status, headers, Body::empty()));
+    }
+    let cache_guard = node.blob_cache().read_guard(manifest.hash);
+    let retain = node.cache_on_play() && start == 0 && length == manifest.file_size;
+    let writer = if retain && cache_guard.is_none() {
+        match node
+            .reserve_cached_version(manifest.hash, manifest.file_size)
+            .await
+        {
+            Ok(writer) => writer,
+            Err(e) => {
+                tracing::warn!(%id,%e,"cache reservation unavailable");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let initial = RemoteReader {
+        offset: start,
+        end: start + length,
+        node,
+        manifest,
+        grant,
+        writer,
+        id,
+        retain,
+    };
+    let first_grant = ReadGuard::track(id);
+    let mut chunks = Box::pin(stream::try_unfold(initial, RemoteReader::next));
+    let first = chunks
         .next()
-        .and_then(|s| if s.is_empty() { None } else { s.parse().ok() });
-    Some((start, end))
+        .await
+        .expect("nonempty byte range")
+        .map_err(|e| {
+            tracing::debug!(%id, error=%e, "first range unavailable");
+            stream_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "No authorized audio provider available",
+            )
+        })?;
+    let body = stream::once(async move { first_grant.during(std::future::ready(first)).await })
+        .chain(chunks);
+    // The body owns this lease until cancellation or EOF, including gaps between windows.
+    let body = body.map(move |chunk| {
+        let _keep = &cache_guard;
+        chunk
+    });
+    Ok((status, headers, Body::from_stream(body)))
+}
+
+struct RemoteReader {
+    offset: u64,
+    end: u64,
+    node: Arc<soundtime_p2p::P2pNode>,
+    manifest: soundtime_p2p::range_transport::WindowRequest,
+    grant: ReadGuard,
+    writer: Option<soundtime_p2p::blob_cache::CacheWriter>,
+    id: Uuid,
+    retain: bool,
+}
+impl RemoteReader {
+    async fn next(mut self) -> std::io::Result<Option<(axum::body::Bytes, Self)>> {
+        if self.offset >= self.end {
+            return Ok(None);
+        }
+        let step = u64::from(soundtime_p2p::range_transport::WINDOW_BYTES);
+        let aligned = self.offset / step * step;
+        let mut req = self.manifest.clone();
+        req.offset = aligned;
+        req.length = (req.file_size - aligned).min(step) as u32;
+        let bytes = self
+            .grant
+            .during(self.node.verified_range(self.id, req))
+            .await?
+            .map_err(std::io::Error::other)?;
+        let next = (aligned + bytes.len() as u64).min(self.end);
+        let clipped = bytes.slice((self.offset - aligned) as usize..(next - aligned) as usize);
+        self.offset = next;
+        if let Some(writer) = &mut self.writer {
+            if let Err(error) = self.grant.during(writer.append(&clipped)).await? {
+                tracing::warn!(track=%self.id,%error,"skipping cache admission");
+                self.writer = None;
+            }
+        }
+        if self.retain && next == self.end {
+            let mut retained = None;
+            if let Some(writer) = self.writer.take() {
+                match self.grant.during(writer.commit_guard(false)).await? {
+                    Ok(guard) => retained = Some(guard),
+                    Err(error) => {
+                        tracing::warn!(track=%self.id,%error,"cached file could not be verified")
+                    }
+                }
+            }
+            if retained.is_some() || self.node.cache_contains(self.manifest.hash) {
+                if let Err(error) = self
+                    .grant
+                    .during(
+                        self.node
+                            .offer_cached_publication(self.id, self.manifest.hash),
+                    )
+                    .await?
+                {
+                    tracing::debug!(track=%self.id,%error,"cache offer not admitted");
+                }
+            }
+        }
+        Ok(Some((clipped, self)))
+    }
+}
+
+fn parse_range_header(header: &str) -> Option<(u64, Option<u64>)> {
+    let (start, end) = header.strip_prefix("bytes=")?.split_once('-')?;
+    Some((
+        start.parse().ok()?,
+        if end.is_empty() {
+            None
+        } else {
+            Some(end.parse().ok()?)
+        },
+    ))
+}
+
+// An unsupported or malformed range is ignored. A valid but unsatisfiable range yields 416.
+fn byte_range(header: Option<&str>, size: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some(header) = header else {
+        return Ok(None);
+    };
+    if let Some(suffix) = header
+        .strip_prefix("bytes=-")
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        if size == 0 || suffix == 0 {
+            return Err(());
+        }
+        return Ok(Some((size.saturating_sub(suffix), size - 1)));
+    }
+    let Some((start, end)) = parse_range_header(header) else {
+        return Ok(None);
+    };
+    if end.is_some_and(|end| end < start) {
+        return Ok(None);
+    }
+    if start >= size {
+        return Err(());
+    }
+    Ok(Some((start, end.unwrap_or(size - 1).min(size - 1))))
 }
 
 /// GET /api/media/*path — Serve static media files (covers, etc.)
@@ -584,42 +730,68 @@ fn upload_error(err: impl std::fmt::Display) -> UploadError {
 async fn find_uploaded_file(
     state: &AppState,
     tx: &sea_orm::DatabaseTransaction,
+    owner: Uuid,
     hash: &str,
-    size: i64,
-) -> Result<Option<track::Model>, UploadError> {
-    if let Some(row) = crate::storage_catalog::existing_hash(tx, hash, state.storage.as_ref())
-        .await
-        .map_err(upload_error)?
+    data: &[u8],
+) -> Result<Option<crate::storage_catalog::ExistingOriginal>, UploadError> {
+    if let Some(row) =
+        crate::storage_catalog::existing_hash(tx, hash, state.storage.as_ref(), Some(owner))
+            .await
+            .map_err(upload_error)?
     {
         return Ok(Some(row));
     }
     let candidates = track::Entity::find()
+        .filter(crate::storage_catalog::reusable_track())
+        .filter(track::Column::UploadedBy.eq(owner))
         .filter(track::Column::FileHash.is_null())
-        .filter(track::Column::FileSize.eq(size))
+        .filter(track::Column::FileSize.eq(data.len() as i64))
         .filter(track::Column::FilePath.not_like("p2p://%"))
+        .filter(sea_orm::sea_query::Expr::cust("content_hash IS NOT NULL OR NOT EXISTS (SELECT FROM federation_missing_sources m WHERE m.track_id=tracks.id)"))
         .all(tx)
         .await
         .map_err(upload_error)?;
+    let blob = candidates
+        .iter()
+        .any(|row| row.content_hash.is_some())
+        .then(|| soundtime_p2p::BlobHash::new(data).to_string());
     for row in candidates {
-        if !state
+        let known_blob = row.content_hash.is_some();
+        if known_blob && row.content_hash != blob {
+            continue;
+        }
+        let present = state
             .storage
             .file_exists(&row.file_path)
             .await
-            .map_err(upload_error)?
-        {
-            continue;
-        }
-        let actual_hash = state
-            .storage
-            .hash_file(&row.file_path)
-            .await
             .map_err(upload_error)?;
-        let matches = actual_hash == hash;
-        let mut update: track::ActiveModel = row.into();
-        update.file_hash = Set(Some(actual_hash));
-        let updated = update.update(tx).await.map_err(upload_error)?;
-        if matches {
-            return Ok(Some(updated));
+        if present
+            && state
+                .storage
+                .hash_file(&row.file_path)
+                .await
+                .map_err(upload_error)?
+                == hash
+        {
+            let mut update: track::ActiveModel = row.into();
+            update.file_hash = Set(Some(hash.to_owned()));
+            let updated = update.update(tx).await.map_err(upload_error)?;
+            crate::storage_catalog::source_restored(tx, updated.id)
+                .await
+                .map_err(upload_error)?;
+            return Ok(Some(crate::storage_catalog::ExistingOriginal {
+                track: updated,
+                present: true,
+            }));
+        }
+        if known_blob {
+            crate::storage_catalog::mark_replaced(tx, row.id, &row.file_path)
+                .await
+                .map_err(upload_error)?;
+            return Ok(Some(crate::storage_catalog::ExistingOriginal {
+                track: row,
+                present: false,
+            }));
         }
     }
     Ok(None)
@@ -673,36 +845,37 @@ async fn process_single_upload(
             "Failed to extract audio metadata".into(),
         )
     })?;
+    let album_title = releases::tag_value(tags.album.as_deref(), audio_meta.album.as_deref());
     let hash = format!("{:x}", Sha256::digest(&data));
     let waveform = soundtime_audio::generate_waveform(&full_path, 200).ok();
 
     let tx = crate::storage_catalog::begin_write(&state.db)
         .await
         .map_err(upload_error)?;
-    let existing = find_uploaded_file(state, &tx, &hash, data.len() as i64).await?;
-    if let Some(original) = existing {
-        if state
-            .storage
-            .file_exists(&original.file_path)
-            .await
-            .map_err(upload_error)?
-        {
+    let existing = find_uploaded_file(state, &tx, user_id, &hash, &data).await?;
+    if let Some(existing) = existing {
+        let original = existing.track;
+        if existing.present {
             tx.commit().await.map_err(upload_error)?;
             return Err((
                 StatusCode::CONFLICT,
                 "This audio file is already in the library".into(),
             ));
         }
+        if let (Some("Singles"), Some(album_id)) = (album_title, original.album_id) {
+            releases::confirm_named_singles(&tx, album_id)
+                .await
+                .map_err(upload_error)?;
+        }
         let path = state
             .storage
-            .store_file(
-                user_id,
-                tags.album.as_deref(),
-                &stored_name.to_string_lossy(),
-                &data,
-            )
+            .store_file(user_id, album_title, &stored_name.to_string_lossy(), &data)
             .await
             .map_err(upload_error)?;
+        if let Err(e) = crate::storage_catalog::record_managed(&tx, &path, &hash).await {
+            let _ = state.storage.delete_file(&path).await;
+            return Err(upload_error(e));
+        }
         let response = UploadResponse {
             id: original.id,
             title: original.title.clone(),
@@ -712,119 +885,38 @@ async fn process_single_upload(
         };
         let mut update: track::ActiveModel = original.into();
         update.file_path = Set(path.clone());
+        update.file_hash = Set(Some(hash.clone()));
         if let Err(e) = update.update(&tx).await {
             if let Err(cleanup) = state.storage.delete_file(&path).await {
                 tracing::warn!(%path, %cleanup, "could not remove rejected upload");
             }
             return Err(upload_error(e));
         }
-        tx.commit().await.map_err(upload_error)?;
-        return Ok(response);
-    }
-    let artist_name = tags
-        .artist
-        .or(audio_meta.artist.clone())
-        .unwrap_or_else(|| "Unknown Artist".to_string());
-
-    let existing_artist = artist::Entity::find()
-        .filter(artist::Column::Name.eq(&artist_name))
-        .one(&tx)
-        .await
-        .map_err(upload_error)?;
-
-    let artist_id = if let Some(a) = existing_artist {
-        a.id
-    } else {
-        let new_artist = artist::ActiveModel {
-            id: Set(Uuid::new_v4()),
-            name: Set(artist_name.clone()),
-            bio: Set(None),
-            image_url: Set(None),
-            musicbrainz_id: Set(None),
-            created_at: Set(chrono::Utc::now().into()),
-        };
-        new_artist.insert(&tx).await.map_err(upload_error)?.id
-    };
-
-    // Resolve album artist: prefer album_artist tag, fall back to track artist
-    let album_artist_name = audio_meta
-        .album_artist
-        .clone()
-        .unwrap_or_else(|| artist_name.clone());
-
-    let album_artist_id = if album_artist_name == artist_name {
-        artist_id
-    } else {
-        let existing = artist::Entity::find()
-            .filter(artist::Column::Name.eq(&album_artist_name))
-            .one(&tx)
+        crate::metadata_lookup::hints::save(&tx, response.id, &audio_meta.recording_tags)
             .await
             .map_err(upload_error)?;
-        if let Some(a) = existing {
-            a.id
-        } else {
-            let new_artist = artist::ActiveModel {
-                id: Set(Uuid::new_v4()),
-                name: Set(album_artist_name.clone()),
-                bio: Set(None),
-                image_url: Set(None),
-                musicbrainz_id: Set(None),
-                created_at: Set(chrono::Utc::now().into()),
-            };
-            new_artist.insert(&tx).await.map_err(upload_error)?.id
+        crate::storage_catalog::source_restored(&tx, response.id)
+            .await
+            .map_err(upload_error)?;
+        tx.commit().await.map_err(upload_error)?;
+        if let Some(node) = get_p2p_node(state) {
+            node.wake_original_index();
         }
-    };
+        return Ok(response);
+    }
+    let artist_name = releases::tag_value(tags.artist.as_deref(), audio_meta.artist.as_deref());
 
-    let album_title = tags
-        .album
-        .clone()
-        .or(audio_meta.album.clone())
-        .unwrap_or_else(|| "Singles".to_string());
-
-    let existing_album = album::Entity::find()
-        .filter(album::Column::Title.eq(&album_title))
-        .filter(album::Column::ArtistId.eq(album_artist_id))
-        .one(&tx)
-        .await
-        .map_err(upload_error)?;
-
-    let album_id = if let Some(a) = existing_album {
-        a.id
-    } else {
-        let new_album = album::ActiveModel {
-            id: Set(Uuid::new_v4()),
-            title: Set(album_title.clone()),
-            artist_id: Set(album_artist_id),
-            release_date: Set(None),
-            cover_url: Set(None),
-            musicbrainz_id: Set(None),
-            genre: Set(audio_meta
-                .genre
-                .as_deref()
-                .map(normalize_genre)
-                .filter(|g| !g.is_empty())),
-            year: Set(audio_meta.year.map(|y| y as i16)),
-            created_at: Set(chrono::Utc::now().into()),
-        };
-        let result = new_album.insert(&tx).await.map_err(upload_error)?;
-
-        // Store cover art if present in metadata
-        if let Some(cover_data) = &audio_meta.cover_art {
-            if let Ok(cover_path) = state
-                .storage
-                .store_cover(user_id, Some(&album_title), cover_data)
-                .await
-            {
-                let mut update: album::ActiveModel = result.clone().into();
-                update.cover_url = Set(Some(format!("/api/media/{cover_path}")));
-                if let Err(e) = update.update(&tx).await {
-                    tracing::warn!(error = %e, "failed to update album cover URL");
-                }
-            }
-        }
-
-        result.id
-    };
+    let track_id = Uuid::new_v4();
+    let release = releases::resolve(
+        &tx,
+        state.storage.as_ref(),
+        track_id,
+        artist_name,
+        album_title,
+        &audio_meta,
+    )
+    .await
+    .map_err(upload_error)?;
 
     let track_title = tags.title.or(audio_meta.title.clone()).unwrap_or_else(|| {
         std::path::Path::new(filename)
@@ -834,22 +926,31 @@ async fn process_single_upload(
             .to_string()
     });
 
-    let relative_path = state
-        .storage
-        .store_file(
-            user_id,
-            tags.album.as_deref(),
-            &stored_name.to_string_lossy(),
-            &data,
-        )
+    let shared = crate::storage_catalog::shared_original(&tx, &hash, state.storage.as_ref())
         .await
         .map_err(upload_error)?;
-    let track_id = Uuid::new_v4();
+    let created = shared.is_none();
+    let relative_path = match shared {
+        Some(path) => path,
+        None => {
+            let path = state
+                .storage
+                .store_file(user_id, album_title, &stored_name.to_string_lossy(), &data)
+                .await
+                .map_err(upload_error)?;
+            if let Err(e) = crate::storage_catalog::record_managed(&tx, &path, &hash).await {
+                let _ = state.storage.delete_file(&path).await;
+                return Err(upload_error(e));
+            }
+            path
+        }
+    };
     let new_track = track::ActiveModel {
         id: Set(track_id),
         title: Set(track_title.clone()),
-        album_id: Set(Some(album_id)),
-        artist_id: Set(artist_id),
+        album_id: Set(release.album_id),
+        artist_id: Set(release.artist_id),
+        cover_url: Set(release.track_cover_url),
         track_number: Set(audio_meta.track_number.map(|n| n as i16)),
         disc_number: Set(audio_meta.disc_number.map(|n| n as i16)),
         duration_secs: Set(audio_meta.duration_secs as f32),
@@ -873,22 +974,36 @@ async fn process_single_upload(
         created_at: Set(chrono::Utc::now().into()),
     };
 
-    if let Err(e) = new_track.insert(&tx).await {
-        if let Err(cleanup) = state.storage.delete_file(&relative_path).await {
-            tracing::warn!(%relative_path, %cleanup, "could not remove rejected upload");
+    let persisted = async {
+        new_track.insert(&tx).await?;
+        crate::metadata_lookup::hints::save(&tx, track_id, &audio_meta.recording_tags).await
+    }
+    .await;
+    if let Err(e) = persisted {
+        if created {
+            if let Err(cleanup) = state.storage.delete_file(&relative_path).await {
+                tracing::warn!(%relative_path, %cleanup, "could not remove rejected upload");
+            }
         }
         return Err(upload_error(e));
     }
     tx.commit().await.map_err(upload_error)?;
 
-    // Publish track to P2P blob store (best-effort)
+    // Register the stored original for federated playback.
     publish_track_to_p2p(
         state,
         track_id,
-        &data,
+        (
+            relative_path.as_str(),
+            bytes::Bytes::from(data),
+            state
+                .storage
+                .immutable_upload_path(&relative_path)
+                .filter(|_| created),
+        ),
         &track_title,
-        &artist_name,
-        &album_title,
+        artist_name.unwrap_or_default(),
+        album_title,
         &audio_meta,
     )
     .await;
@@ -898,8 +1013,10 @@ async fn process_single_upload(
         let payload = soundtime_plugin::TrackAddedPayload {
             track_id: track_id.to_string(),
             title: track_title.clone(),
-            artist: artist_name.clone(),
-            album: Some(album_title.clone()),
+            artist: artist_name
+                .unwrap_or(soundtime_db::entities::artist::UNATTRIBUTED_NAME)
+                .to_owned(),
+            album: album_title.map(str::to_owned),
         };
         let payload_val = serde_json::to_value(&payload).unwrap_or_default();
         let registry = registry.clone();
@@ -940,6 +1057,7 @@ pub(crate) async fn check_duplicate_uploads(state: &AppState, user_id: Uuid, wav
         .await
         .unwrap()
         .unwrap();
+    assert!(row.album_id.is_none());
     let path = row.file_path.clone();
     let mut legacy: track::ActiveModel = row.into();
     legacy.file_hash = Set(None);
@@ -969,6 +1087,34 @@ pub(crate) async fn check_duplicate_uploads(state: &AppState, user_id: Uuid, wav
         state.storage.read_file(&restored.file_path).await.unwrap(),
         wav
     );
+    let mut replaced = wav.clone();
+    *replaced.last_mut().unwrap() ^= 1;
+    tokio::fs::write(state.storage.full_path(&restored.file_path), &replaced)
+        .await
+        .unwrap();
+    assert_eq!(
+        upload(state, user_id, "restored-after-replacement.wav", &wav)
+            .await
+            .unwrap()
+            .id,
+        id
+    );
+    let checked = track::Entity::find_by_id(id)
+        .one(&state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(checked.file_path, restored.file_path);
+    assert_eq!(checked.file_hash.as_deref(), restored.file_hash.as_deref());
+    assert_eq!(
+        state.storage.read_file(&restored.file_path).await.unwrap(),
+        replaced
+    );
+    assert_eq!(
+        state.storage.read_file(&checked.file_path).await.unwrap(),
+        wav
+    );
+    state.storage.delete_file(&checked.file_path).await.unwrap();
     state
         .storage
         .delete_file(&restored.file_path)
@@ -982,7 +1128,7 @@ pub(crate) async fn check_duplicate_uploads(state: &AppState, user_id: Uuid, wav
 
 // ─── P2P publication helper ─────────────────────────────────────────
 
-/// Publish a newly uploaded track to the P2P blob store and broadcast
+/// Publish the stored original and broadcast
 /// an announcement to all connected peers.
 ///
 /// This is best-effort: failures are logged but do not prevent the upload
@@ -990,10 +1136,10 @@ pub(crate) async fn check_duplicate_uploads(state: &AppState, user_id: Uuid, wav
 async fn publish_track_to_p2p(
     state: &AppState,
     track_id: Uuid,
-    data: &[u8],
+    (path, bytes, immutable): (&str, bytes::Bytes, Option<std::path::PathBuf>),
     track_title: &str,
     artist_name: &str,
-    album_title: &str,
+    album_title: Option<&str>,
     audio_meta: &soundtime_audio::AudioMetadata,
 ) {
     let p2p = match get_p2p_node(state) {
@@ -1001,20 +1147,12 @@ async fn publish_track_to_p2p(
         None => return,
     };
 
-    let data_bytes = bytes::Bytes::from(data.to_vec());
-    match p2p.publish_track(data_bytes).await {
+    match p2p
+        .publish_stored_track(track_id, path, bytes, immutable)
+        .await
+    {
         Ok(hash) => {
-            tracing::info!(%track_id, %hash, "track published to P2P blob store");
-            // Update the content_hash in the DB
-            let update = track::ActiveModel {
-                id: Set(track_id),
-                content_hash: Set(Some(hash.to_string())),
-                ..Default::default()
-            };
-            if let Err(e) = update.update(&state.db).await {
-                tracing::warn!(%track_id, "failed to save content_hash: {e}");
-            }
-
+            tracing::info!(%track_id, %hash, "original ready for federated playback");
             // Publish cover art to P2P blob store if available
             let cover_hash = if let Some(cover_data) = &audio_meta.cover_art {
                 match p2p
@@ -1036,8 +1174,10 @@ async fn publish_track_to_p2p(
                 hash: hash.to_string(),
                 title: track_title.to_string(),
                 artist_name: artist_name.to_string(),
-                album_artist_name: audio_meta.album_artist.clone(),
-                album_title: Some(album_title.to_string()),
+                album_artist_name: album_title
+                    .and(audio_meta.album_artist.as_deref())
+                    .map(str::to_owned),
+                album_title: album_title.map(str::to_owned),
                 duration_secs: audio_meta.duration_secs as f32,
                 format: audio_meta.format.clone(),
                 file_size: audio_meta.file_size as i64,
@@ -1180,7 +1320,7 @@ pub async fn upload_album_cover(
     // Store the cover
     let cover_path = state
         .storage
-        .store_cover(user_id, Some(&album_record.title), &data)
+        .store_cover(album_id, Some("album"), &data)
         .await
         .map_err(|e| {
             (
@@ -1209,6 +1349,30 @@ pub async fn upload_album_cover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn withdrawn_http_body_stops_before_the_next_window() {
+        let id = Uuid::new_v4();
+        let source = std::io::Cursor::new(vec![0x77; 192 * 1024]);
+        let (status, headers, body) = media_response(
+            source,
+            192 * 1024,
+            "audio/wav",
+            None,
+            ReadGuard::track(id),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+        let mut reader = body.into_data_stream();
+        let first = reader.next().await.unwrap().unwrap();
+        assert_eq!(first.len(), 64 * 1024);
+        media_access::revoke_track(id);
+        assert!(reader.next().await.unwrap().is_err());
+        assert!(reader.next().await.is_none());
+    }
 
     #[test]
     fn artwork_uses_the_image_signature() {
@@ -1339,6 +1503,18 @@ mod tests {
     }
 
     // ─── parse_range_header tests ──────────────────────────────────
+
+    #[test]
+    fn byte_range_resolves_suffixes_and_empty_files() {
+        assert_eq!(byte_range(Some("bytes=-3"), 10), Ok(Some((7, 9))));
+        assert_eq!(byte_range(Some("bytes=-300"), 10), Ok(Some((0, 9))));
+        assert_eq!(byte_range(Some("bytes=2-99"), 10), Ok(Some((2, 9))));
+        assert_eq!(byte_range(Some("bytes=10-"), 10), Err(()));
+        assert_eq!(byte_range(None, 0), Ok(None));
+        assert_eq!(byte_range(Some("bytes=0-"), 0), Err(()));
+        assert_eq!(byte_range(Some("bytes=2-1"), 10), Ok(None));
+        assert_eq!(byte_range(Some("bytes=2-4,6-7"), 10), Ok(None));
+    }
 
     #[test]
     fn test_parse_range_open_end() {

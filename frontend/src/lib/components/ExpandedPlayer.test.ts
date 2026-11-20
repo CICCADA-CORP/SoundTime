@@ -1,456 +1,209 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
+import { fromStore, writable } from "svelte/store";
+import { tick } from "svelte";
+import { setLocale } from "$lib/i18n/index.svelte";
+import { showcaseTracks } from "$lib/showcase";
+import type { Track } from "$lib/types";
+import ExpandedPlayer from "./ExpandedPlayer.svelte";
 
-const mockTrack = {
-  id: 'track-1',
-  title: 'Expanded Song',
-  artist_name: 'Expanded Artist',
-  album_title: 'Expanded Album',
-  cover_url: null as string | null,
-  artist_id: 'a1',
-  album_id: 'al1',
-  track_number: 1,
-  disc_number: null,
-  duration_secs: 200,
-  genre: 'Pop',
-  year: 2024,
-  file_path: '/test.mp3',
-  file_size: 5000000,
-  format: 'flac',
-  bitrate: 1411,
-  sample_rate: 44100,
-  musicbrainz_id: null,
-  waveform_data: null,
-  uploaded_by: null,
-  play_count: 10,
-  created_at: '2025-01-01',
+const track = { ...showcaseTracks[0], id: "track-1", artist_id: "artist-1", album_id: "album-1",
+  title: "Expanded Song", artist_name: "Expanded Artist", album_title: "Expanded Album",
+  format: "flac", bitrate: 1411, sample_rate: 44100, cover_url: "/covers/song.jpg" };
+const next = { ...track, id: "track-2", title: "Next song", cover_url: undefined };
+const following = { ...track, id: "track-3", title: "Third song" };
+
+const selected = writable<Track | null>(track);
+const activeTrack = fromStore(selected);
+const player = {
+  get currentTrack() { return activeTrack.current; },
+  isPlaying: true, progress: 65, duration: 200, shuffle: false, repeat: "none",
+  volume: .8, setVolume: vi.fn(), togglePlay: vi.fn(), seek: vi.fn(), toggleShuffle: vi.fn(), cycleRepeat: vi.fn(),
 };
+const queue = {
+  queue: [] as Track[], currentIndex: 0, autoplay: false, sourceContext: "album",
+  playQueue: vi.fn(), moveInQueue: vi.fn(), removeFromQueue: vi.fn(), next: vi.fn(), previous: vi.fn(), toggleAutoplay: vi.fn(),
+};
+const auth = { isAuthenticated: false, user: { id: "me" } };
+const radio = { active: false, autoplayMode: false, seedLabel: "Jazz", stopRadio: vi.fn() };
+const get = vi.fn();
+const post = vi.fn();
 
-let mockPlayerStore: any;
-let mockQueueStore: any;
-let mockAuthStore: any;
-let mockRadioStore: any;
-const mockApiGet = vi.fn().mockResolvedValue({ lyrics: null, source: null });
+vi.mock("$lib/stores/player.svelte", () => ({ getPlayerStore: () => player }));
+vi.mock("$lib/stores/queue.svelte", () => ({ getQueueStore: () => queue }));
+vi.mock("$lib/stores/auth.svelte", () => ({ getAuthStore: () => auth }));
+vi.mock("$lib/stores/radio.svelte", () => ({ getRadioStore: () => radio }));
+vi.mock("$lib/api", () => ({ api: { get: (...args: unknown[]) => get(...args), post: (...args: unknown[]) => post(...args) }, API_BASE: "https://media.test/api" }));
 
-function resetMocks() {
-  mockPlayerStore = {
-    currentTrack: null as any,
-    isPlaying: false,
-    volume: 0.8,
-    progress: 30,
-    duration: 200,
-    shuffle: false,
-    repeat: 'none' as string,
-    play: vi.fn(),
-    pause: vi.fn(),
-    resume: vi.fn(),
-    togglePlay: vi.fn(),
-    seek: vi.fn(),
-    setVolume: vi.fn(),
-    toggleShuffle: vi.fn(),
-    cycleRepeat: vi.fn(),
-  };
-  mockQueueStore = {
-    queue: [],
-    currentIndex: -1,
-    currentTrack: null,
-    hasNext: false,
-    hasPrevious: false,
-    autoplay: false,
-    playQueue: vi.fn(),
-    addToQueue: vi.fn(),
-    addNext: vi.fn(),
-    removeFromQueue: vi.fn(),
-    clearQueue: vi.fn(),
-    next: vi.fn(),
-    previous: vi.fn(),
-    toggleAutoplay: vi.fn(),
-  };
-  mockAuthStore = {
-    isAuthenticated: false,
-    user: null,
-    isAdmin: false,
-  };
-  mockRadioStore = {
-    active: false,
-    seedType: null,
-    seedLabel: '',
-    loading: false,
-    exhausted: false,
-    error: null,
-    playedCount: 0,
-    autoplayMode: false,
-    startRadio: vi.fn(),
-    stopRadio: vi.fn(),
-    fetchMoreTracks: vi.fn(),
-    markPlayed: vi.fn(),
-    clearError: vi.fn(),
-  };
+function show(open = true, onclose = vi.fn()) {
+  render(ExpandedPlayer, { props: { open, onclose } });
+  return onclose;
 }
 
-resetMocks();
+function openLyrics() {
+  // Mobile and desktop render the same switch in their respective layouts.
+  return fireEvent.click(screen.getAllByRole("button", { name: "Lyrics" })[0]);
+}
 
-vi.mock('$lib/stores/player.svelte', () => ({
-  getPlayerStore: () => mockPlayerStore,
-}));
-
-vi.mock('$lib/stores/queue.svelte', () => ({
-  getQueueStore: () => mockQueueStore,
-}));
-
-vi.mock('$lib/stores/auth.svelte', () => ({
-  getAuthStore: () => mockAuthStore,
-}));
-
-vi.mock('$lib/stores/radio.svelte', () => ({
-  getRadioStore: () => mockRadioStore,
-}));
-
-vi.mock('$lib/api', () => ({
-  api: {
-    get: (...args: any[]) => mockApiGet(...args),
-    post: vi.fn(),
-    delete: vi.fn(),
-  },
-  API_BASE: '/api',
-}));
-
-vi.mock('$lib/i18n/index.svelte', () => ({
-  t: (key: string) => key,
-}));
-
-// Mock lucide-svelte icons
-vi.mock('lucide-svelte', () => {
-  const noop = function($$anchor: any, $$props?: any) {};
-  return { X: noop, ChevronDown: noop, Music: noop, ListMusic: noop, Mic2: noop, Radio: noop, Square: noop };
-});
-
-import { render, screen, fireEvent } from '@testing-library/svelte';
-import ExpandedPlayer from './ExpandedPlayer.svelte';
-
-describe('ExpandedPlayer', () => {
+describe("expanded player", () => {
   beforeEach(() => {
-resetMocks();
     vi.clearAllMocks();
-    mockApiGet.mockResolvedValue({ lyrics: null, source: null });
+    setLocale("en");
+    selected.set(track);
+    queue.queue = [track];
+    player.isPlaying = true;
+    player.duration = 200;
+    player.progress = 65;
+    player.repeat = "none";
+    auth.isAuthenticated = false;
+    radio.active = false;
+    radio.autoplayMode = false;
+    get.mockImplementation(async (path: string) =>
+      path.startsWith("/favorites") ? [] : path.startsWith("/me/playlists?") ? { data: [] } : { lyrics: null, source: null });
   });
 
-  it('renders nothing when closed', () => {
-    const { container } = render(ExpandedPlayer, { props: { open: false, onclose: vi.fn() } });
-    expect(container.querySelector('.fixed')).toBeNull();
+  it("stays closed without a selection or without an explicit open action", () => {
+    show(false);
+    selected.set(null);
+    show();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(get).not.toHaveBeenCalled();
   });
 
-  it('renders nothing when open but no track', () => {
-    mockPlayerStore.currentTrack = null;
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(container.querySelector('.fixed')).toBeNull();
+  it("displays artwork, artist, album, progress and format", async () => {
+    show();
+    const dialog = await screen.findByRole("dialog", { name: "Now Playing" });
+    expect(within(dialog).getByRole("heading", { name: track.title })).toBeVisible();
+    expect(screen.getByRole("link", { name: track.artist_name })).toHaveAttribute("href", "/artists/artist-1");
+    expect(screen.getByRole("link", { name: track.album_title })).toHaveAttribute("href", "/albums/album-1");
+    expect(dialog.querySelector("img")).toHaveAttribute("src", "https://media.test/covers/song.jpg");
+    for (const text of ["1:05", "3:20", "flac", "1411 kbps", "44.1 kHz"]) expect(screen.getByText(text)).toBeInTheDocument();
+    expect(screen.getByText("Queue is empty")).toBeInTheDocument();
   });
 
-  it('renders full player when open with track', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(container.querySelector('.fixed')).toBeInTheDocument();
+  it("keeps cover art and album navigation when an artist ID has no display credit", () => {
+    selected.set({ ...track, cover_url: "https://cdn.test/image.webp", artist_name: null, bitrate: null, sample_rate: null });
+    player.duration = 0;
+    player.progress = 0;
+    show();
+    expect(screen.getByRole("dialog").querySelector("img")).toHaveAttribute("src", "https://cdn.test/image.webp");
+    expect(screen.getByRole("dialog").querySelector('a[href^="/artists/"]')).toBeNull();
+    expect(screen.getByRole("link", { name: track.album_title })).toHaveAttribute("href", "/albums/album-1");
+    expect(screen.queryByText("Unknown Artist")).toBeNull();
+    expect(screen.queryByText(/kbps|kHz/)).toBeNull();
+    expect(screen.getByRole("slider", { name: "Playback position" })).toBeDisabled();
   });
 
-  it('displays track title and artist', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('Expanded Song')).toBeInTheDocument();
-    expect(screen.getByText('Expanded Artist')).toBeInTheDocument();
+  it("uses named, keyboard-accessible transport and seek controls", async () => {
+    player.repeat = "one";
+    show();
+    for (const [label, action] of [
+      ["Pause", player.togglePlay], ["Shuffle", player.toggleShuffle], ["Previous", queue.previous],
+      ["Next", queue.next], ["Repeat · one", player.cycleRepeat], ["Autoplay", queue.toggleAutoplay],
+    ] as const) {
+      await fireEvent.click(screen.getByRole("button", { name: label }));
+      expect(action).toHaveBeenCalledOnce();
+    }
+    expect(screen.getByRole("button", { name: "Repeat · one" })).toHaveAttribute("aria-pressed", "true");
+    await fireEvent.input(screen.getByRole("slider", { name: "Playback position" }), { target: { value: "50" } });
+    expect(player.seek).toHaveBeenCalledWith(50);
+    await fireEvent.input(screen.getByRole("slider", { name: "Volume" }), { target: { value: "0.35" } });
+    expect(player.setVolume).toHaveBeenCalledWith(.35);
   });
 
-  it('displays album title when present', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack, album_title: 'Test Album' };
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('Test Album')).toBeInTheDocument();
-  });
-
-  it('shows "Unknown Artist" when artist_name is null', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack, artist_name: null };
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('track.unknownArtist')).toBeInTheDocument();
-  });
-
-  it('shows cover image when cover_url is set', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack, cover_url: '/covers/test.jpg' };
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const img = container.querySelector('img');
-    expect(img).toBeInTheDocument();
-  });
-
-  it('displays formatted progress and duration', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockPlayerStore.progress = 65;
-    mockPlayerStore.duration = 200;
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('1:05')).toBeInTheDocument();
-    expect(screen.getByText('3:20')).toBeInTheDocument();
-  });
-
-  it('shows technical details (format, bitrate, sample_rate)', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack, format: 'flac', bitrate: 1411, sample_rate: 44100 };
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('flac')).toBeInTheDocument();
-    expect(screen.getByText('1411 kbps')).toBeInTheDocument();
-    expect(screen.getByText('44.1 kHz')).toBeInTheDocument();
-  });
-
-  it('calls togglePlay when play button clicked', async () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const playBtn = container.querySelector('.w-14.h-14.rounded-full');
-    if (playBtn) {
-      await fireEvent.click(playBtn);
-      expect(mockPlayerStore.togglePlay).toHaveBeenCalled();
+  it("closes on Escape and returns focus to the control that opened it", async () => {
+    const opener = document.createElement("button");
+    document.body.appendChild(opener);
+    opener.focus();
+    try {
+      const onclose = show();
+      const close = await screen.findByRole("button", { name: "Close" });
+      await waitFor(() => expect(screen.getByRole("dialog")).toContainElement(document.activeElement as HTMLElement));
+      await fireEvent.keyDown(close, { key: "Escape" });
+      await waitFor(() => expect(onclose).toHaveBeenCalledOnce());
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await waitFor(() => expect(opener).toHaveFocus());
+    } finally {
+      opener.remove();
     }
   });
 
-  it('calls toggleShuffle when shuffle button clicked', async () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const shuffleBtn = container.querySelector('button[title="Shuffle"]');
-    if (shuffleBtn) {
-      await fireEvent.click(shuffleBtn);
-      expect(mockPlayerStore.toggleShuffle).toHaveBeenCalled();
-    }
+  it("selects, reorders and removes upcoming tracks while preserving their playback source", async () => {
+    queue.queue = [track, next, following, next];
+    show();
+    const rows = within(screen.getByRole("dialog")).getAllByRole("listitem");
+    expect(rows).toHaveLength(3);
+    const repeatedSong = screen.getAllByRole("button", { name: /Next song.*Expanded Artist/ });
+    await fireEvent.click(repeatedSong[0]);
+    expect(queue.playQueue).toHaveBeenCalledWith(queue.queue, 1, "album");
+    await fireEvent.click(repeatedSong[1]);
+    expect(queue.playQueue).toHaveBeenCalledWith(queue.queue, 3, "album");
+    const options = screen.getAllByRole("button", { name: "Options · Next song" })[0];
+    options.focus();
+    await fireEvent.keyDown(options, { key: "Enter" });
+    expect(await screen.findByRole("menuitem", { name: "Move up" })).toHaveAttribute("aria-disabled", "true");
+    await fireEvent.keyDown(screen.getByRole("menuitem", { name: "Move down" }), { key: "Enter" });
+    expect(queue.moveInQueue).toHaveBeenCalledWith(1, 2);
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    const followingOptions = within(rows[1]).getByRole("button", { name: "Options · Third song" });
+    followingOptions.focus();
+    await fireEvent.keyDown(followingOptions, { key: "Enter" });
+    const followingMenu = await screen.findByRole("menu");
+    expect(followingOptions).toHaveAttribute("aria-controls", followingMenu.id);
+    await fireEvent.click(within(followingMenu).getByRole("menuitem", { name: "Remove" }));
+    expect(queue.removeFromQueue).toHaveBeenCalledWith(2);
   });
 
-  it('calls queue.previous when previous button clicked', async () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const prevBtn = container.querySelector('button[title="Précédent"]');
-    if (prevBtn) {
-      await fireEvent.click(prevBtn);
-      expect(mockQueueStore.previous).toHaveBeenCalled();
-    }
+  it("shows active radio or autoplay and exposes the stop action", async () => {
+    radio.active = true;
+    const first = show();
+    expect(screen.getByText("Now playing from Jazz")).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "Stop Radio" }));
+    expect(radio.stopRadio).toHaveBeenCalledOnce();
+    await fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(first).toHaveBeenCalledOnce();
+    radio.autoplayMode = true;
+    show();
+    expect(screen.getByText("Autoplay")).toBeInTheDocument();
   });
 
-  it('calls queue.next when next button clicked', async () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const nextBtn = container.querySelector('button[title="Suivant"]');
-    if (nextBtn) {
-      await fireEvent.click(nextBtn);
-      expect(mockQueueStore.next).toHaveBeenCalled();
-    }
+  it("loads lyrics on demand and ignores late responses for a previous track", async () => {
+    let finish!: (value: { lyrics: string; source: string }) => void;
+    get.mockImplementation((path: string) => path.includes(track.id)
+      ? new Promise(resolve => { finish = resolve; })
+      : Promise.resolve({ lyrics: "Current lyrics", source: "embedded" }));
+    show();
+    expect(get).not.toHaveBeenCalled();
+    await openLyrics();
+    await waitFor(() => expect(get).toHaveBeenCalledWith("/tracks/track-1/lyrics"));
+    selected.set(next);
+    await screen.findByText("Current lyrics");
+    finish({ lyrics: "Obsolete lyrics", source: "old" });
+    await tick();
+    expect(screen.queryByText("Obsolete lyrics")).toBeNull();
+    expect(screen.getByText("Current lyrics")).toBeInTheDocument();
   });
 
-  it('calls onclose when close button clicked', async () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    const onclose = vi.fn();
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose } });
-    const closeBtn = container.querySelector('button[aria-label="Fermer"]');
-    if (closeBtn) {
-      await fireEvent.click(closeBtn);
-      expect(onclose).toHaveBeenCalled();
-    }
+  it("adds the selected real track to an owned playlist", async () => {
+    auth.isAuthenticated = true;
+    get.mockImplementation(async (path: string) => path.startsWith("/me/playlists?")
+      ? { data: [{ id: "mix", name: "My list", user_id: "me" }] } : [track.id]);
+    show();
+    await screen.findByTitle("Remove from favorites");
+    await fireEvent.click(screen.getByRole("button", { name: "Add to playlist" }));
+    await fireEvent.click(await screen.findByRole("button", { name: "My list" }));
+    expect(post).toHaveBeenCalledWith("/playlists/mix/tracks", { track_id: track.id });
   });
 
-  it('shows "Now Playing" header label', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('player.nowPlaying')).toBeInTheDocument();
-  });
-
-  it('shows queue empty message when no upcoming tracks', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockQueueStore.queue = [mockTrack];
-    mockQueueStore.currentIndex = 0;
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('player.queueEmpty')).toBeInTheDocument();
-  });
-
-  it('shows upcoming tracks in queue panel', () => {
-    const track2 = { ...mockTrack, id: 't2', title: 'Next Track', artist_name: 'Another Artist', duration_secs: 240 };
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockQueueStore.queue = [mockTrack, track2];
-    mockQueueStore.currentIndex = 0;
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('Next Track')).toBeInTheDocument();
-  });
-
-  it('shows lyrics panel header', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    // The lyrics header shows "player.lyrics" via t()
-    const lyricsHeaders = screen.getAllByText('player.lyrics');
-    expect(lyricsHeaders.length).toBeGreaterThan(0);
-  });
-
-  it('fetches lyrics when opened', async () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockApiGet.mockResolvedValueOnce([]).mockResolvedValueOnce({ lyrics: 'La la la', source: 'embedded' });
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    await vi.waitFor(() => {
-      expect(mockApiGet).toHaveBeenCalledWith(`/tracks/${mockTrack.id}/lyrics`);
-    }, { timeout: 2000 });
-  });
-
-  it('resolves absolute URL as-is for cover', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack, cover_url: 'https://cdn.example.com/cover.jpg' };
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const img = container.querySelector('img[alt="Expanded Song"]');
-    expect(img?.getAttribute('src')).toBe('https://cdn.example.com/cover.jpg');
-  });
-
-  it('resolves relative URL by prepending base', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack, cover_url: '/media/covers/art.jpg' };
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const img = container.querySelector('img[alt="Expanded Song"]');
-    expect(img?.getAttribute('src')).toBe('/media/covers/art.jpg');
-  });
-
-  it('hides album title when not present', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack, album_title: null };
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('Expanded Song')).toBeInTheDocument();
-  });
-
-  it('hides format when null', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack, format: null, bitrate: null, sample_rate: null };
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.queryByText(/kbps/)).toBeNull();
-    expect(screen.queryByText(/kHz/)).toBeNull();
-  });
-
-  it('shows favorite button when authenticated', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockAuthStore.isAuthenticated = true;
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    // FavoriteButton is rendered when authenticated
-    expect(screen.getByText('Expanded Song')).toBeInTheDocument();
-  });
-
-  it('shows repeat "one" indicator', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockPlayerStore.repeat = 'one';
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    // When repeat is 'one', a '1' indicator should appear
-    const allOnes = screen.getAllByText('1');
-    expect(allOnes.length).toBeGreaterThan(0);
-  });
-
-  it('does not show repeat "one" when repeat is none', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockPlayerStore.repeat = 'none';
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.queryByText('1')).toBeNull();
-  });
-
-  it('shows isPlaying state in play button', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockPlayerStore.isPlaying = true;
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const playBtn = container.querySelector('.w-14.h-14.rounded-full');
-    expect(playBtn).toBeInTheDocument();
-  });
-
-  it('closes on Escape key', async () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    const onclose = vi.fn();
-    render(ExpandedPlayer, { props: { open: true, onclose } });
-    await fireEvent.keyDown(window, { key: 'Escape' });
-    expect(onclose).toHaveBeenCalled();
-  });
-
-  it('handles seek via progress bar click', async () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockPlayerStore.duration = 200;
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const progressBar = container.querySelector('.cursor-pointer.group');
-    if (progressBar) {
-      Object.defineProperty(progressBar, 'getBoundingClientRect', {
-        value: () => ({ left: 0, right: 400, width: 400, top: 0, bottom: 10, height: 10, x: 0, y: 0, toJSON: () => {} }),
-      });
-      await fireEvent.click(progressBar, { clientX: 100 });
-      expect(mockPlayerStore.seek).toHaveBeenCalledWith(50); // 100/400 * 200
-    }
-  });
-
-  it('shows upcoming track count', () => {
-    const track2 = { ...mockTrack, id: 't2', title: 'Track 2', duration_secs: 120 };
-    const track3 = { ...mockTrack, id: 't3', title: 'Track 3', duration_secs: 180 };
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockQueueStore.queue = [mockTrack, track2, track3];
-    mockQueueStore.currentIndex = 0;
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('(2)')).toBeInTheDocument();
-  });
-
-  it('shows track cover in upcoming queue item', () => {
-    const track2 = { ...mockTrack, id: 't2', title: 'Covered Track', cover_url: '/cover.jpg' };
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockQueueStore.queue = [mockTrack, track2];
-    mockQueueStore.currentIndex = 0;
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const queueImgs = container.querySelectorAll('img');
-    // At least one img for the queued track
-    expect(queueImgs.length).toBeGreaterThan(0);
-  });
-
-  it('shows emoji when queue track has no cover', () => {
-    const track2 = { ...mockTrack, id: 't2', title: 'NoCover', cover_url: null };
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockQueueStore.queue = [mockTrack, track2];
-    mockQueueStore.currentIndex = 0;
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    // The queue item without cover shows emoji
-    const emojis = screen.getAllByText('🎵');
-    expect(emojis.length).toBeGreaterThan(0);
-  });
-
-  it('shows "Unknown" for queue track without artist_name', () => {
-    const track2 = { ...mockTrack, id: 't2', title: 'NoArtist', artist_name: null };
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockQueueStore.queue = [mockTrack, track2];
-    mockQueueStore.currentIndex = 0;
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getByText('track.unknownArtist')).toBeInTheDocument();
-  });
-
-  it('shows zero progress when duration is 0', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockPlayerStore.duration = 0;
-    mockPlayerStore.progress = 0;
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const progressFill = container.querySelector('.bg-white.rounded-full.transition');
-    if (progressFill) {
-      expect(progressFill.getAttribute('style')).toContain('0%');
-    }
-  });
-
-  it('renders autoplay toggle button', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const autoplayBtn = container.querySelector('button[title="player.autoplay"]');
-    expect(autoplayBtn).toBeInTheDocument();
-  });
-
-  it('calls toggleAutoplay when autoplay button is clicked', async () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    const { container } = render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    const autoplayBtn = container.querySelector('button[title="player.autoplay"]');
-    if (autoplayBtn) {
-      await fireEvent.click(autoplayBtn);
-      expect(mockQueueStore.toggleAutoplay).toHaveBeenCalled();
-    }
-  });
-
-  it('shows autoplay label in header when autoplayMode is true', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockRadioStore.active = true;
-    mockRadioStore.autoplayMode = true;
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    expect(screen.getAllByText('player.autoplayActive').length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('shows radio header when radio active but not autoplay mode', () => {
-    mockPlayerStore.currentTrack = { ...mockTrack };
-    mockRadioStore.active = true;
-    mockRadioStore.autoplayMode = false;
-    mockRadioStore.seedLabel = 'Test Seed';
-    render(ExpandedPlayer, { props: { open: true, onclose: vi.fn() } });
-    // Should show "radio.nowPlayingFrom" text
-    const text = screen.getByText(/radio\.nowPlayingFrom/);
-    expect(text).toBeInTheDocument();
+  it("uses local art for previews and keeps lyrics, favorites and playlists off the network", async () => {
+    auth.isAuthenticated = true;
+    selected.set(showcaseTracks[0]);
+    show();
+    expect(screen.getByRole("dialog").querySelector("img")).toHaveAttribute("src", showcaseTracks[0].cover_url);
+    expect(screen.queryByRole("button", { name: "Add to playlist" })).toBeNull();
+    await openLyrics();
+    await screen.findByText("No lyrics available");
+    expect(get).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
   });
 });

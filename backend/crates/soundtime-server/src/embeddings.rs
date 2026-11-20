@@ -6,7 +6,7 @@
 //!
 //! Uses pgvector for storage and cosine-distance similarity search.
 
-use sea_orm::{ConnectionTrait, DatabaseConnection, FromQueryResult, Statement};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, FromQueryResult, Statement};
 use uuid::Uuid;
 
 /// Embedding dimensionality.
@@ -229,33 +229,6 @@ pub fn vec_to_pgvector(vec: &[f32]) -> String {
     format!("[{}]", parts.join(","))
 }
 
-/// Store a track embedding in the database.
-///
-/// Uses `INSERT ... ON CONFLICT` to upsert — if the track already has
-/// an embedding, it is updated.
-pub async fn upsert_track_embedding(
-    db: &DatabaseConnection,
-    track_id: Uuid,
-    embedding: &[f32],
-    metadata: Option<serde_json::Value>,
-) -> Result<(), sea_orm::DbErr> {
-    let vec_str = vec_to_pgvector(embedding);
-    let metadata_str =
-        serde_json::to_string(&metadata.unwrap_or(serde_json::json!({}))).unwrap_or_default();
-
-    db.execute(Statement::from_sql_and_values(
-        sea_orm::DatabaseBackend::Postgres,
-        "INSERT INTO track_embeddings (track_id, embedding, metadata, created_at, updated_at) \
-         VALUES ($1, $2::vector, $3::jsonb, NOW(), NOW()) \
-         ON CONFLICT (track_id) DO UPDATE SET \
-         embedding = $2::vector, metadata = $3::jsonb, updated_at = NOW()",
-        [track_id.into(), vec_str.into(), metadata_str.into()],
-    ))
-    .await?;
-
-    Ok(())
-}
-
 /// Find tracks most similar to a given embedding using cosine distance.
 ///
 /// Returns `(track_id, distance)` pairs sorted by similarity (closest first).
@@ -334,49 +307,45 @@ fn parse_pgvector(text: &str) -> Vec<f32> {
         .collect()
 }
 
-/// Generate and store embeddings for all tracks that don't have one yet.
-///
-/// This is meant to be called as a background task on startup or
-/// after new tracks are added.
-pub async fn backfill_embeddings(db: &DatabaseConnection) -> Result<usize, sea_orm::DbErr> {
-    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
-    use soundtime_db::entities::track;
+const BACKFILL_PAGE: usize = 64;
 
-    #[derive(Debug, FromQueryResult)]
-    struct TrackIdRow {
+#[derive(FromQueryResult)]
+struct TrackId {
+    id: Uuid,
+}
+
+/// A catalogue announcement alone never creates an embedding. Callers pass a bounded
+/// page of local originals, an explicit radio seed, or a listener's recent tracks.
+async fn fill_missing_embeddings(db: &DatabaseConnection, ids: &[Uuid]) -> Result<u64, DbErr> {
+    #[derive(FromQueryResult)]
+    struct Features {
         id: Uuid,
+        genre: Option<String>,
+        year: Option<i16>,
+        duration_secs: f32,
+        bitrate: Option<i32>,
+        sample_rate: Option<i32>,
+        format: String,
+        play_count: i64,
+        artist_id: Uuid,
     }
 
-    // Find tracks without embeddings
-    let missing = TrackIdRow::find_by_statement(Statement::from_sql_and_values(
-        sea_orm::DatabaseBackend::Postgres,
-        "SELECT t.id FROM tracks t \
-         LEFT JOIN track_embeddings te ON t.id = te.track_id \
-         WHERE te.track_id IS NULL",
-        [],
-    ))
-    .all(db)
-    .await?;
-
-    if missing.is_empty() {
-        return Ok(0);
-    }
-
-    tracing::info!(count = missing.len(), "Backfilling track embeddings");
-
-    let mut generated = 0;
-    // Process in batches
-    let batch_size = 100;
-    for chunk in missing.chunks(batch_size) {
-        let ids: Vec<Uuid> = chunk.iter().map(|r| r.id).collect();
-
-        let tracks: Vec<track::Model> = track::Entity::find()
-            .filter(track::Column::Id.is_in(ids))
-            .all(db)
-            .await?;
-
-        for t in &tracks {
-            let embedding = generate_embedding(
+    let mut inserted = 0;
+    for page in ids.chunks(BACKFILL_PAGE) {
+        let rows = Features::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT t.id,t.genre,t.year,t.duration_secs,t.bitrate,t.sample_rate,t.format,t.play_count,t.artist_id
+             FROM tracks t WHERE t.id=ANY($1::uuid[])
+             AND NOT EXISTS (SELECT FROM track_embeddings e WHERE e.track_id=t.id)",
+            [page.to_vec().into()],
+        )).all(db).await?;
+        if rows.is_empty() {
+            continue;
+        }
+        let mut track_ids = Vec::with_capacity(rows.len());
+        let mut vectors = Vec::with_capacity(rows.len());
+        for t in rows {
+            let vector = generate_embedding(
                 t.genre.as_deref(),
                 t.year,
                 t.duration_secs,
@@ -386,38 +355,68 @@ pub async fn backfill_embeddings(db: &DatabaseConnection) -> Result<usize, sea_o
                 t.play_count,
                 t.artist_id,
             );
-
-            if let Err(e) = upsert_track_embedding(db, t.id, &embedding, None).await {
-                tracing::warn!(track_id = %t.id, error = %e, "Failed to store track embedding");
-            } else {
-                generated += 1;
-            }
+            track_ids.push(t.id);
+            vectors.push(vec_to_pgvector(&vector));
         }
+        inserted += db
+            .execute(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "INSERT INTO track_embeddings(track_id,embedding)
+             SELECT t.id,v.embedding::vector FROM unnest($1::uuid[], $2::text[]) v(id,embedding)
+             JOIN tracks t ON t.id=v.id
+             ORDER BY t.id ON CONFLICT(track_id) DO NOTHING",
+                [track_ids.into(), vectors.into()],
+            ))
+            .await?
+            .rows_affected();
     }
-
-    tracing::info!(generated, "Track embedding backfill complete");
-    Ok(generated)
+    Ok(inserted)
 }
 
-/// Generate and store the embedding for a single track.
-///
-/// Called when a new track is added to the library.
-pub async fn generate_and_store_embedding(
+pub async fn radio_seed_embedding(
     db: &DatabaseConnection,
-    track: &soundtime_db::entities::track::Model,
-) -> Result<(), sea_orm::DbErr> {
-    let embedding = generate_embedding(
-        track.genre.as_deref(),
-        track.year,
-        track.duration_secs,
-        track.bitrate,
-        track.sample_rate,
-        &track.format,
-        track.play_count,
-        track.artist_id,
-    );
+    id: Uuid,
+) -> Result<Option<Vec<f32>>, DbErr> {
+    if let Some(vector) = get_track_embedding(db, id).await? {
+        return Ok(Some(vector));
+    }
+    fill_missing_embeddings(db, &[id]).await?;
+    get_track_embedding(db, id).await
+}
 
-    upsert_track_embedding(db, track.id, &embedding, None).await
+/// Page the partial (catalog_id, track_id) index even if the whole library already
+/// has vectors. A standalone instance also has its own local catalogue.
+async fn backfill_page(
+    db: &DatabaseConnection,
+    after: Option<Uuid>,
+) -> Result<(Option<Uuid>, u64), DbErr> {
+    let rows = TrackId::find_by_statement(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT p.track_id AS id FROM track_publications p
+         WHERE p.catalog_id=(SELECT id FROM federation_catalogs WHERE is_local)
+         AND p.state='active' AND p.track_id >= COALESCE($1::uuid,'00000000-0000-0000-0000-000000000000'::uuid)
+         AND p.track_id IS DISTINCT FROM $1
+         ORDER BY p.track_id LIMIT $2",
+        [after.into(), (BACKFILL_PAGE as i64).into()],
+    )).all(db).await?;
+    let ids: Vec<_> = rows.into_iter().map(|r| r.id).collect();
+    let inserted = fill_missing_embeddings(db, &ids).await?;
+    Ok((ids.last().copied(), inserted))
+}
+
+pub async fn backfill_embeddings(db: &DatabaseConnection) -> Result<u64, DbErr> {
+    let mut after = None;
+    let mut generated = 0;
+    loop {
+        let (next, inserted) = backfill_page(db, after).await?;
+        generated += inserted;
+        let Some(last) = next else {
+            return Ok(generated);
+        };
+        after = Some(last);
+        // Yield the shared pool and leave time for foreground reads between pages.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 }
 
 // ─── User Taste Vectors ─────────────────────────────────────────────
@@ -437,6 +436,18 @@ pub async fn update_user_taste_vector(
         weight: f64,
     }
 
+    // Catch up only on music this listener actually used. The inner limit applies
+    // before deduplication so even an old account never scans its whole history.
+    let missing = TrackId::find_by_statement(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "SELECT DISTINCT l.track_id AS id FROM (
+            SELECT track_id FROM listen_history WHERE user_id=$1 ORDER BY listened_at DESC, id DESC LIMIT 500
+         ) l WHERE NOT EXISTS (SELECT FROM track_embeddings e WHERE e.track_id=l.track_id)",
+        [user_id.into()],
+    )).all(db).await?;
+    let ids: Vec<_> = missing.into_iter().map(|r| r.id).collect();
+    fill_missing_embeddings(db, &ids).await?;
+
     // Fetch the user's recent listen history joined with track embeddings.
     // Weight: completed=1.0, skipped=0.1, otherwise=0.5
     // Note: completed and skipped are Option<bool> in the schema, so use IS TRUE.
@@ -448,11 +459,11 @@ pub async fn update_user_taste_vector(
            WHEN lh.completed IS TRUE THEN 1.0 \
            WHEN lh.skipped IS TRUE THEN 0.1 \
            ELSE 0.5 \
-         END AS weight \
+         END::double precision AS weight \
          FROM listen_history lh \
          JOIN track_embeddings te ON lh.track_id = te.track_id \
          WHERE lh.user_id = $1 \
-         ORDER BY lh.listened_at DESC \
+         ORDER BY lh.listened_at DESC, lh.id DESC \
          LIMIT 500",
         [user_id.into()],
     ))
@@ -693,3 +704,6 @@ mod tests {
         assert!(medium > 0.5, "210s should be in 'medium' bucket");
     }
 }
+
+#[cfg(test)]
+mod postgres_tests;

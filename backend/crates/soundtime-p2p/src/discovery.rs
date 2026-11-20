@@ -8,8 +8,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use iroh::{EndpointAddr, EndpointId};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::error::P2pError;
 use crate::node::{P2pMessage, P2pNode};
@@ -30,12 +31,15 @@ pub struct PeerInfo {
     pub last_seen: chrono::DateTime<chrono::Utc>,
     /// Whether the peer responded to our last ping
     pub is_online: bool,
+    #[serde(skip)]
+    checked_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Manages the set of known peers and handles discovery.
 pub struct PeerRegistry {
     /// Known peers, keyed by EndpointId string
     peers: RwLock<HashMap<String, PeerInfo>>,
+    db: Option<DatabaseConnection>,
 }
 
 impl PeerRegistry {
@@ -43,6 +47,22 @@ impl PeerRegistry {
     pub fn new() -> Self {
         Self {
             peers: RwLock::new(HashMap::new()),
+            db: None,
+        }
+    }
+
+    pub fn persistent(db: DatabaseConnection) -> Self {
+        Self {
+            db: Some(db),
+            ..Self::new()
+        }
+    }
+
+    async fn persist_transition(&self, peer: PeerInfo) {
+        if let Some(db) = &self.db {
+            if let Err(error) = write_peers(db, std::slice::from_ref(&peer)).await {
+                warn!(node_id=%peer.node_id,%error,"presence write failed; periodic flush will retry");
+            }
         }
     }
 
@@ -61,17 +81,19 @@ impl PeerRegistry {
         version: Option<String>,
     ) {
         let mut peers = self.peers.write().await;
-        let info = peers
-            .entry(node_id.to_string())
-            .or_insert_with(|| PeerInfo {
-                node_id: node_id.to_string(),
-                name: None,
-                version: None,
-                track_count: 0,
-                last_seen: chrono::Utc::now(),
-                is_online: true,
-            });
-        info.last_seen = chrono::Utc::now();
+        let now = chrono::Utc::now();
+        let transition = peers.get(node_id).is_none_or(|p| !p.is_online);
+        let info = peers.entry(node_id.to_owned()).or_insert_with(|| PeerInfo {
+            node_id: node_id.to_owned(),
+            name: None,
+            version: None,
+            track_count: 0,
+            last_seen: now,
+            is_online: true,
+            checked_at: now,
+        });
+        info.last_seen = now;
+        info.checked_at = now;
         info.is_online = true;
         info.track_count = track_count;
         if name.is_some() {
@@ -80,15 +102,46 @@ impl PeerRegistry {
         if version.is_some() {
             info.version = version;
         }
-        debug!(%node_id, "peer updated in registry");
+        if transition {
+            let info = info.clone();
+            drop(peers);
+            self.persist_transition(info).await;
+        }
     }
 
-    /// Mark a peer as offline.
-    pub async fn mark_offline(&self, node_id: &str) {
+    /// Reject a failed probe when newer traffic has already confirmed presence.
+    pub async fn failed_since(
+        &self,
+        node_id: &str,
+        started: chrono::DateTime<chrono::Utc>,
+        remember: bool,
+    ) {
         let mut peers = self.peers.write().await;
-        if let Some(info) = peers.get_mut(node_id) {
-            info.is_online = false;
+        if !peers.contains_key(node_id) && !remember {
+            return;
         }
+        let info = peers.entry(node_id.to_owned()).or_insert_with(|| PeerInfo {
+            node_id: node_id.to_owned(),
+            name: None,
+            version: None,
+            track_count: 0,
+            last_seen: chrono::DateTime::UNIX_EPOCH,
+            checked_at: chrono::DateTime::UNIX_EPOCH,
+            is_online: false,
+        });
+        if info.checked_at >= started {
+            return;
+        }
+        info.is_online = false;
+        info.checked_at = started;
+        let update = info.clone();
+        drop(peers);
+        self.persist_transition(update).await;
+    }
+
+    #[cfg(test)]
+    pub async fn mark_offline(&self, node_id: &str) {
+        self.failed_since(node_id, chrono::Utc::now(), false).await;
     }
 
     /// Remove a peer from the registry.
@@ -121,53 +174,14 @@ impl PeerRegistry {
         peers.len()
     }
 
-    /// Persist the entire peer registry to the database.
-    ///
-    /// Uses upsert (INSERT … ON CONFLICT UPDATE) so it is safe to call
-    /// repeatedly.  Runs inside a single transaction for atomicity.
-    pub async fn save_to_db(&self, db: &sea_orm::DatabaseConnection) -> Result<(), P2pError> {
-        use sea_orm::{EntityTrait, Set, TransactionTrait};
-        use soundtime_db::entities::p2p_peer;
-
-        let peers = self.peers.read().await;
-        let txn = db
-            .begin()
-            .await
-            .map_err(|e| P2pError::Connection(format!("failed to begin transaction: {e}")))?;
-
-        for info in peers.values() {
-            let model = p2p_peer::ActiveModel {
-                node_id: Set(info.node_id.clone()),
-                name: Set(info.name.clone()),
-                version: Set(info.version.clone()),
-                track_count: Set(info.track_count as i64),
-                is_online: Set(info.is_online),
-                last_seen_at: Set(info.last_seen.into()),
-                created_at: Set(chrono::Utc::now().into()),
-            };
-            // Insert or update on conflict (node_id is the PK)
-            p2p_peer::Entity::insert(model)
-                .on_conflict(
-                    sea_orm::sea_query::OnConflict::column(p2p_peer::Column::NodeId)
-                        .update_columns([
-                            p2p_peer::Column::Name,
-                            p2p_peer::Column::Version,
-                            p2p_peer::Column::TrackCount,
-                            p2p_peer::Column::IsOnline,
-                            p2p_peer::Column::LastSeenAt,
-                        ])
-                        .to_owned(),
-                )
-                .exec(&txn)
-                .await
-                .map_err(|e| P2pError::Connection(format!("failed to upsert peer: {e}")))?;
+    /// Reconcile metadata and retry failed transition writes without holding the
+    /// registry lock during I/O. SQL rejects snapshots older than a new observation.
+    pub async fn save_to_db(&self, db: &DatabaseConnection) -> Result<(), P2pError> {
+        let mut rows = self.list_peers().await;
+        rows.sort_unstable_by(|a, b| a.node_id.cmp(&b.node_id));
+        for batch in rows.chunks(256) {
+            write_peers(db, batch).await?;
         }
-
-        txn.commit()
-            .await
-            .map_err(|e| P2pError::Connection(format!("failed to commit transaction: {e}")))?;
-
-        debug!(count = peers.len(), "saved peer registry to database");
         Ok(())
     }
 
@@ -177,6 +191,10 @@ impl PeerRegistry {
         use sea_orm::EntityTrait;
         use soundtime_db::entities::p2p_peer;
 
+        let now = chrono::Utc::now();
+        db.execute(Statement::from_sql_and_values(DbBackend::Postgres,
+            "UPDATE p2p_peers SET is_online=false, presence_checked_at=$1 WHERE is_online AND presence_checked_at<=$1",
+            [now.into()])).await?;
         let rows = p2p_peer::Entity::find()
             .all(db)
             .await
@@ -191,6 +209,7 @@ impl PeerRegistry {
                 version: row.version,
                 track_count: row.track_count as u64,
                 last_seen: row.last_seen_at.into(),
+                checked_at: now,
                 is_online: false, // mark offline until we ping
             };
             peers.insert(info.node_id.clone(), info);
@@ -199,6 +218,23 @@ impl PeerRegistry {
         info!(count, "loaded peer registry from database");
         Ok(count)
     }
+}
+
+async fn write_peers(db: &impl ConnectionTrait, peers: &[PeerInfo]) -> Result<(), P2pError> {
+    let rows = peers
+        .iter()
+        .map(|p| {
+            serde_json::json!({"id":p.node_id,"name":p.name,"version":p.version,
+        "tracks":p.track_count,"online":p.is_online,"seen":p.last_seen,"checked":p.checked_at})
+        })
+        .collect();
+    db.execute(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        include_str!("persist_presence.sql"),
+        [serde_json::Value::Array(rows).into()],
+    ))
+    .await?;
+    Ok(())
 }
 
 impl Default for PeerRegistry {
@@ -217,15 +253,8 @@ pub async fn add_and_ping_peer(
     let peer_id = peer_addr.id.to_string();
     info!(%peer_id, "adding peer and pinging");
 
-    match node.ping_peer(peer_addr).await {
-        Ok(P2pMessage::Pong {
-            node_id,
-            track_count,
-            version,
-        }) => {
-            registry
-                .upsert_peer_versioned(&node_id, None, track_count, version)
-                .await;
+    match node.ping_into(peer_addr, registry).await {
+        Ok(P2pMessage::Pong { node_id, .. }) => {
             let info = match registry.get_peer(&node_id).await {
                 Some(info) => info,
                 None => {
@@ -240,10 +269,7 @@ pub async fn add_and_ping_peer(
                 "unexpected response from {peer_id}"
             )))
         }
-        Err(e) => {
-            registry.mark_offline(&peer_id).await;
-            Err(e)
-        }
+        Err(e) => Err(e),
     }
 }
 
@@ -263,18 +289,13 @@ pub async fn refresh_all_peers(node: &Arc<P2pNode>, registry: &PeerRegistry) {
         };
 
         let peer_addr = EndpointAddr::new(node_id);
-        match node.ping_peer(peer_addr).await {
-            Ok(P2pMessage::Pong {
-                node_id: _,
-                track_count,
-                version,
-            }) => {
-                registry
-                    .upsert_peer_versioned(&peer.node_id, peer.name.clone(), track_count, version)
-                    .await;
-            }
-            _ => {
-                registry.mark_offline(&peer.node_id).await;
+        if matches!(
+            node.ping_into(peer_addr, registry).await,
+            Ok(P2pMessage::Pong { .. })
+        ) && !peer.is_online
+        {
+            if let Err(error) = node.resume_subscription(node_id).await {
+                warn!(peer = %peer.node_id, %error, "unable to resume catalogue subscription");
             }
         }
     }
@@ -495,6 +516,17 @@ mod tests {
         assert_eq!(registry.peer_count().await, 2);
     }
 
+    #[tokio::test]
+    async fn a_delayed_failure_does_not_overwrite_a_newer_pong() {
+        let registry = PeerRegistry::new();
+        let started = chrono::Utc::now();
+        registry.upsert_peer("active", None, 1).await;
+        registry.failed_since("active", started, true).await;
+        assert!(registry.get_peer("active").await.unwrap().is_online);
+        registry.failed_since("unreachable", started, true).await;
+        assert!(!registry.get_peer("unreachable").await.unwrap().is_online);
+    }
+
     // ── PeerInfo serde roundtrip ─────────────────────────────────────
 
     #[test]
@@ -505,6 +537,7 @@ mod tests {
             version: Some("0.1.0".to_string()),
             track_count: 42,
             last_seen: chrono::Utc::now(),
+            checked_at: chrono::Utc::now(),
             is_online: true,
         };
         let json = serde_json::to_string(&info).unwrap();
@@ -523,6 +556,7 @@ mod tests {
             version: None,
             track_count: 0,
             last_seen: chrono::Utc::now(),
+            checked_at: chrono::Utc::now(),
             is_online: false,
         };
         let json = serde_json::to_string(&info).unwrap();
@@ -539,6 +573,7 @@ mod tests {
             version: Some("0.1.0".to_string()),
             track_count: 10,
             last_seen: chrono::Utc::now(),
+            checked_at: chrono::Utc::now(),
             is_online: true,
         };
         let cloned = info.clone();
@@ -555,6 +590,7 @@ mod tests {
             version: None,
             track_count: 0,
             last_seen: chrono::Utc::now(),
+            checked_at: chrono::Utc::now(),
             is_online: false,
         };
         let debug = format!("{:?}", info);

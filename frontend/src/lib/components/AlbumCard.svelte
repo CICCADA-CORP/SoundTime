@@ -1,79 +1,39 @@
 <script lang="ts">
-  import { Play, Loader2 } from "lucide-svelte";
+  import { Loader2, Play } from "lucide-svelte";
+  import { api } from "$lib/api";
   import type { Album } from "$lib/types";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { t } from "$lib/i18n/index.svelte";
-  import { api } from "$lib/api";
+  import CatalogCard from "./catalog/CatalogCard.svelte";
 
   let { album }: { album: Album } = $props();
   const queue = getQueueStore();
   let loading = $state(false);
+  let failed = $state(false);
 
-  async function handlePlay(e: Event) {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    // If tracks are already available, play immediately
-    if (album.tracks && album.tracks.length > 0) {
-      queue.playQueue(album.tracks, 0, "album");
-      return;
-    }
-    
-    // If tracks array is present but empty, don't do anything
-    if (Array.isArray(album.tracks) && album.tracks.length === 0) {
-      return;
-    }
-    
-    // If tracks is undefined/null, fetch from API
-    // Prevent double-clicks while loading
+  async function play() {
     if (loading) return;
-    
+    loading = true;
+    failed = false;
     try {
-      loading = true;
-      
-      // Fetch the full album details with tracks
-      const fullAlbum = await api.get<Album>(`/albums/${album.id}`);
-      
-      if (fullAlbum.tracks && fullAlbum.tracks.length > 0) {
-        queue.playQueue(fullAlbum.tracks, 0, "album");
-      }
-    } catch (err) {
-      console.error("Failed to fetch album tracks for playback:", err);
+      const tracks = album.tracks ?? (await api.get<Album>(`/albums/${album.id}`)).tracks;
+      if (tracks?.length) queue.playQueue(tracks, 0, "album");
+    } catch (error) {
+      failed = true;
+      console.error("Failed to fetch album tracks for playback:", error);
     } finally {
       loading = false;
     }
   }
 </script>
 
-<a href="/albums/{album.id}" class="group block">
-  <div class="bg-[hsl(var(--card))] rounded-lg p-4 hover:bg-[hsl(var(--secondary))] transition-colors duration-200">
-    <div class="aspect-square rounded-md bg-[hsl(var(--secondary))] mb-3 overflow-hidden relative">
-      {#if album.cover_url}
-        <img
-          src={album.cover_url}
-          alt={album.title}
-          loading="lazy"
-          class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-        />
-      {:else}
-        <div class="w-full h-full flex items-center justify-center text-4xl">💿</div>
-      {/if}
-      <button
-        aria-label={t('a11y.playAlbum')}
-        onclick={handlePlay}
-        disabled={loading}
-        class="absolute bottom-2 right-2 w-10 h-10 rounded-full bg-[hsl(var(--primary))] text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0 shadow-lg disabled:opacity-50"
-      >
-        {#if loading}
-          <Loader2 class="w-5 h-5 animate-spin" />
-        {:else}
-          <Play class="w-5 h-5 ml-0.5" fill="currentColor" />
-        {/if}
-      </button>
-    </div>
-    <h3 class="text-sm font-medium truncate">{album.title}</h3>
-    <p class="text-xs text-[hsl(var(--muted-foreground))] truncate mt-1">
-      {album.year ?? ""}{album.year && album.artist_name ? " · " : ""}{album.artist_name ?? ""}
-    </p>
-  </div>
-</a>
+<CatalogCard artworkId={album.id} kind="album" href="/albums/{album.id}" title={album.title} image={album.cover_url}
+  description={[album.year, album.artist_name].filter(Boolean).join(" · ")}>
+  {#snippet actions()}
+    <button type="button" aria-label={t("a11y.playAlbum")} disabled={loading} onclick={play}
+      class="absolute right-2 top-2 grid size-8 place-items-center rounded-full bg-background text-foreground shadow-sm transition-opacity disabled:opacity-50 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+      {#if loading}<Loader2 size={17} class="motion-safe:animate-spin" />{:else}<Play size={15} fill="currentColor" />{/if}
+    </button>
+    {#if failed}<p class="px-1 text-xs text-destructive" role="alert">{t("catalog.unavailable")}</p>{/if}
+  {/snippet}
+</CatalogCard>

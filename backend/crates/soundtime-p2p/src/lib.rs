@@ -11,9 +11,12 @@ pub mod blocked;
 pub mod connection_pool;
 pub mod discovery;
 pub mod error;
+pub mod inventory;
 pub mod library_sync;
 pub mod musicbrainz;
 pub mod node;
+mod peer_policy;
+pub mod range_transport;
 pub mod rendezvous;
 pub mod search_index;
 pub mod track_health;
@@ -40,6 +43,7 @@ pub use iroh::{EndpointAddr, EndpointId};
 /// Backward-compatible type aliases
 pub type NodeAddr = EndpointAddr;
 pub type NodeId = EndpointId;
+pub use bao_tree::blake3::Hasher as BlobHasher;
 pub use iroh_blobs::Hash as BlobHash;
 
 /// Return the build version string.

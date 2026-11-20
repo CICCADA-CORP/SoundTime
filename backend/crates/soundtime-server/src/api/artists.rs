@@ -49,10 +49,11 @@ pub async fn list_artists(
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<super::tracks::PaginatedResponse<ArtistResponse>>, (StatusCode, String)> {
     let page = params.page.unwrap_or(1).max(1);
-    let per_page = params.per_page.unwrap_or(20).min(100);
+    let per_page = params.per_page.unwrap_or(20).clamp(1, 100);
 
-    let paginator = artist::Entity::find()
+    let paginator = artist::Entity::credited()
         .order_by_asc(artist::Column::Name)
+        .order_by_asc(artist::Column::Id)
         .paginate(&state.db, per_page);
 
     let total = paginator
@@ -81,7 +82,8 @@ pub async fn get_artist(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ArtistDetailResponse>, (StatusCode, String)> {
-    let artist_model = artist::Entity::find_by_id(id)
+    let artist_model = artist::Entity::credited()
+        .filter(artist::Column::Id.eq(id))
         .one(&state.db)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?
@@ -95,6 +97,7 @@ pub async fn get_artist(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB error: {e}")))?;
 
     let tracks = track::Entity::find()
+        .filter(super::tracks::playable_filter(&state))
         .filter(track::Column::ArtistId.eq(id))
         .order_by_desc(track::Column::CreatedAt)
         .all(&state.db)
@@ -110,7 +113,7 @@ pub async fn get_artist(
         tracks: tracks
             .into_iter()
             .map(|t| {
-                let mut resp = super::tracks::TrackResponse::from(t);
+                let mut resp = super::tracks::TrackResponse::playable(t);
                 resp.artist_name = Some(artist_model.name.clone());
                 resp
             })
@@ -123,7 +126,7 @@ pub async fn list_top_artists(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<super::tracks::PaginatedResponse<ArtistResponse>>, (StatusCode, String)> {
-    use sea_orm::{FromQueryResult, QuerySelect};
+    use sea_orm::{FromQueryResult, JoinType, QuerySelect, RelationTrait};
 
     let per_page = params.per_page.unwrap_or(10).min(50);
 
@@ -134,10 +137,14 @@ pub async fn list_top_artists(
     }
 
     let top_ids = track::Entity::find()
+        .join(JoinType::InnerJoin, track::Relation::Artist.def())
+        .filter(artist::Column::IsPlaceholder.eq(false))
+        .filter(super::tracks::playable_filter(&state))
         .select_only()
         .column(track::Column::ArtistId)
         .group_by(track::Column::ArtistId)
         .order_by_desc(sea_orm::sea_query::Expr::col(track::Column::PlayCount).sum())
+        .order_by_asc(track::Column::ArtistId)
         .limit(per_page)
         .into_model::<ArtistPlayCount>()
         .all(&state.db)
@@ -147,7 +154,7 @@ pub async fn list_top_artists(
     let ids: Vec<Uuid> = top_ids.into_iter().map(|r| r.artist_id).collect();
 
     let artists = if !ids.is_empty() {
-        artist::Entity::find()
+        artist::Entity::credited()
             .filter(artist::Column::Id.is_in(ids.clone()))
             .all(&state.db)
             .await
@@ -186,7 +193,7 @@ pub async fn list_random_artists(
 
     let per_page = params.per_page.unwrap_or(10).min(50);
 
-    let artists = artist::Entity::find()
+    let artists = artist::Entity::credited()
         .order_by(Expr::cust("RANDOM()"), Order::Asc)
         .limit(per_page)
         .all(&state.db)
@@ -213,11 +220,97 @@ mod tests {
         artist::Model {
             id: Uuid::new_v4(),
             name: "Test Artist".into(),
+            is_placeholder: false,
             musicbrainz_id: Some("mb-12345".into()),
             bio: Some("A great artist".into()),
             image_url: Some("https://img.example.com/artist.jpg".into()),
             created_at: Utc::now().fixed_offset(),
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL for PostgreSQL"]
+    async fn uncredited_artist_is_excluded_before_pagination() {
+        use sea_orm::{
+            ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DbBackend, Schema, Set,
+        };
+
+        let mut opts = ConnectOptions::new(std::env::var("TEST_DATABASE_URL").unwrap());
+        opts.max_connections(1).min_connections(1);
+        let db = Database::connect(opts).await.unwrap();
+        let mut table = Schema::new(DbBackend::Postgres).create_table_from_entity(artist::Entity);
+        db.execute(DbBackend::Postgres.build(table.temporary()))
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(AppState {
+            db,
+            jwt_secret: String::new(),
+            domain: "localhost".into(),
+            storage: Arc::new(soundtime_audio::AudioStorage::new(dir.path())),
+            p2p: None,
+            plugins: None,
+            #[cfg(feature = "redis")]
+            redis: None,
+        });
+        let mut ids = Vec::new();
+        for (name, is_placeholder) in [
+            ("Alpha", false),
+            (artist::UNATTRIBUTED_NAME, true),
+            (artist::UNATTRIBUTED_NAME, false),
+            ("Zebra", false),
+        ] {
+            let id = Uuid::new_v4();
+            artist::ActiveModel {
+                id: Set(id),
+                name: Set(name.into()),
+                is_placeholder: Set(is_placeholder),
+                created_at: Set(Utc::now().into()),
+                ..Default::default()
+            }
+            .insert(&state.db)
+            .await
+            .unwrap();
+            ids.push(id);
+        }
+
+        for (page, expected) in [(1, vec![ids[0], ids[2]]), (2, vec![ids[3]]), (3, vec![])] {
+            let result = list_artists(
+                State(state.clone()),
+                Query(PaginationParams {
+                    page: Some(page),
+                    per_page: Some(2),
+                }),
+            )
+            .await
+            .unwrap()
+            .0;
+            assert_eq!((result.total, result.total_pages), (3, 2));
+            assert_eq!(
+                result
+                    .data
+                    .iter()
+                    .map(|artist| artist.id)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        let random = list_random_artists(
+            State(state.clone()),
+            Query(PaginationParams {
+                page: None,
+                per_page: Some(50),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(random.total, 3);
+        assert!(random.data.iter().all(|artist| artist.id != ids[1]));
+        assert_eq!(
+            get_artist(State(state), Path(ids[1])).await.unwrap_err().0,
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[test]
@@ -245,6 +338,7 @@ mod tests {
         let model = artist::Model {
             id: Uuid::new_v4(),
             name: "Minimal Artist".into(),
+            is_placeholder: false,
             musicbrainz_id: None,
             bio: None,
             image_url: None,

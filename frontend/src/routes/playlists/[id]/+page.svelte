@@ -1,180 +1,88 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { page } from "$app/state";
-  import { onMount } from "svelte";
-  import { api } from "$lib/api";
-  import type { Playlist } from "$lib/types";
-  import TrackList from "$lib/components/TrackList.svelte";
-  import { getQueueStore } from "$lib/stores/queue.svelte";
+  import { goto } from "$app/navigation";
+  import { Pencil, Play, Trash2 } from "lucide-svelte";
+  import { canPlay } from "$lib/catalog/availability";
+  import { api, apiFetch } from "$lib/api";
+  import { invalidatePlaylists, playlistQuery } from "$lib/catalog/playlists.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import { getQueueStore } from "$lib/stores/queue.svelte";
+  import { formatTrackCount, t } from "$lib/i18n/index.svelte";
+  import type { Playlist } from "$lib/types";
+  import { Button } from "$lib/components/ui/button";
+  import TrackList from "$lib/components/TrackList.svelte";
+  import CatalogState from "$lib/components/catalog/CatalogState.svelte";
+  import PlaylistForm from "$lib/components/catalog/PlaylistForm.svelte";
+  import ReleaseHeader from "$lib/components/catalog/ReleaseHeader.svelte";
 
-  const queue = getQueueStore();
   const auth = getAuthStore();
-  let playlist = $state<Playlist | null>(null);
-  let loading = $state(true);
-  let editing = $state(false);
-  let deleting = $state(false);
-  let editForm = $state({ name: "", description: "", is_public: true, cover_url: "" });
-  let error: string | null = $state(null);
-  let success: string | null = $state(null);
+  const queue = getQueueStore();
+  const playlist = playlistQuery(signal => apiFetch<Playlist>(`/playlists/${page.params.id}`, { signal }));
+  let mounted = true;
+  onDestroy(() => { mounted = false; });
+  let editId = $state("");
+  let removing = $state(false);
+  let error = $state("");
+  let tracks = $derived(playlist.data?.tracks ?? []);
 
-  let isOwner = $derived(playlist !== null && auth.user != null && playlist.owner_id === auth.user.id);
-
-  onMount(async () => {
-    const id = page.params.id;
+  async function removeTrack(id: string) {
+    if (removing || !playlist.data) return;
+    removing = true;
+    error = "";
     try {
-      const data = await api.get<Playlist>(`/playlists/${id}`);
-      playlist = {
-        id: data.id,
-        name: data.name,
-        description: data.description,
-        is_public: data.is_public,
-        owner_id: data.user_id ?? data.owner_id,
-        user_id: data.user_id,
-        cover_url: data.cover_url,
-        created_at: data.created_at,
-        updated_at: data.updated_at,
-        tracks: data.tracks ?? [],
-      };
-      if (playlist) {
-        editForm = {
-          name: playlist.name,
-          description: playlist.description ?? "",
-          is_public: playlist.is_public,
-          cover_url: playlist.cover_url ?? "",
-        };
-      }
-    } catch (e) { console.error('Failed to load playlist:', e); } finally { loading = false; }
-  });
-
-  function playAll() {
-    if (playlist?.tracks) {
-      queue.playQueue(playlist.tracks, 0, "playlist");
+      await api.delete(`/playlists/${playlist.data.id}/tracks/${id}`);
+      invalidatePlaylists();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : t("common.error");
+    } finally {
+      removing = false;
     }
   }
 
-  async function saveEdit() {
-    if (!playlist) return;
-    error = null;
+  async function remove(id: string) {
+    if (removing || !confirm(t("playlists.deleteConfirm"))) return;
+    removing = true;
+    error = "";
     try {
-      const body: Record<string, unknown> = {};
-      if (editForm.name !== playlist.name) body.name = editForm.name;
-      if (editForm.description !== (playlist.description ?? "")) body.description = editForm.description;
-      if (editForm.is_public !== playlist.is_public) body.is_public = editForm.is_public;
-      if (editForm.cover_url !== (playlist.cover_url ?? "")) body.cover_url = editForm.cover_url || null;
-
-      const updated = await api.put<Playlist>(`/playlists/${playlist.id}`, body);
-      playlist = { ...playlist, ...updated };
-      success = t('playlists.updated');
-      editing = false;
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : String(e);
-    }
-  }
-
-  async function deletePlaylist() {
-    if (!playlist || !confirm(t('playlists.deleteConfirm'))) return;
-    deleting = true;
-    try {
-      await api.delete(`/playlists/${playlist.id}`);
-      window.location.href = "/playlists";
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : String(e);
-      deleting = false;
+      await api.delete(`/playlists/${id}`);
+      invalidatePlaylists();
+      if (mounted) await goto("/playlists");
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : t("common.error");
+    } finally {
+      removing = false;
     }
   }
 </script>
 
-<svelte:head><title>{playlist?.name ?? "Playlist"} — SoundTime</title></svelte:head>
+<svelte:head><title>{playlist.data?.name ?? t("playlists.title")} — SoundTime</title></svelte:head>
 
-{#if loading}
-  <div class="flex justify-center py-20">
-    <div class="w-8 h-8 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full animate-spin"></div>
-  </div>
-{:else if playlist}
-  <div class="space-y-6">
-    {#if error}
-      <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-red-400 text-sm">{error}</div>
-    {/if}
-    {#if success}
-      <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 text-green-400 text-sm">{success}</div>
-    {/if}
-
-    <div class="flex items-end gap-6">
-      {#if playlist.cover_url}
-        <img src={playlist.cover_url} alt={playlist.name} class="w-48 h-48 rounded-lg shadow-xl object-cover flex-shrink-0" />
-      {:else}
-        <div class="w-48 h-48 rounded-lg bg-gradient-to-br from-[hsl(var(--primary))]/40 to-[hsl(var(--secondary))] flex items-center justify-center text-6xl shadow-xl flex-shrink-0">
-          🎶
-        </div>
-      {/if}
-      <div>
-        <p class="text-xs uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-          Playlist{#if !playlist.is_public} · <span class="text-yellow-400">{t('playlists.privateLabel')}</span>{/if}
-        </p>
-        <h1 class="text-4xl font-bold mt-1">{playlist.name}</h1>
-        {#if playlist.description}
-          <p class="text-sm text-[hsl(var(--muted-foreground))] mt-2">{playlist.description}</p>
+{#if playlist.data}
+  {@const data = playlist.data}
+  {@const mine = !!auth.user && (data.user_id ?? data.owner_id) === auth.user.id}
+  <div class="space-y-7">
+    <ReleaseHeader artworkId={data.id} kind="playlist" title={data.name} image={data.cover_url} label={t(data.is_public ? "playlists.publicPlaylist" : "playlists.private")}>
+      {#snippet info()}
+        {#if data.description}<p class="mb-1">{data.description}</p>{/if}
+        {formatTrackCount(tracks.length)}
+      {/snippet}
+      {#snippet actions()}
+        <Button class="play-release" disabled={!tracks.some(canPlay)} onclick={() => queue.playQueue(tracks, 0, "playlist")}><Play size={15} fill="currentColor" />{t("album.playAll")}</Button>
+        {#if mine}
+          <Button variant="outline" onclick={() => editId = editId === data.id ? "" : data.id}><Pencil size={14} />{t("playlists.edit")}</Button>
+          <Button variant="ghost" class="text-destructive" disabled={removing} onclick={() => remove(data.id)}><Trash2 size={14} />{t("common.delete")}</Button>
         {/if}
-        <p class="text-sm text-[hsl(var(--muted-foreground))] mt-2">
-          {playlist.tracks?.length ?? 0} {t('playlists.tracks')}
-        </p>
+      {/snippet}
+    </ReleaseHeader>
+    {#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
+    {#if mine && editId === data.id}
+      <div class="glass-surface max-w-lg rounded-xl p-5">
+        <PlaylistForm playlist={data} oncancel={() => editId = ""} onsave={() => editId = ""} />
       </div>
-    </div>
-
-    <div class="flex gap-3">
-      <button aria-label="Play all" class="w-12 h-12 rounded-full bg-[hsl(var(--primary))] text-white flex items-center justify-center hover:scale-105 transition" onclick={playAll}>
-        <svg class="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-      </button>
-
-      {#if isOwner}
-        <button
-          class="px-4 py-2 bg-[hsl(var(--secondary))] hover:opacity-90 rounded-lg text-sm font-medium transition"
-          onclick={() => { editing = !editing; success = null; }}
-        >
-          {editing ? t('playlists.cancelEdit') : t('playlists.edit')}
-        </button>
-        <button
-          class="px-4 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg text-sm font-medium transition"
-          onclick={deletePlaylist}
-          disabled={deleting}
-        >
-          {deleting ? t('playlists.deleting') : t('common.delete')}
-        </button>
-      {/if}
-    </div>
-
-    <!-- Edit Form -->
-    {#if editing && isOwner}
-      <form class="bg-[hsl(var(--card))] rounded-lg p-6 space-y-4" onsubmit={(e) => { e.preventDefault(); saveEdit(); }}>
-        <div>
-          <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-name">{t('playlists.nameLabel')}</label>
-          <input id="edit-name" type="text" bind:value={editForm.name} class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />
-        </div>
-        <div>
-          <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-desc">{t('playlists.descriptionLabel')}</label>
-          <textarea id="edit-desc" bind:value={editForm.description} rows="3" class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))] resize-none"></textarea>
-        </div>
-        <div>
-          <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-cover">{t('playlists.coverUrl')}</label>
-          <input id="edit-cover" type="url" bind:value={editForm.cover_url} placeholder="https://..." class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />
-        </div>
-        <div class="flex items-center gap-2">
-          <input id="edit-public" type="checkbox" bind:checked={editForm.is_public} class="rounded" />
-          <label class="text-sm" for="edit-public">{t('playlists.publicPlaylist')}</label>
-        </div>
-        <button type="submit" class="px-6 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition">
-          {t('common.save')}
-        </button>
-      </form>
     {/if}
-
-    {#if playlist.tracks && playlist.tracks.length > 0}
-      <TrackList tracks={playlist.tracks} />
-    {:else}
-      <p class="text-[hsl(var(--muted-foreground))] text-center py-10">{t('playlists.empty')}</p>
-    {/if}
+    {#if tracks.length}<TrackList source="playlist" {tracks} onremove={mine ? removeTrack : undefined} />{:else}<CatalogState message={t("playlists.empty")} />{/if}
   </div>
 {:else}
-  <p class="text-center py-20 text-[hsl(var(--muted-foreground))]">{t('playlists.notFound')}</p>
+  <CatalogState layout="detail" loading={playlist.loading} failed={playlist.failed} status={playlist.status} retry={playlist.retry} />
 {/if}

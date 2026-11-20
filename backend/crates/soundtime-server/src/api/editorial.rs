@@ -89,6 +89,11 @@ pub async fn list_editorial_playlists(
         });
     }
 
+    super::tracks::attach_availability(
+        &state,
+        results.iter_mut().flat_map(|playlist| &mut playlist.tracks),
+    )
+    .await?;
     Ok(Json(results))
 }
 

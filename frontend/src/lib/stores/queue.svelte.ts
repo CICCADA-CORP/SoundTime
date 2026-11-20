@@ -1,4 +1,6 @@
+import { canPlay } from "$lib/catalog/availability";
 import type { Track } from "$lib/types";
+import { showcaseAudio } from "$lib/showcase";
 import { getPlayerStore } from "./player.svelte";
 import { getRadioStore } from "./radio.svelte";
 
@@ -28,31 +30,32 @@ let autoplay = $state(loadAutoplay());
  * Replace the queue with `tracks`, start playback at `startIndex`, and
  * optionally record the `source` context (e.g. "album", "playlist") so
  * that subsequent listen events include where the playback originated.
- * Stops radio mode if it was active.
+ * A manually chosen queue replaces the active station.
  */
 function playQueue(tracks: Track[], startIndex = 0, source?: import("$lib/types").PlaybackSource) {
-  // Stop radio if active — user is manually choosing what to play
-  try {
-    const radio = getRadioStore();
-    if (radio.active) radio.stopRadio();
-  } catch {}
+  const radio = getRadioStore();
+  if (radio.active && source !== "radio" && source !== "autoplay") radio.stopRadio();
 
   sourceContext = source ?? null;
   queue = [...tracks];
   originalQueue = [...tracks];
-  currentIndex = startIndex;
+  currentIndex = queue.findIndex((track, i) => i >= startIndex && canPlay(track));
   const player = getPlayerStore();
   if (queue[currentIndex]) {
-    player.play(queue[currentIndex]);
+    player.play(queue[currentIndex], source === "radio" || source === "autoplay");
+  } else {
+    player.pause();
   }
 }
 
 function addToQueue(track: Track) {
+  if (!canPlay(track)) return;
   queue = [...queue, track];
   originalQueue = [...originalQueue, track];
 }
 
 function addNext(track: Track) {
+  if (!canPlay(track)) return;
   const idx = currentIndex + 1;
   queue = [...queue.slice(0, idx), track, ...queue.slice(idx)];
 }
@@ -99,63 +102,45 @@ function toggleAutoplay() {
   }
 }
 
-function next() {
+function startAutoplay() {
+  const lastTrack = queue[currentIndex];
+  const radio = getRadioStore();
+  if (!lastTrack || radio.active || showcaseAudio(lastTrack.id)) return;
+  void radio.startRadio("similar", {
+    seedId: lastTrack.id,
+    label: lastTrack.title,
+    autoplay: true,
+  });
+  sourceContext = "autoplay";
+}
+
+function next() { advance(false); }
+
+function advance(automatic: boolean) {
   const player = getPlayerStore();
   if (queue.length === 0) return;
 
-  if (player.shuffle) {
-    const remaining = queue.filter((_, i) => i !== currentIndex);
-    if (remaining.length === 0) {
-      if (player.repeat === "all") {
-        currentIndex = 0;
-        player.play(queue[0]);
-      } else if (autoplay) {
-        // Autoplay: start similar radio from the last track
-        try {
-          const radio = getRadioStore();
-          if (!radio.active) {
-            const lastTrack = queue[currentIndex];
-            if (lastTrack) {
-              radio.startRadio("similar", {
-                seedId: lastTrack.id,
-                label: lastTrack.title,
-                autoplay: true,
-              });
-              sourceContext = "autoplay";
-            }
-          }
-        } catch {}
-      }
-      return;
-    }
-    const randomTrack = remaining[Math.floor(Math.random() * remaining.length)];
-    currentIndex = queue.indexOf(randomTrack);
-    player.play(randomTrack);
-  } else {
-    if (currentIndex < queue.length - 1) {
-      currentIndex++;
-      player.play(queue[currentIndex]);
-    } else if (player.repeat === "all") {
-      currentIndex = 0;
-      player.play(queue[0]);
-    } else if (autoplay) {
-      // Autoplay: start similar radio from the last track
-      try {
-        const radio = getRadioStore();
-        if (!radio.active) {
-          const lastTrack = queue[currentIndex];
-          if (lastTrack) {
-            radio.startRadio("similar", {
-              seedId: lastTrack.id,
-              label: lastTrack.title,
-              autoplay: true,
-            });
-            sourceContext = "autoplay";
-          }
-        }
-      } catch {}
-    }
+  const first = queue.findIndex(canPlay);
+  if (first < 0) {
+    currentIndex = -1;
+    player.pause();
+    if (getRadioStore().active) getRadioStore().stopRadio();
+    return;
   }
+  let candidate = -1;
+  if (player.shuffle) {
+    const choices = queue.flatMap((track, i) => i !== currentIndex && canPlay(track) ? [i] : []);
+    if (choices.length) candidate = choices[Math.floor(Math.random() * choices.length)];
+  } else {
+    candidate = queue.findIndex((track, i) => i > currentIndex && canPlay(track));
+  }
+  if (candidate < 0 && player.repeat === "all") candidate = first;
+  if (candidate < 0) {
+    if (autoplay && queue[currentIndex] && canPlay(queue[currentIndex])) startAutoplay();
+    return;
+  }
+  currentIndex = candidate;
+  player.play(queue[currentIndex], automatic);
 
   // Radio auto-fetch: mark played and fetch more if running low
   try {
@@ -173,21 +158,31 @@ function next() {
 
 function previous() {
   const player = getPlayerStore();
-  if (player.progress > 3) {
+  if (player.progress > 3 && queue[currentIndex] && canPlay(queue[currentIndex])) {
     player.seek(0);
     return;
   }
 
-  if (currentIndex > 0) {
-    currentIndex--;
-    player.play(queue[currentIndex]);
+  for (let i = currentIndex - 1; i >= 0; i--) {
+    if (canPlay(queue[i])) {
+      currentIndex = i;
+      player.play(queue[i], false);
+      return;
+    }
   }
+}
+
+// Keep saved rows and their order when a source goes offline or returns.
+function updateAvailability(track: Track, skip: boolean) {
+  const wasCurrent = queue[currentIndex]?.id === track.id;
+  queue = queue.map(item => item.id === track.id ? { ...item, availability: track.availability } : item);
+  if (wasCurrent && skip && !canPlay(track)) advance(true);
 }
 
 // Listen for track ended events
 if (typeof window !== "undefined") {
   window.addEventListener("soundtime:trackended", () => {
-    next();
+    advance(true);
   });
   // Listen for Media Session previous/next track actions
   window.addEventListener("soundtime:previoustrack", () => {
@@ -203,14 +198,15 @@ export function getQueueStore() {
     get queue() { return queue; },
     get currentIndex() { return currentIndex; },
     get currentTrack() { return queue[currentIndex] ?? null; },
-    get hasNext() { return currentIndex < queue.length - 1; },
-    get hasPrevious() { return currentIndex > 0; },
+    get hasNext() { return queue.some((track, i) => i > currentIndex && canPlay(track)); },
+    get hasPrevious() { return queue.some((track, i) => i < currentIndex && canPlay(track)); },
     /** Current playback source context (e.g. "album", "playlist", "radio"), or `null` if unset. */
     get sourceContext() { return sourceContext; },
     get radioMode() {
       try { return getRadioStore().active; } catch { return false; }
     },
     get autoplay() { return autoplay; },
+    updateAvailability,
     playQueue,
     addToQueue,
     addNext,

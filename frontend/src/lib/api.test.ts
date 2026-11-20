@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { clearTokens, streamUrl, apiFetch, api, setTokens, API_BASE, pluginApi, themeApi, homeApi, radioApi, lastfmApi } from '$lib/api';
+import { clearTokens, prepareMediaSession, streamUrl, apiFetch, api, setTokens, API_BASE, pluginApi, themeApi, homeApi, radioApi, lastfmApi } from '$lib/api';
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -39,22 +39,69 @@ describe('API module', () => {
 		});
 	});
 
+	describe('media authorization', () => {
+		it('shares an exchange, renews before expiry and clears both cookies on logout', async () => {
+			const now = vi.spyOn(Date, 'now').mockReturnValue(100000);
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: () => Promise.resolve('{"expires_in":600}'),
+			});
+			vi.stubGlobal('fetch', fetchMock);
+			expect(prepareMediaSession()).toBeUndefined();
+			setTokens('member-access', 'member-refresh');
+			const initial = prepareMediaSession();
+			expect(prepareMediaSession()).toBe(initial);
+			await initial;
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(fetchMock.mock.calls[0][0]).toBe('/api/auth/media-session');
+			expect(fetchMock.mock.calls[0][1].headers.get('Authorization')).toBe('Bearer member-access');
+			expect(prepareMediaSession()).toBeUndefined();
+			now.mockReturnValue(690000);
+			await Promise.resolve();
+			await prepareMediaSession();
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			clearTokens();
+			await vi.waitFor(() => expect(fetchMock).toHaveBeenLastCalledWith(
+				'/api/auth/media-session', expect.objectContaining({method: 'DELETE'})
+			));
+		});
+		it('finishes a pending cookie exchange before expiring the cookie on logout', async () => {
+			let respond!: (res: Response) => void;
+			const fetchMock = vi.fn((_url: string, options: RequestInit) =>
+				options.method === "POST" ? new Promise<Response>(resolve => { respond = resolve; }) :
+					Promise.resolve(new Response(null, { status: 204 }))
+			);
+			vi.stubGlobal("fetch", fetchMock);
+			setTokens("member-access", "member-refresh");
+			const exchange = prepareMediaSession(true);
+			await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+			clearTokens();
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			respond(Response.json({ expires_in: 600 }));
+			await exchange;
+			await vi.waitFor(() => expect(fetchMock.mock.calls.map(([, init]) => init.method)).toEqual(["POST", "DELETE"]));
+			expect(prepareMediaSession()).toBeUndefined();
+		});
+
+	});
+
 	describe('streamUrl', () => {
 		it('returns stream URL without token when not logged in', () => {
 			const url = streamUrl('track-123');
 			expect(url).toBe(`${API_BASE}/tracks/track-123/stream`);
 		});
 
-		it('returns stream URL with token when logged in', () => {
+		it('keeps credentials out of the stream URL when logged in', () => {
 			localStorageMock.setItem('soundtime_access_token', 'my-token');
 			const url = streamUrl('track-456');
-			expect(url).toBe(`${API_BASE}/tracks/track-456/stream?token=my-token`);
+			expect(url).toBe(`${API_BASE}/tracks/track-456/stream`);
 		});
 
 		it('encodes track ID in URL correctly', () => {
 			const url = streamUrl('track-with-special<chars>');
 			// Verify it doesn't break URL structure
-			expect(url).toContain('track-with-special<chars>');
+			expect(url).toContain('track-with-special%3Cchars%3E');
 			expect(url).toContain('/stream');
 		});
 	});
@@ -194,6 +241,21 @@ describe('API module', () => {
 			expect(fetchMock).toHaveBeenCalledTimes(3);
 		});
 
+		it('shares one refresh across simultaneous media and catalog requests', async () => {
+			setTokens('expired', 'refresh');
+			const fetchMock = vi.fn(async (url: string, options: RequestInit) => {
+				if (url.endsWith('/auth/refresh')) {
+					return Response.json({ access_token: 'renewed', refresh_token: 'next-refresh' });
+				}
+				return new Headers(options.headers).get('Authorization') === 'Bearer renewed'
+					? Response.json({ ok: true })
+					: Response.json({ error: 'Expired' }, { status: 401 });
+			});
+			vi.stubGlobal('fetch', fetchMock);
+			expect(await Promise.all([apiFetch('/tracks'), apiFetch('/albums')])).toEqual([{ ok: true }, { ok: true }]);
+			expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/auth/refresh'))).toHaveLength(1);
+		});
+
 		it('does not refresh when no token was set', async () => {
 			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
 				ok: false,
@@ -227,7 +289,7 @@ describe('API module', () => {
 			expect(localStorageMock.removeItem).toHaveBeenCalledWith('soundtime_access_token');
 		});
 
-		it('clears tokens when refresh request throws network error', async () => {
+		it('retains the session for retry when refresh is temporarily offline', async () => {
 			localStorageMock.setItem('soundtime_access_token', 'expired');
 			localStorageMock.setItem('soundtime_refresh_token', 'refresh-token');
 
@@ -242,7 +304,7 @@ describe('API module', () => {
 			vi.stubGlobal('fetch', fetchMock);
 
 			await expect(apiFetch('/thing')).rejects.toThrow('Unauthorized');
-			expect(localStorageMock.removeItem).toHaveBeenCalledWith('soundtime_access_token');
+			expect(localStorageMock.getItem('soundtime_refresh_token')).toBe('refresh-token');
 		});
 	});
 
@@ -666,14 +728,13 @@ describe('API module', () => {
 			expect(url).toContain('/editorial-playlists');
 		});
 
-		it('homeApi.editorialPlaylists returns empty array on failure', async () => {
+		it('homeApi.editorialPlaylists preserves an unavailable section for retry', async () => {
 			vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
 				ok: false,
 				status: 500,
 				json: () => Promise.resolve({ error: 'Server error' }),
 			}));
-			const result = await homeApi.editorialPlaylists();
-			expect(result).toEqual([]);
+			await expect(homeApi.editorialPlaylists()).rejects.toMatchObject({ status: 500 });
 		});
 	});
 

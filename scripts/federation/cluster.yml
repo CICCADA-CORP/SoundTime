@@ -1,0 +1,52 @@
+services:
+  backend-a:
+    environment:
+      SOUNDTIME_ROLE: worker
+  backend-b:
+    environment:
+      # Leave real verified windows in flight when the policy request commits.
+      P2P_UPLOAD_BYTES_PER_SECOND: "524288"
+  catalog-http:
+    image: soundtime-federation-backend:${COMPOSE_PROJECT_NAME}
+    pull_policy: never
+    environment:
+      SOUNDTIME_ROLE: catalog-http
+      DATABASE_URL: postgres://soundtime:federation-test@db-a/soundtime
+      JWT_SECRET: ${FEDERATION_SECRET}-a
+      SOUNDTIME_DOMAIN: a.federation.test
+      P2P_ENABLED: "true"
+      P2P_EXPLICIT_CATALOG: "true"
+      DB_MAX_CONNECTIONS: "6"
+    ports: ["127.0.0.1::8080"]
+    networks: [site-a, ingress]
+    depends_on:
+      db-a: {condition: service_healthy}
+  standby-a:
+    image: soundtime-federation-backend:${COMPOSE_PROJECT_NAME}
+    pull_policy: never
+    environment:
+      SOUNDTIME_ROLE: standalone
+      DATABASE_URL: postgres://soundtime:federation-test@db-a/soundtime
+      JWT_SECRET: ${FEDERATION_SECRET}-a
+      SOUNDTIME_DOMAIN: a.federation.test
+      AUDIO_STORAGE_PATH: /data/music
+      P2P_BLOBS_DIR: /data/p2p-blobs
+      P2P_ENABLED: "true"
+      P2P_PUBLIC_DISCOVERY: "false"
+      P2P_LOCAL_DISCOVERY: "false"
+      P2P_DHT_DISCOVERY: "false"
+      P2P_EXPLICIT_CATALOG: "false"
+      P2P_RANGE_STREAMING: "false"
+      PLUGIN_ENABLED: "false"
+    ports: ["127.0.0.1::8080"]
+    volumes: [files-a:/data]
+    networks:
+      site-a: {aliases: [backend]}
+      peers: {}
+      ingress: {}
+  proxy-a:
+    scale: 2
+    depends_on: [backend-a, frontend-a, catalog-http]
+    volumes:
+      - ../../docker/catalog-upstreams.conf:/etc/nginx/conf.d/catalog-upstreams.conf:ro
+      - ../../docker/catalog-read.conf:/etc/nginx/soundtime-catalog.d/read.conf:ro
