@@ -28,12 +28,12 @@ SoundTime is a self-hosted music server for your own audio collection. Browse by
 
 ### Guided installation
 
-**Copy the block for your terminal and press Enter.** It downloads SoundTime CLI 2.0.0, verifies the archive and starts the installer. You can run it on the host itself or on the computer you use to manage a remote server or NAS.
+**Copy the block for your terminal and press Enter.** It downloads SoundTime CLI 2.0.1, verifies the archive and starts the installer. You can run it on the host itself or on the computer you use to manage a remote server or NAS.
 
 **macOS or Linux**
 
 ```sh
-sh -c 'start=$(curl -fsSL https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/4fb9ebb4eb68ee2f46b7672c6461696dbd35a7ca/installer/bootstrap.sh) && exec sh -c "$start"'
+sh -c 'start=$(curl -fsSL https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/dad368a56a77266a570bca2e0d16f4571198b9fa/installer/bootstrap.sh) && exec sh -c "$start"'
 ```
 
 **Windows PowerShell**
@@ -41,7 +41,7 @@ sh -c 'start=$(curl -fsSL https://raw.githubusercontent.com/CICCADA-CORP/SoundTi
 ```powershell
 $start = Join-Path $env:TEMP ("SoundTime-" + [guid]::NewGuid() + ".cmd")
 try {
-    Invoke-WebRequest -UseBasicParsing -ErrorAction Stop -Uri 'https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/4fb9ebb4eb68ee2f46b7672c6461696dbd35a7ca/installer/bootstrap.cmd' -OutFile $start
+    Invoke-WebRequest -UseBasicParsing -ErrorAction Stop -Uri 'https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/dad368a56a77266a570bca2e0d16f4571198b9fa/installer/bootstrap.cmd' -OutFile $start
     & $start
 } finally {
     Remove-Item -LiteralPath $start -ErrorAction SilentlyContinue
@@ -51,14 +51,14 @@ try {
 **Windows Command Prompt (cmd)**
 
 ```bat
-powershell.exe -NoProfile -Command "$f=Join-Path $env:TEMP ('SoundTime-'+[guid]::NewGuid()+'.cmd'); try { Invoke-WebRequest -UseBasicParsing -ErrorAction Stop 'https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/4fb9ebb4eb68ee2f46b7672c6461696dbd35a7ca/installer/bootstrap.cmd' -OutFile $f; & $f; exit $LASTEXITCODE } finally { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue }"
+powershell.exe -NoProfile -Command "$f=Join-Path $env:TEMP ('SoundTime-'+[guid]::NewGuid()+'.cmd'); try { Invoke-WebRequest -UseBasicParsing -ErrorAction Stop 'https://raw.githubusercontent.com/CICCADA-CORP/SoundTime/dad368a56a77266a570bca2e0d16f4571198b9fa/installer/bootstrap.cmd' -OutFile $f; & $f; exit $LASTEXITCODE } finally { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue }"
 ```
 
 Choose **This computer** to detect your operating system, or **Another machine** to install over SSH. For SSH, enter the host, account and port. The CLI detects the remote system and architecture, shows where your music will live, and checks Docker, the installation folder and the ports before you confirm. For a NAS managed through Synology Container Manager or QNAP Container Station, choose the project export under **Another machine**.
 
 SoundTime needs Docker with Linux containers on the host that will run your library. You can choose local or S3-compatible audio storage and create your first administrator account in the terminal. The installer runs in English. Use `--help` to see its commands. [Installation guide](docs/installateur.md)
 
-To keep a copy of the CLI, download and extract the complete archive. [Download ZIP](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.0/SoundTime-CLI.zip) · [SHA-256 checksum](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.0/SoundTime-CLI.zip.sha256)
+To keep a copy of the CLI, download and extract the complete archive. [Download ZIP](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.1/SoundTime-CLI.zip) · [SHA-256 checksum](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.1/SoundTime-CLI.zip.sha256)
 
 ### Manual installation
 
