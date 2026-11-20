@@ -12,4 +12,4 @@ Choose "This computer" to install locally or "Another machine" for SSH
 deployment or a NAS project. The wizard will show the settings for review
 before installing. Add --help to list the available commands.
 
-Installation guide: https://github.com/CICCADA-CORP/SoundTime/blob/main/docs/installateur.md
+Installation guide: https://github.com/CICCADA-CORP/SoundTime/blob/main/docs/install.md
