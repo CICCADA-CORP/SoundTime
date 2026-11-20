@@ -52,7 +52,7 @@
         <div class="group relative">
           <PlaylistCard {playlist} />
           {#if auth.user && (playlist.user_id ?? playlist.owner_id) === auth.user.id}
-            <button class="absolute left-2 top-2 grid size-8 place-items-center rounded-full bg-background text-destructive shadow-sm sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+            <button class="absolute left-2 top-2 grid size-8 place-items-center rounded-full bg-background shadow-sm text-destructive sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
               aria-label={t("common.delete") + " " + playlist.name} disabled={!!removing} onclick={() => remove(playlist.id)}><Trash2 size={14} /></button>
           {/if}
         </div>

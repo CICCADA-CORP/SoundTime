@@ -27,11 +27,11 @@
   }
 </script>
 
-<CatalogCard kind="album" href="/albums/{album.id}" title={album.title} image={album.cover_url}
+<CatalogCard artworkId={album.id} kind="album" href="/albums/{album.id}" title={album.title} image={album.cover_url}
   description={[album.year, album.artist_name].filter(Boolean).join(" · ")}>
   {#snippet actions()}
     <button type="button" aria-label={t("a11y.playAlbum")} disabled={loading} onclick={play}
-      class="absolute right-3 top-3 grid size-9 place-items-center rounded-full bg-background/95 text-foreground transition-opacity disabled:opacity-50 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+      class="absolute right-2 top-2 grid size-8 place-items-center rounded-full bg-background text-foreground shadow-sm transition-opacity disabled:opacity-50 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
       {#if loading}<Loader2 size={17} class="motion-safe:animate-spin" />{:else}<Play size={15} fill="currentColor" />{/if}
     </button>
     {#if failed}<p class="px-1 text-xs text-destructive" role="alert">{t("catalog.unavailable")}</p>{/if}

@@ -1,11 +1,13 @@
 <script lang="ts">
-  import { ChevronRight, X } from "lucide-svelte";
+  import { X } from "lucide-svelte";
   import { tick } from "svelte";
   import type { EditorialPlaylist } from "$lib/types";
-  import { t } from "$lib/i18n/index.svelte";
+  import { formatTrackCount, t } from "$lib/i18n/index.svelte";
   import { Button } from "$lib/components/ui/button";
   import TrackList from "$lib/components/TrackList.svelte";
   import CatalogArtwork from "./CatalogArtwork.svelte";
+  import ArtworkRail from "./ArtworkRail.svelte";
+  import SectionHeading from "./SectionHeading.svelte";
 
   let { playlists }: { playlists: EditorialPlaylist[] } = $props();
   const id = $props.id();
@@ -24,21 +26,17 @@
     await tick();
     document.getElementById(`${id}-${previous}`)?.focus();
   }
-
-  function trackCount(count: number) {
-    return count === 1 ? t("workspaceHome.oneTrack") : t("playlists.trackCount", { count });
-  }
 </script>
 
 <section class="space-y-4" aria-label={t("explore.editorialPlaylists")}>
   {#if selected}
     <div class="flex items-start gap-4">
       <div class="size-20 shrink-0" aria-hidden="true">
-        <CatalogArtwork source={selected.cover_url} title="" kind="playlist" />
+        <CatalogArtwork source={selected.cover_url} artworkId={selected.id} title={selected.name} kind="playlist" />
       </div>
       <div class="min-w-0 flex-1">
-        <h2 id={`${id}-heading`} tabindex="-1" class="break-words text-xl font-semibold tracking-tight">{selected.name}</h2>
-        <p class="mt-1 text-sm text-muted-foreground">{trackCount(selected.track_count)}</p>
+        <h2 id={`${id}-heading`} tabindex="-1" class="selection-title">{selected.name}</h2>
+        <p class="mt-1 text-sm text-muted-foreground">{formatTrackCount(selected.track_count)}</p>
         {#if selected.description}<p class="mt-2 break-words text-sm text-muted-foreground">{selected.description}</p>{/if}
       </div>
       <Button variant="ghost" size="icon" onclick={close} aria-label={t("common.close")}><X size={17} /></Button>
@@ -49,23 +47,27 @@
       <p class="text-sm text-muted-foreground">{t("explore.noTracks")}</p>
     {/if}
   {:else}
-    <h2 class="text-xl font-semibold tracking-tight">{t("explore.editorialPlaylists")}</h2>
-    <ul class="grid gap-2 md:grid-cols-2">
+    <SectionHeading title={t("explore.editorialPlaylists")} />
+    <ArtworkRail label={t("explore.editorialPlaylists")}>
       {#each playlists as item (item.id)}
-        <li class="min-w-0">
-          <button id={`${id}-${item.id}`} type="button" onclick={() => open(item)}
-            class="flex w-full items-center gap-3 rounded-lg border border-border p-2.5 text-left hover:bg-secondary/60 focus-visible:outline-offset-2">
-            <span aria-hidden="true" class="block size-14 shrink-0">
-              <CatalogArtwork source={item.cover_url} title="" kind="playlist" />
+          <button id={`${id}-${item.id}`} type="button" onclick={() => open(item)} class="mix">
+            <span aria-hidden="true" class="mix-art">
+              <CatalogArtwork source={item.cover_url} artworkId={item.id} title={item.name} kind="playlist" />
             </span>
-            <span class="min-w-0 flex-1">
-              <span class="block truncate font-semibold">{item.name}</span>
-              <span class="text-sm text-muted-foreground">{trackCount(item.track_count)}</span>
-            </span>
-            <ChevronRight size={16} aria-hidden="true" class="shrink-0 text-muted-foreground" />
+            <strong>{item.name}</strong>
+            <small>{formatTrackCount(item.track_count)}</small>
           </button>
-        </li>
       {/each}
-    </ul>
+    </ArtworkRail>
   {/if}
 </section>
+
+<style>
+  .mix { display: grid; min-width: 0; align-content: start; justify-items: stretch; gap: .15rem; border-radius: .7rem; text-align: left; }
+  .mix-art { display: block; width: 100%; aspect-ratio: 1; margin-bottom: .45rem; overflow: hidden; border-radius: .7rem; }
+  .selection-title { overflow-wrap: anywhere; font-size: 1.3rem; font-weight: 630; line-height: 1.2; letter-spacing: -.035em; }
+  strong, small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  strong { font-size: .88rem; font-weight: 560; }
+  small { color: hsl(var(--muted-foreground)); font-size: .78rem; }
+  .mix:hover strong { text-decoration: underline; }
+</style>

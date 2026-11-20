@@ -63,12 +63,36 @@ describe('AlbumCard', () => {
     expect(screen.getByRole('img', { name: 'Test Album' })).toBeInTheDocument();
   });
 
+  it('preserves the generated cover after a rename and distinguishes albums with the same title', async () => {
+    const { rerender } = render(AlbumCard, { props: { album } });
+    const originalPalette = screen.getByRole('img').getAttribute('style');
+    const renamed = { ...album, title: 'Revised title' };
+    await rerender({ album: renamed });
+    expect(screen.getByRole('img', { name: renamed.title })).toHaveAttribute('style', originalPalette);
+    await rerender({ album: { ...renamed, id: 'album-2' } });
+    expect(screen.getByRole('img').getAttribute('style')).not.toBe(originalPalette);
+  });
+
   it('renders cover image when cover_url is set', () => {
     const albumWithCover = { ...album, cover_url: '/covers/test.jpg' };
     render(AlbumCard, { props: { album: albumWithCover } });
     const img = screen.getByAltText('Test Album');
     expect(img).toBeInTheDocument();
     expect(img).toHaveAttribute('src', '/covers/test.jpg');
+  });
+
+  it('keeps a cover placeholder until the image loads and restores it on a later failure', async () => {
+    const { container, rerender } = render(AlbumCard, { props: { album: { ...album, cover_url: '/first.jpg' } } });
+    const first = screen.getByAltText(album.title);
+    expect(container.querySelector('.fallback')).toBeInTheDocument();
+    await fireEvent.load(first);
+    expect(container.querySelector('.fallback')).toBeNull();
+    await rerender({ album: { ...album, cover_url: '/missing.jpg' } });
+    const next = screen.getByAltText(album.title);
+    expect(container.querySelector('.fallback')).toBeInTheDocument();
+    await fireEvent.error(next);
+    expect(screen.getByRole('img', { name: album.title })).toHaveClass('fallback');
+    expect(screen.queryByAltText(album.title)).toBeNull();
   });
 
   it('links to album page', () => {

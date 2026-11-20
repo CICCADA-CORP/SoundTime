@@ -4,39 +4,103 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 210 9% 8%;
-    --card: 0 0% 100%;
+    color-scheme: light;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+    --background: 228 24% 96%;
+    --foreground: 231 24% 14%;
+    --card: 230 43% 99%;
     --card-foreground: var(--foreground);
-    --popover: var(--background);
+    --popover: var(--card);
     --popover-foreground: var(--foreground);
-    --sidebar: 210 7% 94.5%;
-    --primary: 0 0% 7%;
+    --sidebar: 233 29% 93%;
+    --primary: 250 50% 45%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 210 8% 94%;
+    --link: var(--primary);
+    --secondary: 225 22% 95%;
     --secondary-foreground: var(--foreground);
-    --muted: 210 8% 95%;
-    --muted-foreground: 208 10% 37%;
-    --accent: 210 7% 87.5%;
-    --accent-foreground: 210 9% 8%;
-    --destructive: 2 67% 44%;
+    --muted: 228 23% 97%;
+    --muted-foreground: 232 11% 35%;
+    --accent: 238 48% 96%;
+    --accent-foreground: 240 45% 35%;
+    --destructive: 352 71% 43%;
     --destructive-foreground: 0 0% 100%;
-    --border: 210 9% 89%;
-    --input: 210 10% 81%;
-    --ring: 211 26% 40%;
-    --radius: 0.6rem;
-    --rail-width: clamp(204px, 16.7vw, 248px);
-    --mobile-nav: calc(3.75rem + env(safe-area-inset-bottom, 0px));
+    --border: 225 15% 89%;
+    --input: 222 12% 76%;
+    --ring: 242 72% 57%;
+    --radius: .875rem;
+    --radius-card: 1rem;
+    --radius-control: .5625rem;
+    --art-radius: .75rem;
+    --shadow-popover: 0 12px 40px rgb(20 24 40 / .12), 0 2px 6px rgb(20 24 40 / .06);
+    --glass-panel: hsl(230 32% 96% / .94);
+    --glass-edge: hsl(228 19% 82% / .68);
+    --glass-shadow: 0 4px 20px -12px rgb(24 31 60 / .20);
+  }
+  :root[data-appearance="dark"] {
+    color-scheme: dark;
+    --background: 231 23% 10%;
+    --foreground: 225 13% 96%;
+    --card: 229 17% 15%;
+    --popover: 228 17% 17%;
+    --sidebar: 226 13% 10%;
+    --primary: 250 87% 83%;
+    --primary-foreground: 242 42% 14%;
+    --secondary: 225 10% 18%;
+    --muted: 225 9% 13%;
+    --muted-foreground: 228 14% 76%;
+    --accent: 240 19% 22%;
+    --accent-foreground: 240 87% 87%;
+    --destructive: 352 90% 76%;
+    --destructive-foreground: 349 40% 12%;
+    --border: 225 9% 22%;
+    --input: 225 8% 37%;
+    --ring: 239 93% 79%;
+    --shadow-popover: 0 14px 44px rgb(0 0 0 / .36);
+    --glass-panel: hsl(231 19% 13% / .96);
+    --glass-edge: hsl(230 20% 45% / .36);
+    --glass-shadow: 0 4px 20px -12px rgb(0 0 0 / .42);
   }
   * { @apply border-border; }
+  html { min-height: 100%; accent-color: hsl(var(--primary)); }
   body {
     @apply bg-background text-foreground antialiased;
-    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    margin: 0;
+    font-family: var(--font-sans);
+    font-variant-ligatures: common-ligatures;
   }
   :focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 3px; }
-  ::selection { background: hsl(var(--accent)); color: hsl(var(--accent-foreground)); }
+  @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+    :root, :root[data-appearance="dark"] {
+      --glass-panel: hsl(var(--card));
+      --glass-edge: hsl(var(--border));
+      --glass-shadow: none;
+    }
+  }
+  ::selection { background: hsl(var(--primary) / .22); color: hsl(var(--foreground)); }
   @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0s !important; }
+  }
+}
+
+@layer components {
+  .glass-surface {
+    background: var(--glass-panel);
+    border: 1px solid var(--glass-edge);
+    box-shadow: var(--glass-shadow);
+  }
+  .ui-input {
+    @apply flex h-10 w-full min-w-0 border border-input bg-background px-3 py-1 text-base text-foreground transition-colors placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 md:text-sm;
+    border-radius: var(--radius-control);
+  }
+  .ui-input:focus-visible { border-color: hsl(var(--ring)); outline-offset: 1px; }
+  .ui-input::file-selector-button { border: 0; background: transparent; color: inherit; font: inherit; font-weight: 600; }
+  .ui-overlay { position: fixed; inset: 0; background: rgb(11 14 26 / .38); }
+  .ui-dialog {
+    position: fixed; inset: 50% auto auto 50%; transform: translate(-50%, -50%);
+    width: min(28rem, calc(100% - 2rem)); max-height: calc(100dvh - 2rem); overflow-y: auto;
+    padding: clamp(1.25rem, 3vw, 1.75rem); border: 1px solid hsl(var(--border)); border-radius: var(--radius);
+    background: hsl(var(--popover)); color: hsl(var(--popover-foreground));
+    box-shadow: var(--shadow-popover);
   }
 }
 
@@ -46,7 +110,7 @@
   left: 0.5rem;
   z-index: 100;
   padding: 0.5rem 1rem;
-  border-radius: var(--radius);
+  border-radius: var(--radius-control);
   background: hsl(var(--background));
   color: hsl(var(--foreground));
   transform: translateY(calc(-100% - 1rem));

@@ -64,8 +64,9 @@ describe('Private listening through the production proxy', () => {
 					expect(status).to.eq(206); expect(headers['content-range']).to.match(/^bytes 64-191\//);
 					expect(body.length).to.eq(128);
 				}));
-			cy.get('nav a[href="/"]:visible').first().click();
-			cy.get('main h1').should('be.visible');
+			cy.get('a[data-workspace-home]:visible').click();
+			cy.location('pathname').should('eq', '/');
+			cy.get('main section h2').first().should('be.visible');
 			cy.wrap(null).should(() => {
 				expect(audio).to.eq(original); expect(audio.currentSrc).to.eq(trackUrl); expect(audio.currentTime).to.be.closeTo(7, 0.5);
 			});

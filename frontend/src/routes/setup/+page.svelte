@@ -142,32 +142,32 @@
 </script>
 
 {#if loading}
-  <div class="flex items-center justify-center min-h-screen">
+  <div class="flex items-center justify-center min-h-svh" role="status" aria-label={t("common.loading")}>
     <div class="motion-safe:animate-spin w-8 h-8 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full"></div>
   </div>
 {:else if statusFailed || adminLoginRequired}
-  <div class="mx-auto max-w-lg space-y-4 px-6 py-12">
-    <h1 class="text-xl font-semibold">{t(statusFailed ? "access.unavailable" : "access.resumeSetup")}</h1>
+  <div class="setup-card glass-surface mx-auto max-w-lg space-y-4 p-7">
+    <h1 class="setup-title">{t(statusFailed ? "access.unavailable" : "access.resumeSetup")}</h1>
     {#if statusFailed}<Button onclick={checkSetup}>{t("access.retry")}</Button>
     {:else}<Button href={accountLink("/login", "/setup")}>{t("auth.signIn")}</Button>{/if}
   </div>
 {:else}
-  <div class="my-6 w-full max-w-lg rounded-xl border border-border bg-card p-5 shadow-sm sm:p-8">
+  <div class="setup-card glass-surface w-full max-w-lg p-6 sm:p-9">
     <!-- Logo -->
-    <div class="text-center mb-8">
-      <h1 class="mb-3 flex justify-center">
-        <SoundTimeSignature width={214} />
+    <div class="mb-7 border-b border-border pb-5">
+      <h1 class="mb-3 flex">
+        <SoundTimeSignature width={144} />
       </h1>
-      <p class="text-[hsl(var(--muted-foreground))] mt-1">{t('setup.subtitle')}</p>
+      <p class="text-sm text-muted-foreground mt-1">{t('setup.subtitle')}</p>
     </div>
 
     <!-- Progress bar -->
-    <div class="flex items-center justify-between mb-10 px-2">
+    <div class="flex items-center justify-between mb-7 gap-1">
       {#each steps as step, i (step.num)}
         <div class="flex items-center {i < steps.length - 1 ? 'flex-1' : ''}">
           <div class="flex flex-col items-center">
             <div
-              class="w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium transition-colors
+              class="step-number flex size-8 items-center justify-center border border-border text-sm transition-colors
                 {currentStep >= step.num ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}"
             >
               {#if currentStep > step.num}
@@ -258,7 +258,7 @@
           <button
             type="submit"
             disabled={submitting}
-            class="w-full py-2.5 bg-primary text-primary-foreground rounded-md font-medium hover:opacity-90 transition disabled:opacity-50"
+            class="w-full py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:opacity-90 transition disabled:opacity-50"
           >
             {#if submitting}
               {t('setup.creating')}
@@ -309,7 +309,7 @@
             <button
               type="submit"
               disabled={submitting}
-              class="flex-1 py-2.5 bg-primary text-primary-foreground rounded-md font-medium hover:opacity-90 transition disabled:opacity-50"
+              class="flex-1 py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:opacity-90 transition disabled:opacity-50"
             >
               {#if submitting}
                 {t('setup.saving')}
@@ -402,7 +402,7 @@
               step="50"
               class="w-full h-2 bg-[hsl(var(--border))] rounded-lg appearance-none cursor-pointer accent-[hsl(var(--primary))]"
             />
-            <div class="flex justify-between text-xs text-[hsl(var(--muted-foreground))] mt-1">
+            <div class="flex justify-between text-xs text-sm text-muted-foreground mt-1">
               <span>50 {t('common.megabytes')}</span>
               <span>2 {t('common.gigabytes')}</span>
             </div>
@@ -421,7 +421,7 @@
             type="button"
             onclick={handleComplete}
             disabled={submitting}
-            class="flex-1 py-2.5 bg-primary text-primary-foreground rounded-md font-medium hover:opacity-90 transition disabled:opacity-50"
+            class="flex-1 py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-semibold hover:opacity-90 transition disabled:opacity-50"
           >
             {#if submitting}
               {t('setup.finalizing')}
@@ -469,3 +469,9 @@
     {/if}
   </div>
 {/if}
+
+<style>
+  .setup-card { border-radius: 1.25rem; }
+  .setup-title, .setup-card h2 { font-size: 1.48rem; line-height: 1.17; font-weight: 640; letter-spacing: -.03em; }
+  .step-number { border-radius: 50%; font-variant-numeric: tabular-nums; }
+</style>

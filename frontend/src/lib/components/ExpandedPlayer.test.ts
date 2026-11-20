@@ -138,13 +138,19 @@ describe("expanded player", () => {
     expect(queue.playQueue).toHaveBeenCalledWith(queue.queue, 1, "album");
     await fireEvent.click(repeatedSong[1]);
     expect(queue.playQueue).toHaveBeenCalledWith(queue.queue, 3, "album");
-    await fireEvent.keyDown(screen.getAllByRole("button", { name: "Options · Next song" })[0], { key: "Enter" });
+    const options = screen.getAllByRole("button", { name: "Options · Next song" })[0];
+    options.focus();
+    await fireEvent.keyDown(options, { key: "Enter" });
     expect(await screen.findByRole("menuitem", { name: "Move up" })).toHaveAttribute("aria-disabled", "true");
     await fireEvent.keyDown(screen.getByRole("menuitem", { name: "Move down" }), { key: "Enter" });
     expect(queue.moveInQueue).toHaveBeenCalledWith(1, 2);
-    const followingRow = within(rows[1]);
-    await fireEvent.keyDown(followingRow.getByRole("button", { name: "Options · Third song" }), { key: "Enter" });
-    await fireEvent.click(await followingRow.findByRole("menuitem", { name: "Remove" }));
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    const followingOptions = within(rows[1]).getByRole("button", { name: "Options · Third song" });
+    followingOptions.focus();
+    await fireEvent.keyDown(followingOptions, { key: "Enter" });
+    const followingMenu = await screen.findByRole("menu");
+    expect(followingOptions).toHaveAttribute("aria-controls", followingMenu.id);
+    await fireEvent.click(within(followingMenu).getByRole("menuitem", { name: "Remove" }));
     expect(queue.removeFromQueue).toHaveBeenCalledWith(2);
   });
 

@@ -7,6 +7,7 @@
   import type { Artist } from "$lib/types";
   import { t } from "$lib/i18n/index.svelte";
   import { Button } from "$lib/components/ui/button";
+  import SectionHeading from "$lib/components/catalog/SectionHeading.svelte";
   import CatalogState from "$lib/components/catalog/CatalogState.svelte";
   import RecordShelf from "$lib/components/catalog/RecordShelf.svelte";
   import ReleaseHeader from "$lib/components/catalog/ReleaseHeader.svelte";
@@ -23,7 +24,7 @@
 {#if artist.data}
   {@const data = artist.data}
   <div class="space-y-8">
-    <ReleaseHeader kind="artist" title={data.name} image={data.image_url} label={t("track.artist")}>
+    <ReleaseHeader artworkId={data.id} kind="artist" title={data.name} image={data.image_url} label={t("track.artist")}>
       {#snippet info()}{data.bio ?? ""}{/snippet}
       {#snippet actions()}
         <Button variant="secondary" disabled={artistRadio && radio.loading} onclick={() => radio.startRadio("artist", { seedId: data.id, label: data.name })}>
@@ -34,12 +35,12 @@
     {#if artistRadio && radio.error}<p class="text-sm text-destructive" role="alert">{t("radio.error")}</p>{/if}
     {#if data.albums?.length}
       <section class="space-y-4">
-        <h2 class="text-xl font-semibold">{t("artist.albums")}</h2>
+        <SectionHeading title={t("artist.albums")} />
         <RecordShelf>{#each data.albums as album (album.id)}<AlbumCard {album} />{/each}</RecordShelf>
       </section>
     {/if}
     {#if data.tracks?.length}
-      <section class="space-y-4"><h2 class="text-xl font-semibold">{t("artist.tracks")}</h2><TrackList tracks={data.tracks} showArtist={false} /></section>
+      <section class="space-y-4"><SectionHeading title={t("artist.tracks")} /><TrackList tracks={data.tracks} showArtist={false} /></section>
     {/if}
   </div>
 {:else}

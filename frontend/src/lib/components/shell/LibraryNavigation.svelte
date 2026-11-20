@@ -8,7 +8,7 @@
   import CatalogArtwork from "../catalog/CatalogArtwork.svelte";
   import { admin, catalog, followSidebarLink, home, isActive, libraryHome, listening, personal, settings, upload, type NavItem } from "./navigation";
 
-  let { close }: { close?: () => void } = $props();
+  let { close, rail = false }: { close?: () => void; rail?: boolean } = $props();
   const auth = getAuthStore();
   const playlists = recentPlaylists();
   type PublicPlaylist = Pick<Playlist, "id" | "name" | "is_public"> & Partial<Pick<Playlist, "cover_url">>;
@@ -37,18 +37,18 @@
 </script>
 
 {#snippet destination(item: NavItem)}
-  <a href={item.href} class="row" onclick={(event) => followSidebarLink(event, close)}
+  <a href={item.href} class="row" aria-label={t(item.label)} title={t(item.label)} onclick={(event) => followSidebarLink(event, close)}
     aria-current={isActive(page.url.pathname, item.href) && !(item.href === "/playlists" && recentIsCurrent) ? "page" : undefined}>
-    <item.icon aria-hidden="true" size={17} strokeWidth={1.65} />
+    <span class="tile" aria-hidden="true"><item.icon size={16} strokeWidth={1.7} /></span>
     <span>{t(item.label)}</span>
   </a>
 {/snippet}
 
-<nav aria-label={t("shell.navigation")}>
-  {@render destination(home)}
+<nav class:rail aria-label={t("shell.navigation")}>
 
   <div class="group">
     <h2>{t("workspaceNav.listen")}</h2>
+    {@render destination(home)}
     {#each listening.filter(item => item.href !== "/webradios" || webPreferences.showInNavigation) as item (item.href)}{@render destination(item)}{/each}
     {#if !auth.isAuthenticated && webPreferences.status?.instance_enabled !== false && !webPreferences.userEnabled}
       {@render destination({ ...settings, href: "/settings#webradios", label: "webradios.preferenceLink" })}
@@ -74,9 +74,9 @@
       <h2 id={id + "-recent"}>{t("navDrawer.recentPlaylists")}</h2>
       {#each recent as playlist (playlist.id)}
         {@const href = "/playlists/" + encodeURIComponent(playlist.id)}
-        <a {href} class="row" aria-current={isActive(page.url.pathname, href) ? "page" : undefined}
+        <a {href} class="row" aria-label={playlist.name} title={playlist.name} aria-current={isActive(page.url.pathname, href) ? "page" : undefined}
           onclick={(event) => followSidebarLink(event, close)}>
-          <span class="cover" aria-hidden="true"><CatalogArtwork source={playlist.cover_url} title={playlist.name} kind="playlist" /></span>
+          <span class="cover" aria-hidden="true"><CatalogArtwork source={playlist.cover_url} title={playlist.name} kind="playlist" artworkId={playlist.id} /></span>
           <span class="playlist-name">{playlist.name}</span>
         </a>
       {/each}
@@ -89,30 +89,34 @@
 </nav>
 
 <style>
-  nav { padding: 8px 8px 18px; }
-  .group { margin-top: 20px; }
-  h2 {
-    padding: 0 8px 5px; color: hsl(var(--muted-foreground)); font-size: 12px;
-    line-height: 17px; font-weight: 450;
-  }
-  .row {
-    display: flex; align-items: center; gap: 9px; min-height: 33px; min-width: 0;
-    padding: 5px 8px; border-radius: 8px; color: color-mix(in srgb, hsl(var(--muted-foreground)) 65%, hsl(var(--foreground)));
-    font-size: 14px; font-weight: 480; line-height: 20px;
-  }
-  .row + .row { margin-top: 2px; }
-  .row :global(svg) { flex: none; color: hsl(var(--muted-foreground)); }
-  .row:hover { background: hsl(var(--accent) / .55); }
-  .row[aria-current] { color: hsl(var(--accent-foreground)); background: hsl(var(--accent)); font-weight: 550; }
-  .row[aria-current] :global(svg) { color: currentColor; }
+  nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 22px; padding: 22px 2px; }
+  h2 { color: hsl(var(--muted-foreground)); font-size: .76rem; line-height: 1.4; font-weight: 580; margin: 0 7px 6px; }
+  .row { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 4px 7px; border-radius: 7px; color: hsl(var(--foreground)); font-size: .91rem; line-height: 1.3; }
+  .tile, .cover { display: grid; place-items: center; flex: none; width: 22px; height: 22px; }
+  .tile { color: hsl(var(--muted-foreground)); }
+  .cover { overflow: hidden; }
+  .row:hover, .row[aria-current] { background: hsl(var(--muted)); }
+  .row[aria-current] .tile { color: hsl(var(--primary)); }
+  .row[aria-current] { font-weight: 650; }
   .row:focus-visible { outline-offset: -2px; }
   .playlist-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .cover { width: 18px; height: 18px; flex: none; }
-  .cover :global(.artwork) { border-radius: 3px; }
-  .cover :global(.fallback) { background: hsl(var(--accent)); }
+  .cover :global(.artwork) { border-radius: 4px; }
   .cover :global(svg) { width: 14px; height: 14px; }
-  @media (max-width: 767px) {
+  @media (max-width: 680px) {
+    nav { gap: 20px 12px; }
     .row { min-height: 44px; }
-    .group { margin-top: 16px; }
+  }
+  .rail { grid-template-columns: minmax(0,1fr); gap: 18px; padding: 4px 1px 14px; }
+  .rail h2 { font-size: .67rem; font-weight: 550; margin: 0 9px 5px; }
+  .rail .row { min-height: 32px; gap: 8px; font-size: .8rem; line-height: 1.3; }
+  .rail .row:hover { background: hsl(var(--card) / .42); }
+  .rail .row[aria-current] { background: hsl(var(--card) / .72); box-shadow: 0 1px 5px rgb(24 28 56 / .05); }
+  .rail .tile { color: hsl(var(--primary)); }
+  .rail .tile, .rail .cover { width: 20px; height: 20px; }
+  @media (min-width: 768px) and (max-width: 1000px) {
+    .rail .group + .group { border-top: 1px solid var(--glass-edge); padding-top: 8px; }
+    .rail { gap: 9px; }
+    .rail h2, .rail .row > span:last-child { display: none; }
+    .rail .row { justify-content: center; min-height: 36px; }
   }
 </style>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from "$app/state";
   import { catalogQuery } from "$lib/catalog/query.svelte";
+  import SectionHeading from "$lib/components/catalog/SectionHeading.svelte";
   import CatalogState from "$lib/components/catalog/CatalogState.svelte";
   import { api } from "$lib/api";
   import type { SearchResults } from "$lib/types";
@@ -34,14 +35,14 @@
   {:else if results}
     {#if results.tracks.length > 0}
     <section>
-      <h2 class="mb-3 text-lg font-semibold tracking-tight">{t("artist.tracks")}</h2>
+      <SectionHeading title={t("artist.tracks")} />
       <TrackList source="search" tracks={results.tracks} />
     </section>
     {/if}
 
     {#if results.albums.length > 0}
     <section>
-      <h2 class="mb-3 text-lg font-semibold tracking-tight">{t("library.albums")}</h2>
+      <SectionHeading title={t("library.albums")} />
       <RecordShelf>
         {#each results.albums as album (album.id)}
           <AlbumCard {album} />
@@ -52,7 +53,7 @@
 
     {#if results.artists.length > 0}
     <section>
-      <h2 class="mb-3 text-lg font-semibold tracking-tight">{t("shell.artists")}</h2>
+      <SectionHeading title={t("shell.artists")} />
       <RecordShelf>
         {#each results.artists as artist (artist.id)}
           <ArtistCard {artist} />

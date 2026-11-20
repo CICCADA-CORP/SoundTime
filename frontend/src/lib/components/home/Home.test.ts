@@ -9,7 +9,7 @@ vi.mock("$lib/stores/queue.svelte", () => ({ getQueueStore: () => ({ playQueue }
 
 function emptyResponse(path: string) {
   if (path.includes("/stats/overview")) return { total_tracks: 0 };
-  if (path.includes("/random") || path.includes("/editorial-playlists")) return [];
+  if (path.includes("/random") || path.includes("/editorial-playlists") || path.includes("/genres")) return [];
   return { data: [] };
 }
 
@@ -47,8 +47,10 @@ describe("home catalogue", () => {
       : Response.json(url.includes("/tracks/random") ? [track] : emptyResponse(url))));
     render(Home);
     await screen.findByText("Some sections couldn’t load.");
-    await fireEvent.click(screen.getByRole("button", { name: "List view" }));
-    await fireEvent.click(screen.getByRole("button", { name: /Live catalogue track/ }));
+    await fireEvent.click(screen.getByRole("button", { name: "Catalog" }));
+    const panel = within(screen.getByRole("tabpanel", { name: "Tracks" }));
+    await fireEvent.click(panel.getByRole("button", { name: "List view" }));
+    await fireEvent.click(panel.getByRole("button", { name: /Live catalogue track/ }));
     expect(playQueue).toHaveBeenCalledWith([track], 0, "explore");
     expect(screen.queryByRole("region", { name: "After Hours" })).toBeNull();
   });
@@ -66,6 +68,7 @@ describe("home catalogue", () => {
     expect(screen.queryByRole("tablist")).toBeNull();
 
     respond(Response.json([picked]));
+    await fireEvent.click(await screen.findByRole("button", { name: "Catalog" }));
     const panel = within(await screen.findByRole("tabpanel", { name: "Tracks" }));
     expect(panel.getByRole("button", { name: /Selected track/ })).toBeVisible();
     await fireEvent.click(panel.getByRole("button", { name: "List view" }));

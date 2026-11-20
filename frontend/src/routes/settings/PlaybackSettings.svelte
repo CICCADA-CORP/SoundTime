@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsSection from "./SettingsSection.svelte";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import { t } from "$lib/i18n/index.svelte";
@@ -8,8 +9,7 @@
   const percent = $derived(Math.round(player.volume * 100));
 </script>
 
-<section class="space-y-4 border-b border-border py-6">
-  <h2 class="text-lg font-semibold">{t("settings.audio")}</h2>
+<SettingsSection title={t("settings.audio")}>
   <label class="flex flex-wrap items-center justify-between gap-3 text-sm">
     {t("player.volume")}
     <span class="flex items-center gap-3">
@@ -24,4 +24,4 @@
     <input type="checkbox" role="switch" checked={queue.autoplay} onchange={queue.toggleAutoplay} class="size-5 accent-primary" />
   </label>
   <p class="text-xs text-muted-foreground">{t("settings.supportedFormats")}</p>
-</section>
+</SettingsSection>

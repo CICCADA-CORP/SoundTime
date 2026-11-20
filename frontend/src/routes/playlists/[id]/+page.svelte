@@ -8,7 +8,7 @@
   import { invalidatePlaylists, playlistQuery } from "$lib/catalog/playlists.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import { formatTrackCount, t } from "$lib/i18n/index.svelte";
   import type { Playlist } from "$lib/types";
   import { Button } from "$lib/components/ui/button";
   import TrackList from "$lib/components/TrackList.svelte";
@@ -62,13 +62,13 @@
   {@const data = playlist.data}
   {@const mine = !!auth.user && (data.user_id ?? data.owner_id) === auth.user.id}
   <div class="space-y-7">
-    <ReleaseHeader kind="playlist" title={data.name} image={data.cover_url} label={t(data.is_public ? "playlists.publicPlaylist" : "playlists.private")}>
+    <ReleaseHeader artworkId={data.id} kind="playlist" title={data.name} image={data.cover_url} label={t(data.is_public ? "playlists.publicPlaylist" : "playlists.private")}>
       {#snippet info()}
         {#if data.description}<p class="mb-1">{data.description}</p>{/if}
-        {tracks.length} {t("playlists.tracks")}
+        {formatTrackCount(tracks.length)}
       {/snippet}
       {#snippet actions()}
-        <Button disabled={!tracks.some(canPlay)} onclick={() => queue.playQueue(tracks, 0, "playlist")}><Play size={15} fill="currentColor" />{t("album.playAll")}</Button>
+        <Button class="play-release" disabled={!tracks.some(canPlay)} onclick={() => queue.playQueue(tracks, 0, "playlist")}><Play size={15} fill="currentColor" />{t("album.playAll")}</Button>
         {#if mine}
           <Button variant="outline" onclick={() => editId = editId === data.id ? "" : data.id}><Pencil size={14} />{t("playlists.edit")}</Button>
           <Button variant="ghost" class="text-destructive" disabled={removing} onclick={() => remove(data.id)}><Trash2 size={14} />{t("common.delete")}</Button>
@@ -77,7 +77,7 @@
     </ReleaseHeader>
     {#if error}<p role="alert" class="text-sm text-destructive">{error}</p>{/if}
     {#if mine && editId === data.id}
-      <div class="max-w-lg rounded-xl border border-border p-5">
+      <div class="glass-surface max-w-lg rounded-xl p-5">
         <PlaylistForm playlist={data} oncancel={() => editId = ""} onsave={() => editId = ""} />
       </div>
     {/if}

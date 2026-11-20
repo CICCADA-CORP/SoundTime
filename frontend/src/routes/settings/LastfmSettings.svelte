@@ -1,10 +1,12 @@
 <script lang="ts">
+  import SettingsSection from "./SettingsSection.svelte";
   import { onMount } from "svelte";
   import { lastfmApi } from "$lib/api";
   import type { LastfmStatus } from "$lib/types";
   import { t } from "$lib/i18n/index.svelte";
   let lastfmStatus = $state<LastfmStatus | null>(null);
   let lastfmLoading = $state(true);
+  let initialLoading = $state(true);
   let lastfmError = $state("");
   const lastfmConfigured = $derived(lastfmStatus?.connected);
 
@@ -21,6 +23,7 @@
     } catch (cause) {
       lastfmError = cause instanceof Error ? cause.message : t("settings.lastfmError");
     } finally {
+      initialLoading = false;
       lastfmLoading = false;
     }
   });
@@ -68,13 +71,14 @@
 </script>
 
 <!-- Last.fm -->
-<section class="space-y-4 border-b border-border py-6">
-  <h2 class="text-lg font-semibold">{t('settings.lastfm')}</h2>
+<SettingsSection title={t('settings.lastfm')}>
   {#if lastfmError}
     <p role="alert" class="text-sm text-destructive">{lastfmError}</p>
   {/if}
 
-  {#if lastfmConfigured && lastfmStatus}
+  {#if initialLoading}
+    <p role="status" class="py-2 text-sm text-muted-foreground">{t("common.loading")}</p>
+  {:else if lastfmConfigured && lastfmStatus}
     <div class="flex items-center justify-between">
       <div>
         <p class="text-sm font-medium">{t('settings.lastfmConnectedAs')}</p>
@@ -121,4 +125,4 @@
       </button>
     </div>
   {/if}
-</section>
+</SettingsSection>

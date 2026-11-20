@@ -121,18 +121,17 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="border-2 border-dashed rounded-xl p-8 text-center transition cursor-pointer"
-  class:border-[hsl(142,71%,45%)]={isDragging}
-  class:bg-green-500={isDragging}
-  class:bg-opacity-5={isDragging}
-  class:border-[hsl(var(--border))]={!isDragging}
+  class="drop-area rounded-xl border border-dashed px-5 py-10 text-center transition-colors"
+  class:dragging={isDragging}
   ondragover={handleDragOver}
   ondragleave={handleDragLeave}
   ondrop={handleDrop}
   onclick={() => fileInput.click()}
   role="button"
   tabindex="0"
-  onkeydown={(e) => e.key === 'Enter' && fileInput.click()}
+  onkeydown={(event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); fileInput.click(); }
+  }}
 >
   <input
     bind:this={fileInput}
@@ -144,7 +143,7 @@
   />
 
   <div class="flex flex-col items-center gap-3">
-    <Upload class="w-12 h-12 text-[hsl(var(--muted-foreground))]" />
+    <span class="grid size-12 place-items-center text-primary"><Upload size={25} /></span>
     <p class="text-sm font-medium">{t('upload.dropHint')}</p>
     <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('upload.supportedFormats')}</p>
   </div>
@@ -167,13 +166,13 @@
 
     {#each queue as item, i (item.file.name + item.file.size)}
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-      <div class="flex items-center gap-3 p-3 bg-[hsl(var(--card))] rounded-lg" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="listitem">
+      <div class="flex items-center gap-3 border-t border-border py-3" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="listitem">
         <!-- Icon -->
         <div class="shrink-0">
           {#if item.status === "done"}
-            <CheckCircle class="w-5 h-5 text-green-400" />
+            <CheckCircle class="w-5 h-5 text-primary" />
           {:else if item.status === "error"}
-            <AlertCircle class="w-5 h-5 text-red-400" />
+            <AlertCircle class="w-5 h-5 text-destructive" />
           {:else}
             <Music class="w-5 h-5 text-[hsl(var(--muted-foreground))]" />
           {/if}
@@ -195,9 +194,9 @@
             </div>
             <p class="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{item.progress}%</p>
           {:else if item.status === "done" && item.result}
-            <p class="text-xs text-green-400 mt-0.5">{item.result.title} · {item.result.format} · {Math.round(item.result.duration)}s</p>
+            <p class="text-xs text-primary mt-0.5">{item.result.title} · {item.result.format} · {Math.round(item.result.duration)}s</p>
           {:else if item.status === "error"}
-            <p class="text-xs text-red-400 mt-0.5">{item.error}</p>
+            <p class="text-xs text-destructive mt-0.5">{item.error}</p>
           {:else}
             <p class="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{t('upload.pending')}</p>
           {/if}
@@ -215,3 +214,8 @@
     {/each}
   </div>
 {/if}
+
+<style>
+  .drop-area { cursor: pointer; border-color: hsl(var(--input)); background: var(--glass-panel); }
+  .drop-area:hover, .drop-area.dragging { border-color: hsl(var(--primary)); background: hsl(var(--primary) / .08); }
+</style>

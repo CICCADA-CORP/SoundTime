@@ -10,6 +10,24 @@ afterEach(() => vi.unstubAllGlobals());
 
 const track = (id: string) => ({ id, title: id, artist_id: "artist", duration_secs: 90, format: "mp3", play_count: 2 });
 
+it("opens a genre or all-time chart directly from the home shelves", async () => {
+  setLocale("en");
+  await goto("/explore?tab=genres&genre=Nu+Jazz");
+  const fetch = vi.fn(async (url: string) => {
+    const path = new URL(url, "http://localhost").pathname;
+    if (path === "/api/genres") return Response.json(["Nu Jazz"]);
+    return Response.json({ data: [track(path === "/api/tracks/popular" ? "Chart title" : "Jazz title")] });
+  });
+  vi.stubGlobal("fetch", fetch);
+  render(Explore);
+  expect(await screen.findByRole("link", { name: "Jazz title" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Nu Jazz" })).toHaveAttribute("aria-pressed", "true");
+  await goto("/explore?tab=trending&period=all");
+  expect(await screen.findByRole("link", { name: "Chart title" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "All time" })).toHaveAttribute("aria-pressed", "true");
+  expect(fetch.mock.calls.some(([url]) => url.includes("/tracks/trending"))).toBe(false);
+});
+
 it("keeps the loading layout until both recent feeds have settled", async () => {
   setLocale("en");
   await goto("/explore");

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsSection from "./SettingsSection.svelte";
   import { Dialog } from "bits-ui";
   import { goto } from "$app/navigation";
   import { getAuthStore } from "$lib/stores/auth.svelte";
@@ -41,8 +42,7 @@
   }
 </script>
 
-<section class="space-y-4 py-6">
-  <h2 class="text-lg font-semibold">{t("settings.dangerZone")}</h2>
+<SettingsSection title={t("settings.dangerZone")}>
   <p class="text-sm text-muted-foreground">{t("settings.deleteWarning")}</p>
   <div class="flex flex-wrap gap-2">
     <Button variant="outline" onclick={auth.logout}>{t("nav.logout")}</Button>
@@ -53,8 +53,8 @@
         {/snippet}
       </Dialog.Trigger>
       <Dialog.Portal>
-        <Dialog.Overlay class="fixed inset-0 z-[150] bg-black/40" />
-        <Dialog.Content class="fixed left-1/2 top-1/2 z-[151] w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-background p-6 shadow-xl">
+        <Dialog.Overlay class="ui-overlay z-[150]" />
+        <Dialog.Content class="ui-dialog z-[151]">
           <Dialog.Title class="text-lg font-semibold">{t("settings.deleteConfirm")}</Dialog.Title>
           <Dialog.Description class="my-3 text-sm text-muted-foreground">
             {warning[0]}<strong>{warning[1]}</strong>{warning[2]}
@@ -73,4 +73,4 @@
       </Dialog.Portal>
     </Dialog.Root>
   </div>
-</section>
+</SettingsSection>

@@ -9,6 +9,7 @@
   import AppShell from "$lib/components/shell/AppShell.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
   import { getTaskStore } from "$lib/stores/tasks.svelte";
+  import { appearance } from "$lib/stores/appearance.svelte";
   import { getThemeStore } from "$lib/stores/theme.svelte";
   import { api } from "$lib/api";
   import type { SetupStatus } from "$lib/types";
@@ -39,6 +40,7 @@
   onMount(() => {
     void initialize();
     void theme.init();
+    return appearance.listen();
   });
   afterNavigate(({ from, to }) => {
     if (from?.url.pathname === "/setup" && to?.url.pathname !== "/setup"

@@ -31,10 +31,10 @@ it("shows direct links to listening and library destinations", () => {
   expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
 });
 
-it("marks the album destination on an album page and closes the mobile drawer", async () => {
+it("marks the album destination on an album page and closes the navigation directory", async () => {
   location.url = new URL("http://localhost/albums/example");
   const close = vi.fn();
-  render(SideNavigation, { props: { mobile: true, close } });
+  render(SideNavigation, { props: { close } });
   const current = screen.getByRole("link", { name: "Albums" });
   expect(current).toHaveAttribute("aria-current", "page");
   current.addEventListener("click", (event) => event.preventDefault());
@@ -46,7 +46,7 @@ it("marks the album destination on an album page and closes the mobile drawer", 
   expect(close).toHaveBeenCalledTimes(2);
 });
 
-it("links the current account to settings and shows the signed-in identity", () => {
+it("links to the account settings from the sidebar", () => {
   auth.isAuthenticated = true;
   auth.user = { username: "camille", email: "camille@example.org", display_name: "Camille" };
   location.url = new URL("http://localhost/settings");
@@ -54,7 +54,5 @@ it("links the current account to settings and shows the signed-in identity", () 
   const account = screen.getByRole("link", { name: "Settings" });
   expect(account).toHaveAttribute("href", "/settings");
   expect(account).toHaveAttribute("aria-current", "page");
-  expect(account).toHaveTextContent("Camille");
-  expect(account).toHaveTextContent("camille@example.org");
   expect(screen.queryByRole("link", { name: "Sign In" })).toBeNull();
 });

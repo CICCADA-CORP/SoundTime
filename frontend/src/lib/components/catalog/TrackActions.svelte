@@ -55,8 +55,8 @@
 
 <Dialog.Root open onOpenChange={open => { if (!open) close(); }}>
   <Dialog.Portal>
-    <Dialog.Overlay class="fixed inset-0 z-[201] bg-black/40" />
-    <Dialog.Content class="fixed left-1/2 top-1/2 z-[202] max-h-[90dvh] w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 -translate-y-1/2 space-y-4 overflow-y-auto rounded-xl bg-background p-6 shadow-xl">
+    <Dialog.Overlay class="ui-overlay z-[201]" />
+    <Dialog.Content class="ui-dialog z-[202] space-y-4">
       <Dialog.Title class="text-lg font-semibold">{t(titles[action])}</Dialog.Title>
       <Dialog.Description class="truncate text-sm text-muted-foreground">{track.title}</Dialog.Description>
       {#if action === "playlist"}

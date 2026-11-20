@@ -3,6 +3,6 @@
   let { children }: { children: Snippet } = $props();
 </script>
 
-<div class="flex min-h-screen items-center justify-center bg-sidebar px-4 text-foreground">
+<div class="flex min-h-svh items-center justify-center px-4 py-4 text-foreground">
   {@render children()}
 </div>

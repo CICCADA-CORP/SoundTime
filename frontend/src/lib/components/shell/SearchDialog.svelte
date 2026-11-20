@@ -117,8 +117,8 @@
   :global(.search-dialog) {
     position: fixed; z-index: 211; top: max(10vh, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
     width: min(32rem, calc(100vw - 2rem)); max-height: 75dvh; overflow-y: auto; overscroll-behavior: contain;
-    border: 1px solid hsl(var(--border)); border-radius: 14px; background: hsl(var(--background));
-    color: hsl(var(--foreground)); box-shadow: 0 18px 70px rgb(18 18 22 / .18);
+    border: 1px solid hsl(var(--border)); border-radius: 14px; background: hsl(var(--popover));
+    color: hsl(var(--popover-foreground)); box-shadow: 0 18px 60px -16px rgb(0 0 0 / .23);
   }
   .query-row { display: flex; align-items: center; gap: 12px; min-height: 62px; padding: 0 12px 0 18px; color: hsl(var(--muted-foreground)); }
   input { width: 100%; min-width: 0; flex: 1; background: transparent; color: hsl(var(--foreground)); font-size: 16px; outline: none; }

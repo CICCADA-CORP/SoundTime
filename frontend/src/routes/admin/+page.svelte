@@ -903,7 +903,7 @@
 
 <svelte:head><title>{t('admin.title')} — SoundTime</title></svelte:head>
 
-<div class="space-y-6">
+<div class="admin space-y-6">
   <CatalogHeader title={t("admin.title")} />
 
   {#if !auth.isAdmin}
@@ -911,9 +911,9 @@
       <p class="text-[hsl(var(--muted-foreground))]">{t('admin.accessDenied')}</p>
     </div>
   {:else}
-    <div class="flex flex-col gap-4 md:flex-row md:gap-8 min-h-[calc(100vh-12rem)]">
+    <div class="admin-layout">
       <select aria-label={t("admin.title")} value={activeTab} onchange={event => switchTab(event.currentTarget.value)}
-        class="h-10 w-full rounded-md border border-input bg-background px-3 text-sm md:hidden">
+        class="admin-select h-10 w-full rounded-lg border border-input bg-background px-3 text-sm">
         {#each tabGroups as group (group.label)}
           <optgroup label={group.label}>
             {#each group.tabs as tab (tab.id)}<option value={tab.id}>{tab.label}</option>{/each}
@@ -921,16 +921,17 @@
         {/each}
       </select>
       <!-- Sidebar Navigation -->
-      <aside class="hidden w-52 shrink-0 space-y-5 md:block">
+      <aside class="admin-navigation space-y-4">
         {#each tabGroups as group (group.label)}
           <div>
-            <p class="text-[10px] uppercase tracking-widest text-[hsl(var(--muted-foreground))] font-semibold mb-1.5 px-3">{group.label}</p>
+            <p class="mb-1 px-2 text-xs font-medium text-muted-foreground">{group.label}</p>
             <nav class="space-y-0.5">
               {#each group.tabs as tab (tab.id)}
                 <button
-                  class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition
+                  aria-current={activeTab === tab.id ? "page" : undefined}
+                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors
                     {activeTab === tab.id
-                      ? 'bg-primary text-primary-foreground font-medium'
+                      ? 'bg-accent text-accent-foreground font-semibold'
                       : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--secondary))]'}"
                   onclick={() => switchTab(tab.id)}
                 >
@@ -944,7 +945,7 @@
       </aside>
 
       <!-- Main Content -->
-      <div class="flex-1 min-w-0 space-y-6">
+      <div class="admin-content min-w-0 space-y-6">
         <!-- Error -->
         {#if error}
           <div role="alert" class="bg-red-500/10 border border-red-500/30 rounded-lg p-4 text-destructive">
@@ -960,30 +961,30 @@
 
       <!-- Overview -->
       {#if activeTab === "overview" && stats}
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-            <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.overview.users')}</p>
-            <p class="text-3xl font-bold mt-1">{stats.total_users}</p>
+        <div class="admin-metrics">
+          <div class="admin-panel">
+            <p class="text-xs font-medium text-muted-foreground">{t('admin.overview.users')}</p>
+            <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{stats.total_users}</p>
           </div>
-          <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-            <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.overview.tracks')}</p>
-            <p class="text-3xl font-bold mt-1">{stats.total_tracks}</p>
+          <div class="admin-panel">
+            <p class="text-xs font-medium text-muted-foreground">{t('admin.overview.tracks')}</p>
+            <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{stats.total_tracks}</p>
           </div>
-          <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-            <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.overview.remoteTracks')}</p>
-            <p class="text-3xl font-bold mt-1 text-blue-700">{stats.total_remote_tracks}</p>
+          <div class="admin-panel">
+            <p class="text-xs font-medium text-muted-foreground">{t('admin.overview.remoteTracks')}</p>
+            <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-primary">{stats.total_remote_tracks}</p>
           </div>
-          <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-            <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.overview.blockedDomains')}</p>
-            <p class="text-3xl font-bold mt-1">{stats.total_blocked_domains}</p>
+          <div class="admin-panel">
+            <p class="text-xs font-medium text-muted-foreground">{t('admin.overview.blockedDomains')}</p>
+            <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{stats.total_blocked_domains}</p>
           </div>
-          <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-            <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.overview.p2pEnabled')}</p>
-            <p class="text-3xl font-bold mt-1 {stats.p2p_enabled ? 'text-green-700' : 'text-[hsl(var(--muted-foreground))]'}">{stats.p2p_enabled ? '✓' : '✗'}</p>
+          <div class="admin-panel">
+            <p class="text-xs font-medium text-muted-foreground">{t('admin.overview.p2pEnabled')}</p>
+            <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight {stats.p2p_enabled ? 'text-[var(--admin-success)]' : 'text-[hsl(var(--muted-foreground))]'}">{stats.p2p_enabled ? '✓' : '✗'}</p>
           </div>
           {#if stats.p2p_node_id}
-            <div class="bg-[hsl(var(--card))] rounded-lg p-5 sm:col-span-2">
-              <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.overview.p2pNodeId')}</p>
+            <div class="admin-panel sm:col-span-2">
+              <p class="text-xs font-medium text-muted-foreground">{t('admin.overview.p2pNodeId')}</p>
               <p class="text-sm font-mono mt-1 truncate">{stats.p2p_node_id}</p>
             </div>
           {/if}
@@ -995,40 +996,40 @@
         <div class="space-y-6">
           {#if metadataStatus}
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.metadata.totalTracks')}</p>
-                <p class="text-3xl font-bold mt-1">{metadataStatus.total_tracks}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.metadata.totalTracks')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{metadataStatus.total_tracks}</p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.metadata.enrichedMB')}</p>
-                <p class="text-3xl font-bold mt-1 text-green-700">{metadataStatus.enriched_tracks}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.metadata.enrichedMB')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-[var(--admin-success)]">{metadataStatus.enriched_tracks}</p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.metadata.pending')}</p>
-                <p class="text-3xl font-bold mt-1 {metadataStatus.pending_tracks > 0 ? 'text-amber-700' : ''}">{metadataStatus.pending_tracks}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.metadata.pending')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight {metadataStatus.pending_tracks > 0 ? 'text-[var(--admin-warning)]' : ''}">{metadataStatus.pending_tracks}</p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.metadata.withBitrate')}</p>
-                <p class="text-3xl font-bold mt-1">{metadataStatus.tracks_with_bitrate}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.metadata.withBitrate')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{metadataStatus.tracks_with_bitrate}</p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.metadata.albumsWithCover')}</p>
-                <p class="text-3xl font-bold mt-1">{metadataStatus.albums_with_cover} / {metadataStatus.total_albums}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.metadata.albumsWithCover')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{metadataStatus.albums_with_cover} / {metadataStatus.total_albums}</p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.metadata.federatedTracks')}</p>
-                <p class="text-3xl font-bold mt-1">{metadataStatus.total_remote_tracks}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.metadata.federatedTracks')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{metadataStatus.total_remote_tracks}</p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.metadata.availableInstances')}</p>
-                <p class="text-3xl font-bold mt-1 text-green-700">{metadataStatus.available_remote_tracks}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.metadata.availableInstances')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-[var(--admin-success)]">{metadataStatus.available_remote_tracks}</p>
               </div>
             </div>
           {/if}
 
           <!-- Enrichment Progress Bar -->
           {#if metadataStatus && metadataStatus.total_tracks > 0}
-            <div class="bg-[hsl(var(--card))] rounded-lg p-5">
+            <div class="admin-panel">
               <div class="flex items-center justify-between mb-2">
                 <p class="text-sm font-medium">{t('admin.metadata.enrichmentProgress')}</p>
                 <p class="text-sm text-[hsl(var(--muted-foreground))]">
@@ -1045,7 +1046,7 @@
           {/if}
 
           <!-- MusicBrainz Configuration -->
-          <div class="bg-[hsl(var(--card))] rounded-lg p-5 space-y-4">
+          <div class="admin-panel space-y-4">
             <div>
               <h3 class="font-medium">{t('admin.metadata.mbConfig')}</h3>
               <p class="text-xs text-[hsl(var(--muted-foreground))] mt-1">{t('admin.metadata.mbConfigDesc')}</p>
@@ -1061,7 +1062,7 @@
               </div>
               <div class="flex items-center gap-3">
                 <button
-                  class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium disabled:opacity-50"
+                  class="px-4 py-2 bg-[hsl(var(--primary))] text-primary-foreground rounded-lg text-sm font-medium disabled:opacity-50"
                   disabled={mbSaving}
                   onclick={async () => {
                     mbSaving = true;
@@ -1081,7 +1082,7 @@
           <!-- Actions -->
           <div class="flex gap-4">
             <button
-              class="bg-[hsl(var(--primary))] hover:opacity-90 text-white px-6 py-3 rounded-lg text-sm font-medium transition disabled:opacity-50"
+              class="bg-[hsl(var(--primary))] hover:opacity-90 text-primary-foreground px-6 py-3 rounded-lg text-sm font-medium transition disabled:opacity-50"
               onclick={() => enrichAllMetadata()}
               disabled={enriching}
             >
@@ -1106,7 +1107,7 @@
 
           <!-- Enrichment Progress (background task) -->
           {#if enriching && metadataTaskProgress}
-            <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-5">
+            <div class="admin-panel">
               <div class="flex items-center justify-between text-sm text-[hsl(var(--muted-foreground))] mb-2">
                 <span class="flex items-center gap-2">
                   <div class="w-4 h-4 border-2 border-[hsl(var(--primary))] border-t-transparent rounded-full animate-spin"></div>
@@ -1124,9 +1125,9 @@
                 ></div>
               </div>
               <div class="flex flex-wrap gap-4 text-xs text-[hsl(var(--muted-foreground))]">
-                <span class="text-green-700">{t('admin.metadata.statusEnrichedMB')}: {metadataTaskProgress.enriched}</span>
+                <span class="text-[var(--admin-success)]">{t('admin.metadata.statusEnrichedMB')}: {metadataTaskProgress.enriched}</span>
                 <span>{t('admin.metadata.statusAmbiguous')}: {metadataTaskProgress.ambiguous ?? 0}</span>
-                <span class="text-amber-700">{t('admin.metadata.statusNotFound')}: {metadataTaskProgress.not_found}</span>
+                <span class="text-[var(--admin-warning)]">{t('admin.metadata.statusNotFound')}: {metadataTaskProgress.not_found}</span>
                 <span class="text-destructive">{t('admin.metadata.statusError')}: {metadataTaskProgress.errors}</span>
               </div>
             </div>
@@ -1136,7 +1137,7 @@
           {#if metadataTaskResult}
             <div class="bg-[hsl(var(--card))] rounded-lg border border-green-500/30 p-5">
               <div class="flex items-center justify-between mb-3">
-                <h3 class="font-medium text-green-700">{t('admin.metadata.enrichmentComplete')}</h3>
+                <h3 class="font-medium text-[var(--admin-success)]">{t('admin.metadata.enrichmentComplete')}</h3>
                 <button
                   class="text-xs text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition"
                   onclick={async () => {
@@ -1147,18 +1148,18 @@
                   {t('common.dismiss')}
                 </button>
               </div>
-              <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+              <div class="admin-metrics">
                 <div class="bg-[hsl(var(--secondary))] rounded-lg p-3 text-center">
                   <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.metadata.totalTracks')}</p>
                   <p class="text-xl font-bold mt-1">{metadataTaskResult.total_processed}</p>
                 </div>
                 <div class="bg-green-500/10 rounded-lg p-3 text-center">
-                  <p class="text-xs text-green-700">{t('admin.metadata.statusEnrichedMB')}</p>
-                  <p class="text-xl font-bold mt-1 text-green-700">{metadataTaskResult.enriched}</p>
+                  <p class="text-xs text-[var(--admin-success)]">{t('admin.metadata.statusEnrichedMB')}</p>
+                  <p class="text-xl font-bold mt-1 text-[var(--admin-success)]">{metadataTaskResult.enriched}</p>
                 </div>
                 <div class="bg-yellow-500/10 rounded-lg p-3 text-center">
-                  <p class="text-xs text-amber-700">{t('admin.metadata.statusNotFound')}</p>
-                  <p class="text-xl font-bold mt-1 text-amber-700">{metadataTaskResult.not_found}</p>
+                  <p class="text-xs text-[var(--admin-warning)]">{t('admin.metadata.statusNotFound')}</p>
+                  <p class="text-xl font-bold mt-1 text-[var(--admin-warning)]">{metadataTaskResult.not_found}</p>
                 </div>
                 <div class="bg-[hsl(var(--secondary))] rounded-lg p-3 text-center">
                   <p class="text-xs">{t('admin.metadata.statusAmbiguous')}</p>
@@ -1172,7 +1173,7 @@
             </div>
           {/if}
 
-          <div class="bg-[hsl(var(--card))] rounded-lg p-5">
+          <div class="admin-panel">
             <form onsubmit={findMetadataTracks}>
               <label for="metadata-track-search" class="block font-medium mb-2">{t("admin.metadata.findTrack")}</label>
               <div class="flex gap-2">
@@ -1223,11 +1224,11 @@
                     <tr class="border-b border-[hsl(var(--border))] last:border-b-0">
                       <td class="p-3">
                         <span class="px-2 py-0.5 rounded text-xs font-medium
-                          {result.status === 'enriched' ? 'bg-green-500/20 text-green-700' :
-                           result.status === 'enriched_by_ai' ? 'bg-purple-500/20 text-purple-700' :
+                          {result.status === 'enriched' ? 'bg-green-500/20 text-[var(--admin-success)]' :
+                           result.status === 'enriched_by_ai' ? 'bg-purple-500/20 text-[var(--admin-special)]' :
                            result.status === 'ambiguous' ? 'bg-[hsl(var(--secondary))] text-[hsl(var(--foreground))]' :
-                           result.status === 'not_found' ? 'bg-yellow-500/20 text-amber-700' :
-                           result.status === 'already_enriched' ? 'bg-blue-500/20 text-blue-700' :
+                           result.status === 'not_found' ? 'bg-yellow-500/20 text-[var(--admin-warning)]' :
+                           result.status === 'already_enriched' ? 'bg-blue-500/20 text-primary' :
                            'bg-red-500/20 text-destructive'}">
                           {result.status === 'enriched' ? t('admin.metadata.statusEnrichedMB') :
                            result.status === 'enriched_by_ai' ? t('admin.metadata.statusEnrichedAI') :
@@ -1272,7 +1273,7 @@
             <div class="rounded-lg p-4 {librarySyncTask.status === 'running' ? 'bg-blue-500/10 border border-blue-500/30' : librarySyncTask.status === 'completed' ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}">
               {#if librarySyncTask.status === "running"}
                 <div class="flex items-center justify-between mb-2">
-                  <h4 class="text-sm font-semibold text-blue-700 flex items-center gap-2">
+                  <h4 class="text-sm font-semibold text-primary flex items-center gap-2">
                     <div class="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
                     {t('admin.libSync.taskRunning')}
                   </h4>
@@ -1289,7 +1290,7 @@
               {:else if librarySyncTask.status === "completed"}
                 <div class="flex items-center justify-between">
                   <div>
-                    <h4 class="text-sm font-semibold text-green-700">{t('admin.libSync.taskCompleted')}</h4>
+                    <h4 class="text-sm font-semibold text-[var(--admin-success)]">{t('admin.libSync.taskCompleted')}</h4>
                     <p class="text-sm text-[hsl(var(--muted-foreground))]">
                       {librarySyncTask.result.tracks_synced} {t('admin.libSync.tracksSynced')} — {t('admin.libSync.duration')}: {librarySyncTask.result.duration_secs}s
                     </p>
@@ -1345,25 +1346,25 @@
           {#if librarySyncOverview}
             <!-- Overview cards -->
             <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.localTracks')}</p>
-                <p class="text-3xl font-bold mt-1">{librarySyncOverview.local_track_count}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.libSync.localTracks')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{librarySyncOverview.local_track_count}</p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.totalPeers')}</p>
-                <p class="text-3xl font-bold mt-1">{librarySyncOverview.total_peers}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.libSync.totalPeers')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{librarySyncOverview.total_peers}</p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.syncedPeers')}</p>
-                <p class="text-3xl font-bold mt-1 text-green-700">{librarySyncOverview.synced_peers}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.libSync.syncedPeers')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-[var(--admin-success)]">{librarySyncOverview.synced_peers}</p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.partialPeers')}</p>
-                <p class="text-3xl font-bold mt-1 text-amber-700">{librarySyncOverview.partial_peers}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.libSync.partialPeers')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-[var(--admin-warning)]">{librarySyncOverview.partial_peers}</p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.libSync.notSyncedPeers')}</p>
-                <p class="text-3xl font-bold mt-1 text-destructive">{librarySyncOverview.not_synced_peers}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.libSync.notSyncedPeers')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-destructive">{librarySyncOverview.not_synced_peers}</p>
               </div>
             </div>
 
@@ -1412,9 +1413,9 @@
                         </td>
                         <td class="p-3 text-center">
                           {#if peer.sync_state === "synced"}
-                            <span class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-700">{t('admin.libSync.stateSynced')}</span>
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-[var(--admin-success)]">{t('admin.libSync.stateSynced')}</span>
                           {:else if peer.sync_state === "partial"}
-                            <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-amber-700">{t('admin.libSync.statePartial')}</span>
+                            <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-[var(--admin-warning)]">{t('admin.libSync.statePartial')}</span>
                           {:else if peer.sync_state === "not_synced"}
                             <span class="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-destructive">{t('admin.libSync.stateNotSynced')}</span>
                           {:else if peer.sync_state === "offline"}
@@ -1426,7 +1427,7 @@
                         <td class="p-3 text-right">
                           <button
                             class="text-xs px-3 py-1.5 rounded transition font-medium disabled:opacity-50 {librarySyncResyncingPeer === peer.node_id
-                              ? 'bg-blue-500/20 text-blue-700 cursor-wait'
+                              ? 'bg-blue-500/20 text-primary cursor-wait'
                               : 'bg-[hsl(var(--primary))]/20 text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary))]/30'}"
                             disabled={!peer.is_online || librarySyncResyncingPeer !== null || librarySyncTask?.status === "running"}
                             onclick={async () => {
@@ -1511,14 +1512,14 @@
                     <td class="p-3 text-center text-xs uppercase">{rt.format ?? "—"}</td>
                     <td class="p-3 text-center">
                       {#if rt.is_available}
-                        <span class="text-green-700 text-xs font-medium">{t('admin.remote.online')}</span>
+                        <span class="text-[var(--admin-success)] text-xs font-medium">{t('admin.remote.online')}</span>
                       {:else}
                         <span class="text-destructive text-xs font-medium">{t('admin.remote.offline')}</span>
                       {/if}
                     </td>
                     <td class="p-3 text-center">
                       {#if rt.local_track_id}
-                        <span class="text-blue-700 text-xs" title="{t('admin.remote.colLinked')}">{t('common.yes')}</span>
+                        <span class="text-primary text-xs" title="{t('admin.remote.colLinked')}">{t('common.yes')}</span>
                       {:else}
                         <span class="text-[hsl(var(--muted-foreground))] text-xs">{t('common.no')}</span>
                       {/if}
@@ -1538,7 +1539,7 @@
                         </button>
                       {:else}
                         <button
-                          class="text-xs text-green-700 hover:text-green-300 font-medium transition"
+                          class="text-xs text-[var(--admin-success)] hover:text-green-300 font-medium transition"
                           onclick={async () => {
                             try {
                               await api.patch(`/admin/p2p/tracks/${rt.id}/rereference`);
@@ -1563,7 +1564,7 @@
 
       <!-- Settings -->
       {#if activeTab === "settings"}
-        <div class="mb-4 rounded-lg border border-border bg-card p-5">
+        <div class="admin-panel mb-4">
           <label class="flex items-center justify-between gap-4">
             <span class="text-sm font-semibold">{t("webradios.instanceSetting")}</span>
             <input type="checkbox" role="switch" class="size-5 accent-primary" disabled={savingWebradios}
@@ -1578,7 +1579,7 @@
           </label>
         </div>
         <!-- Private Instance Toggle -->
-        <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-5 mb-4">
+        <div class="admin-panel mb-4">
           <div class="flex items-center justify-between">
             <div>
               <h3 class="text-sm font-semibold">{t('admin.settings.privateInstance')}</h3>
@@ -1614,7 +1615,7 @@
           {/if}
         </div>
 
-        <div class="mb-4 rounded-lg border border-border bg-card p-5">
+        <div class="admin-panel mb-4">
           <label class="flex items-center justify-between gap-4">
             <span><strong class="block text-sm font-semibold">{t("setup.openRegistrations")}</strong>
               <span class="mt-1 block text-xs text-muted-foreground">{t("setup.openRegistrationsHint")}</span>
@@ -1632,7 +1633,7 @@
         </div>
 
         <!-- Public Listing Toggle -->
-        <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-5 mb-4">
+        <div class="admin-panel mb-4">
           <div class="flex items-center justify-between">
             <div>
               <h3 class="text-sm font-semibold">{t('admin.settings.publicListing')}</h3>
@@ -1674,7 +1675,7 @@
                   {t('admin.settings.listingDomainLocalError')}
                 </div>
               {:else if listingStatus.status === 'ok'}
-                <div class="mt-3 flex items-center gap-2 text-xs text-green-700 bg-green-500/10 rounded-md px-3 py-2">
+                <div class="mt-3 flex items-center gap-2 text-xs text-[var(--admin-success)] bg-green-500/10 rounded-md px-3 py-2">
                   <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
                   <div>
                     <span>{t('admin.settings.listingStatusOk')}</span>
@@ -1774,7 +1775,7 @@
         </div>
 
         <div class="bg-[hsl(var(--card))] rounded-lg divide-y divide-[hsl(var(--border))]">
-          {#each settings.filter(setting => setting.key !== "open_registrations" && setting.key !== "webradios_enabled") as setting}
+          {#each settings.filter(setting => setting.key !== "open_registrations" && setting.key !== "webradios_enabled") as setting (setting.key)}
             <div class="p-4 flex items-center justify-between gap-4">
               <div class="min-w-0">
                 <p class="font-mono text-sm">{setting.key}</p>
@@ -1784,7 +1785,7 @@
                   <button
                     class="px-3 py-1 rounded text-sm font-medium transition
                       {setting.value === 'true'
-                        ? 'bg-green-500/20 text-green-700 hover:bg-green-500/30'
+                        ? 'bg-green-500/20 text-[var(--admin-success)] hover:bg-green-500/30'
                         : 'bg-red-500/20 text-destructive hover:bg-red-500/30'}"
                     onclick={() => updateSetting(setting.key, setting.value === "true" ? "false" : "true")}
                   >
@@ -1898,7 +1899,7 @@
                     {#if instance.is_blocked}
                       <span class="text-destructive text-xs font-medium">{t('admin.instances.blocked')}</span>
                     {:else}
-                      <span class="text-green-700 text-xs font-medium">{t('admin.instances.active')}</span>
+                      <span class="text-[var(--admin-success)] text-xs font-medium">{t('admin.instances.active')}</span>
                     {/if}
                   </td>
                 </tr>
@@ -1917,15 +1918,15 @@
           {#if p2pStatus}
             <!-- Status + Node ID -->
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.title')}</p>
-                <p class="text-3xl font-bold mt-1 {p2pStatus.enabled ? 'text-green-700' : 'text-[hsl(var(--muted-foreground))]'}">
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.p2p.title')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight {p2pStatus.enabled ? 'text-[var(--admin-success)]' : 'text-[hsl(var(--muted-foreground))]'}">
                   {p2pStatus.enabled ? t('admin.p2p.enabled') : t('admin.p2p.disabled')}
                 </p>
               </div>
               {#if p2pStatus.node_id}
-                <div class="bg-[hsl(var(--card))] rounded-lg p-5 sm:col-span-3">
-                  <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.nodeId')}</p>
+                <div class="admin-panel sm:col-span-3">
+                  <p class="text-xs font-medium text-muted-foreground">{t('admin.p2p.nodeId')}</p>
                   <p class="text-sm font-mono mt-1 truncate select-all">{p2pStatus.node_id}</p>
                 </div>
               {/if}
@@ -1933,37 +1934,37 @@
 
             <!-- Relay + Connection Info -->
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5 sm:col-span-2">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.relayUrl')}</p>
+              <div class="admin-panel sm:col-span-2">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.p2p.relayUrl')}</p>
                 {#if p2pStatus.relay_connected && p2pStatus.relay_url}
-                  <p class="text-sm font-mono mt-1 text-green-700 truncate">{p2pStatus.relay_url}</p>
+                  <p class="text-sm font-mono mt-1 text-[var(--admin-success)] truncate">{p2pStatus.relay_url}</p>
                 {:else}
                   <p class="text-sm mt-1 text-[hsl(var(--muted-foreground))] italic">{t('admin.p2p.relayDisconnected')}</p>
                 {/if}
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Relay</p>
-                <p class="text-xl font-bold mt-1 {p2pStatus.relay_connected ? 'text-green-700' : 'text-destructive'}">
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">Relay</p>
+                <p class="text-xl font-bold mt-1 {p2pStatus.relay_connected ? 'text-[var(--admin-success)]' : 'text-destructive'}">
                   {p2pStatus.relay_connected ? t('admin.p2p.relayConnected') : t('admin.p2p.relayDisconnected')}
                 </p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.directAddresses')}</p>
-                <p class="text-3xl font-bold mt-1">{p2pStatus.direct_addresses}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.p2p.directAddresses')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{p2pStatus.direct_addresses}</p>
               </div>
             </div>
 
             <!-- Discovery -->
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.dhtDiscovery')}</p>
-                <p class="text-xl font-bold mt-1 {p2pStatus.dht_discovery_enabled ? 'text-green-700' : 'text-[hsl(var(--muted-foreground))]'}">
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.p2p.dhtDiscovery')}</p>
+                <p class="text-xl font-bold mt-1 {p2pStatus.dht_discovery_enabled ? 'text-[var(--admin-success)]' : 'text-[hsl(var(--muted-foreground))]'}">
                   {p2pStatus.dht_discovery_enabled ? t('admin.p2p.dhtEnabled') : t('admin.p2p.dhtDisabled')}
                 </p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.rendezvous')}</p>
-                <p class="text-xl font-bold mt-1 {p2pStatus.rendezvous_configured ? 'text-green-700' : 'text-[hsl(var(--muted-foreground))]'}">
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.p2p.rendezvous')}</p>
+                <p class="text-xl font-bold mt-1 {p2pStatus.rendezvous_configured ? 'text-[var(--admin-success)]' : 'text-[hsl(var(--muted-foreground))]'}">
                   {p2pStatus.rendezvous_configured ? t('admin.p2p.dhtEnabled') : t('admin.p2p.dhtDisabled')}
                 </p>
               </div>
@@ -1971,19 +1972,19 @@
 
             <!-- Peers -->
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.peers')}</p>
-                <p class="text-3xl font-bold mt-1">{p2pStatus.peer_count}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.p2p.peers')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{p2pStatus.peer_count}</p>
               </div>
-              <div class="bg-[hsl(var(--card))] rounded-lg p-5">
-                <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{t('admin.p2p.onlinePeers')}</p>
-                <p class="text-3xl font-bold mt-1 text-green-700">{p2pStatus.online_peer_count}</p>
+              <div class="admin-panel">
+                <p class="text-xs font-medium text-muted-foreground">{t('admin.p2p.onlinePeers')}</p>
+                <p class="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-[var(--admin-success)]">{p2pStatus.online_peer_count}</p>
               </div>
             </div>
           {/if}
 
           <!-- Add Peer -->
-          <div class="bg-[hsl(var(--card))] rounded-lg p-5">
+          <div class="admin-panel">
             <h3 class="text-sm font-medium mb-3">{t('admin.p2p.addPeer')}</h3>
             <div class="flex gap-2">
               <input
@@ -2022,7 +2023,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  {#each p2pPeers as peer}
+                  {#each p2pPeers as peer (peer.node_id)}
                     <tr class="border-b border-[hsl(var(--border))] last:border-b-0">
                       <td class="p-3 font-mono text-xs truncate max-w-[300px]">
                         {peer.name ? `${peer.name} (${peer.node_id.slice(0, 12)}…)` : peer.node_id}
@@ -2033,21 +2034,21 @@
                       <td class="p-3 text-center">{peer.track_count}</td>
                       <td class="p-3 text-center">
                         {#if peer.is_online}
-                          <span class="text-xs text-green-700">{t('admin.remote.online')}</span>
+                          <span class="text-xs text-[var(--admin-success)]">{t('admin.remote.online')}</span>
                         {:else}
                           <span class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.remote.offline')}</span>
                         {/if}
                       </td>
                       <td class="p-3 text-right space-x-2">
                         {#if peer.catalog_followed != null}
-                          <button type="button" disabled={changingPeer} class="text-xs text-blue-700 hover:underline disabled:opacity-50"
+                          <button type="button" disabled={changingPeer} class="text-xs text-primary hover:underline disabled:opacity-50"
                             aria-label={t(peer.catalog_followed ? "admin.p2p.unfollowCatalog" : "admin.p2p.followCatalog") + " · " + (peer.name || peer.node_id)}
                             onclick={() => changePeer(() => api.put(`/admin/p2p/peers/${encodeURIComponent(peer.node_id)}/subscription`, { followed: !peer.catalog_followed }))}>
                             {t(peer.catalog_followed ? "admin.p2p.unfollowCatalog" : "admin.p2p.followCatalog")}
                           </button>
                         {/if}
                         <button
-                          class="text-xs text-blue-700 hover:underline"
+                          class="text-xs text-primary hover:underline"
                           onclick={async () => {
                             try {
                               await api.post(`/admin/p2p/peers/${peer.node_id}/ping`);
@@ -2099,7 +2100,7 @@
             </div>
           {:else}
             <NetworkGraph bind:data={networkGraphData} />
-            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div class="admin-metrics">
               <div class="bg-[hsl(var(--card))] rounded-lg p-3 text-center">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase">{t('admin.graph.totalNodes')}</p>
                 <p class="text-2xl font-bold mt-1">{networkGraphData.nodes.length}</p>
@@ -2110,11 +2111,11 @@
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-3 text-center">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase">{t('admin.graph.peerCount')}</p>
-                <p class="text-2xl font-bold mt-1 text-purple-700">{networkGraphData.nodes.filter(n => n.node_type === 'peer').length}</p>
+                <p class="text-2xl font-bold mt-1 text-[var(--admin-special)]">{networkGraphData.nodes.filter(n => n.node_type === 'peer').length}</p>
               </div>
               <div class="bg-[hsl(var(--card))] rounded-lg p-3 text-center">
                 <p class="text-xs text-[hsl(var(--muted-foreground))] uppercase">{t('admin.graph.relayCount')}</p>
-                <p class="text-2xl font-bold mt-1 text-blue-700">{networkGraphData.nodes.filter(n => n.node_type === 'relay').length}</p>
+                <p class="text-2xl font-bold mt-1 text-primary">{networkGraphData.nodes.filter(n => n.node_type === 'relay').length}</p>
               </div>
             </div>
           {/if}
@@ -2148,7 +2149,7 @@
               <!-- Auto-refresh toggle -->
               <button
                 class="text-xs px-3 py-1.5 rounded border transition {p2pLogsAutoRefresh
-                  ? 'bg-green-500/20 border-green-500/30 text-green-700'
+                  ? 'bg-green-500/20 border-green-500/30 text-[var(--admin-success)]'
                   : 'bg-[hsl(var(--secondary))] border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))]'}"
                 onclick={() => {
                   p2pLogsAutoRefresh = !p2pLogsAutoRefresh;
@@ -2203,15 +2204,15 @@
                     <!-- Level badge -->
                     <span class="flex-shrink-0 w-14 text-center rounded px-1 py-0.5 font-bold {
                       entry.level === 'ERROR' ? 'bg-red-500/20 text-destructive' :
-                      entry.level === 'WARN' ? 'bg-yellow-500/20 text-amber-700' :
-                      entry.level === 'INFO' ? 'bg-blue-500/20 text-blue-700' :
+                      entry.level === 'WARN' ? 'bg-yellow-500/20 text-[var(--admin-warning)]' :
+                      entry.level === 'INFO' ? 'bg-blue-500/20 text-primary' :
                       entry.level === 'DEBUG' ? 'bg-gray-500/20 text-gray-400' :
                       'bg-gray-500/10 text-gray-500'
                     }">
                       {entry.level}
                     </span>
                     <!-- Target (shortened) -->
-                    <span class="text-purple-700 flex-shrink-0 whitespace-nowrap max-w-[180px] truncate" title={entry.target}>
+                    <span class="text-[var(--admin-special)] flex-shrink-0 whitespace-nowrap max-w-[180px] truncate" title={entry.target}>
                       {entry.target.replace('soundtime_p2p::', '').replace('iroh::', 'iroh/')}
                     </span>
                     <!-- Message + fields -->
@@ -2272,14 +2273,14 @@
                         <p class="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5 max-w-[150px] truncate" title={u.ban_reason}>{u.ban_reason}</p>
                       {/if}
                     {:else}
-                      <span class="text-xs text-green-700">{t('admin.users.active')}</span>
+                      <span class="text-xs text-[var(--admin-success)]">{t('admin.users.active')}</span>
                     {/if}
                   </td>
                   <td class="p-3 text-center">
                     {#if u.role !== "admin"}
                       {#if u.is_banned}
                         <button
-                          class="text-xs px-3 py-1 rounded bg-green-500/20 text-green-700 hover:bg-green-500/30 transition"
+                          class="text-xs px-3 py-1 rounded bg-green-500/20 text-[var(--admin-success)] hover:bg-green-500/30 transition"
                           onclick={() => unbanUser(u.id)}
                         >{t('admin.users.unban')}</button>
                       {:else}
@@ -2309,7 +2310,7 @@
       {#if activeTab === "editorial"}
       <div class="space-y-6">
         <!-- AI Configuration -->
-        <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6">
+        <div class="admin-panel">
           <h2 class="text-lg font-semibold mb-4">{t('admin.editorial.apiConfig')}</h2>
           <p class="text-sm text-[hsl(var(--muted-foreground))] mb-4">
             {t('admin.editorial.apiConfigDesc')}
@@ -2371,7 +2372,7 @@
               />
             </div>
             <button
-              class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition"
+              class="px-4 py-2 bg-[hsl(var(--primary))] text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition"
               onclick={() => saveEditorialSettings()}
             >
               {t('admin.editorial.saveConfig')}
@@ -2381,10 +2382,10 @@
 
         <!-- Generation Panel -->
         {#if editorialStatus?.ai_configured}
-          <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6">
+          <div class="admin-panel">
             <h2 class="text-lg font-semibold mb-4">{t('admin.editorial.playlistGeneration')}</h2>
 
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div class="admin-metrics mb-6">
               <div class="bg-[hsl(var(--secondary))] rounded-lg p-4 text-center">
                 <p class="text-2xl font-bold text-[hsl(var(--primary))]">{editorialStatus.playlist_count}</p>
                 <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.editorial.editorialPlaylists')}</p>
@@ -2407,13 +2408,13 @@
 
             {#if editorialStatus.needs_regeneration}
               <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 mb-4">
-                <p class="text-sm text-amber-700">{t('admin.editorial.regenerationNeeded')}</p>
+                <p class="text-sm text-[var(--admin-warning)]">{t('admin.editorial.regenerationNeeded')}</p>
               </div>
             {/if}
 
             <div class="flex gap-3">
               <button
-                class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50 flex items-center gap-2"
+                class="px-4 py-2 bg-[hsl(var(--primary))] text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50 flex items-center gap-2"
                 disabled={editorialGenerating}
                 onclick={() => generateEditorialPlaylists()}
               >
@@ -2437,7 +2438,7 @@
       <!-- Paroles (Lyrics) -->
       {#if activeTab === "lyrics"}
       <div class="space-y-6">
-        <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6">
+        <div class="admin-panel">
           <h2 class="text-lg font-semibold mb-4">{t('admin.lyrics.configTitle')}</h2>
           <p class="text-sm text-[hsl(var(--muted-foreground))] mb-4">
             {t('admin.lyrics.configDesc')}
@@ -2490,7 +2491,7 @@
             {/if}
 
             <button
-              class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50 flex items-center gap-2"
+              class="px-4 py-2 bg-[hsl(var(--primary))] text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50 flex items-center gap-2"
               disabled={lyricsSaving}
               onclick={() => saveLyricsSettings()}
             >
@@ -2511,20 +2512,20 @@
       <div class="space-y-6">
         <!-- Stats Cards -->
         {#if reportStats}
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-4 text-center">
-              <p class="text-2xl font-bold text-amber-700">{reportStats.pending}</p>
+          <div class="admin-metrics">
+            <div class="admin-panel text-center">
+              <p class="text-2xl font-bold text-[var(--admin-warning)]">{reportStats.pending}</p>
               <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.reports.pending')}</p>
             </div>
-            <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-4 text-center">
-              <p class="text-2xl font-bold text-green-700">{reportStats.resolved}</p>
+            <div class="admin-panel text-center">
+              <p class="text-2xl font-bold text-[var(--admin-success)]">{reportStats.resolved}</p>
               <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.reports.resolved')}</p>
             </div>
-            <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-4 text-center">
+            <div class="admin-panel text-center">
               <p class="text-2xl font-bold text-[hsl(var(--muted-foreground))]">{reportStats.dismissed}</p>
               <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.reports.dismissed')}</p>
             </div>
-            <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-4 text-center">
+            <div class="admin-panel text-center">
               <p class="text-2xl font-bold">{reportStats.total}</p>
               <p class="text-xs text-[hsl(var(--muted-foreground))]">{t('admin.reports.total')}</p>
             </div>
@@ -2535,7 +2536,7 @@
         <div class="flex gap-2">
           {#each [{ id: "all", label: t('admin.reports.filterAll') }, { id: "pending", label: t('admin.reports.filterPending') }, { id: "resolved", label: t('admin.reports.filterResolved') }, { id: "dismissed", label: t('admin.reports.filterDismissed') }] as f}
             <button
-              class="px-3 py-1.5 text-xs rounded-lg transition {reportFilter === f.id ? 'bg-[hsl(var(--primary))] text-white' : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] hover:text-foreground'}"
+              class="px-3 py-1.5 text-xs rounded-lg transition {reportFilter === f.id ? 'bg-[hsl(var(--primary))] text-primary-foreground' : 'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] hover:text-foreground'}"
               onclick={() => reportFilter = f.id}
             >{f.label}</button>
           {/each}
@@ -2562,7 +2563,7 @@
                   <td class="p-3 font-medium max-w-[180px] truncate">{report.track_title}</td>
                   <td class="p-3 text-[hsl(var(--muted-foreground))] max-w-[120px] truncate">{report.track_artist}</td>
                   <td class="p-3">
-                    <span class="text-xs px-2 py-0.5 rounded {report.is_local ? 'bg-green-500/20 text-green-700' : 'bg-blue-500/20 text-blue-700'}">
+                    <span class="text-xs px-2 py-0.5 rounded {report.is_local ? 'bg-green-500/20 text-[var(--admin-success)]' : 'bg-blue-500/20 text-primary'}">
                       {report.is_local ? t('admin.reports.local') : t('admin.reports.remote')}
                     </span>
                   </td>
@@ -2570,9 +2571,9 @@
                   <td class="p-3 text-xs text-[hsl(var(--muted-foreground))] max-w-[200px] truncate" title={report.reason}>{report.reason}</td>
                   <td class="p-3">
                     {#if report.status === "pending"}
-                      <span class="text-xs px-2 py-0.5 rounded bg-yellow-500/20 text-amber-700">{t('admin.reports.statusPending')}</span>
+                      <span class="text-xs px-2 py-0.5 rounded bg-yellow-500/20 text-[var(--admin-warning)]">{t('admin.reports.statusPending')}</span>
                     {:else if report.status === "resolved"}
-                      <span class="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-700">{t('admin.reports.statusResolved')}</span>
+                      <span class="text-xs px-2 py-0.5 rounded bg-green-500/20 text-[var(--admin-success)]">{t('admin.reports.statusResolved')}</span>
                     {:else}
                       <span class="text-xs px-2 py-0.5 rounded bg-gray-500/20 text-gray-400">{t('admin.reports.statusDismissed')}</span>
                     {/if}
@@ -2591,7 +2592,7 @@
                           {report.is_local ? t('admin.reports.delete') : t('admin.reports.unlist')}
                         </button>
                         <button
-                          class="px-2 py-1 text-xs rounded bg-green-500/20 text-green-700 hover:bg-green-500/30 transition"
+                          class="px-2 py-1 text-xs rounded bg-green-500/20 text-[var(--admin-success)] hover:bg-green-500/30 transition"
                           onclick={() => resolveReport(report.id, "resolved", "none")}
                         >{t('admin.reports.resolve')}</button>
                         <button
@@ -2613,7 +2614,7 @@
         </div>
 
         <!-- Browse Tracks Section -->
-        <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6">
+        <div class="admin-panel">
           <h2 class="text-lg font-semibold mb-4">{t('admin.reports.browseTitle')}</h2>
           <div class="flex gap-3 mb-4">
             <input
@@ -2624,7 +2625,7 @@
               onkeydown={(e) => { if (e.key === "Enter") { adminTrackPage = 1; loadBrowseTracks(); } }}
             />
             <button
-              class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition"
+              class="px-4 py-2 bg-[hsl(var(--primary))] text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition"
               onclick={() => { adminTrackPage = 1; loadBrowseTracks(); }}
             >{t('admin.reports.searchBtn')}</button>
           </div>
@@ -2647,7 +2648,7 @@
                     <td class="p-2 font-medium max-w-[200px] truncate">{tr.title}</td>
                     <td class="p-2 text-[hsl(var(--muted-foreground))]">{tr.artist_name}</td>
                     <td class="p-2">
-                      <span class="text-xs px-2 py-0.5 rounded {tr.is_local ? 'bg-green-500/20 text-green-700' : 'bg-blue-500/20 text-blue-700'}">
+                      <span class="text-xs px-2 py-0.5 rounded {tr.is_local ? 'bg-green-500/20 text-[var(--admin-success)]' : 'bg-blue-500/20 text-primary'}">
                         {tr.is_local ? t('admin.reports.local') : t('admin.reports.remote')}
                       </span>
                     </td>
@@ -2699,7 +2700,7 @@
       <!-- CGU / Terms of Service -->
       {#if activeTab === "tos"}
       <div class="space-y-6">
-        <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6">
+        <div class="admin-panel">
           <div class="flex items-center justify-between mb-4">
             <div>
               <h2 class="text-lg font-semibold">{t('admin.tos.title')}</h2>
@@ -2715,7 +2716,7 @@
           </div>
 
           {#if tosSuccess}
-            <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 mb-4 text-green-700 text-sm">{tosSuccess}</div>
+            <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3 mb-4 text-[var(--admin-success)] text-sm">{tosSuccess}</div>
           {/if}
 
           <textarea
@@ -2726,7 +2727,7 @@
 
           <div class="flex gap-3 mt-4">
             <button
-              class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
+              class="px-4 py-2 bg-[hsl(var(--primary))] text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
               disabled={tosSaving}
               onclick={() => saveTos()}
             >
@@ -2752,14 +2753,14 @@
       {#if activeTab === "plugins"}
       <div class="space-y-6">
         {#if pluginSuccess}
-          <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-4 text-green-700">
+          <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-4 text-[var(--admin-success)]">
             {pluginSuccess}
             <button class="ml-2 underline" onclick={() => (pluginSuccess = "")}>{t('common.close')}</button>
           </div>
         {/if}
 
         <!-- Install form -->
-        <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6">
+        <div class="admin-panel">
           <h2 class="text-lg font-semibold mb-1">{t('admin.plugins.install')}</h2>
           <p class="text-sm text-[hsl(var(--muted-foreground))] mb-4">{t('admin.plugins.installDescription')}</p>
           <div class="flex gap-3">
@@ -2770,7 +2771,7 @@
               class="flex-1 bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] rounded-lg px-4 py-2 text-sm"
             />
             <button
-              class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
+              class="px-4 py-2 bg-[hsl(var(--primary))] text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
               disabled={pluginInstalling || !pluginInstallUrl.trim()}
               onclick={installPlugin}
             >
@@ -2789,14 +2790,14 @@
         {:else}
           <div class="space-y-3">
             {#each plugins as plugin (plugin.id)}
-              <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-5">
+              <div class="admin-panel">
                 <div class="flex items-start justify-between">
                   <div class="flex-1 min-w-0">
                     <div class="flex items-center gap-3">
                       <h3 class="font-semibold text-base">{plugin.name}</h3>
                       <span class="text-xs font-mono text-[hsl(var(--muted-foreground))]">v{plugin.version}</span>
                       <span class="px-2 py-0.5 rounded-full text-xs font-medium {
-                        plugin.status === 'enabled' ? 'bg-green-500/15 text-green-700' :
+                        plugin.status === 'enabled' ? 'bg-green-500/15 text-[var(--admin-success)]' :
                         plugin.status === 'error' ? 'bg-red-500/15 text-destructive' :
                         'bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))]'
                       }">
@@ -2850,7 +2851,7 @@
 
         <!-- Plugin detail panel (config + logs) -->
         {#if selectedPlugin}
-          <div class="bg-[hsl(var(--card))] rounded-lg border border-[hsl(var(--border))] p-6 space-y-6">
+          <div class="admin-panel space-y-6">
             <div class="flex items-center justify-between">
               <h2 class="text-lg font-semibold">{selectedPlugin.name} — {t('admin.plugins.configure')}</h2>
               <button class="text-sm text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] underline" onclick={() => (selectedPlugin = null)}>{t('common.close')}</button>
@@ -2932,7 +2933,7 @@
                 >{t('admin.plugins.addConfig')}</button>
               </div>
               <button
-                class="mt-3 px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition"
+                class="mt-3 px-4 py-2 bg-[hsl(var(--primary))] text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition"
                 onclick={savePluginConfig}
               >{t('admin.plugins.saveConfig')}</button>
             </div>
@@ -2960,9 +2961,9 @@
                           <td class="py-2 px-2 font-mono">{log.event_name}</td>
                           <td class="py-2 px-2">
                             <span class="px-1.5 py-0.5 rounded text-[10px] font-medium {
-                              log.result === 'success' ? 'bg-green-500/15 text-green-700' :
+                              log.result === 'success' ? 'bg-green-500/15 text-[var(--admin-success)]' :
                               log.result === 'error' ? 'bg-red-500/15 text-destructive' :
-                              'bg-yellow-500/15 text-amber-700'
+                              'bg-yellow-500/15 text-[var(--admin-warning)]'
                             }">{log.result}</span>
                           </td>
                           <td class="py-2 px-2 text-right font-mono">{log.execution_time_ms}ms</td>
@@ -3003,7 +3004,7 @@
 
         <!-- Success banner -->
         {#if themeSuccess}
-          <div class="bg-green-500/10 border border-green-500/30 text-green-700 px-4 py-3 rounded-lg text-sm">
+          <div class="bg-green-500/10 border border-green-500/30 text-[var(--admin-success)] px-4 py-3 rounded-lg text-sm">
             {themeSuccess}
           </div>
         {/if}
@@ -3022,7 +3023,7 @@
             <button
               onclick={installTheme}
               disabled={themeInstalling || !themeInstallUrl.trim()}
-              class="px-4 py-2 bg-[hsl(var(--primary))] text-white rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
+              class="px-4 py-2 bg-[hsl(var(--primary))] text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition disabled:opacity-50"
             >
               {themeInstalling ? t("admin.themes.installing") : t("admin.themes.install")}
             </button>
@@ -3046,7 +3047,7 @@
                       <h3 class="font-medium">{theme.name}</h3>
                       <span class="text-xs text-[hsl(var(--muted-foreground))]">v{theme.version}</span>
                       {#if theme.status === "enabled"}
-                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-green-500/20 text-green-700 font-medium">
+                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-green-500/20 text-[var(--admin-success)] font-medium">
                           {t("admin.themes.activeIndicator")}
                         </span>
                       {:else}
@@ -3116,3 +3117,23 @@
     </div>
   {/if}
 </div>
+
+<style>
+  .admin { container: administration / inline-size; --admin-success: light-dark(#206740,#8ad5aa); --admin-warning: light-dark(#86500e,#ebbc75); --admin-special: light-dark(#68409c,#cda9f3); }
+  .admin-layout { display: grid; grid-template-columns: minmax(0,1fr); gap: 1.25rem; min-width: 0; }
+  .admin-navigation { display: none; }
+  .admin-content { min-width: 0; container: admin-content / inline-size; }
+  .admin-metrics { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,9.25rem),1fr)); gap: .7rem; }
+  .admin-panel { min-width: 0; padding: 1.05rem; border: 1px solid var(--glass-edge); border-radius: .9rem; background: var(--glass-panel); }
+  .admin-metrics .admin-panel { padding: .95rem; }
+  .admin-navigation p { font-size: .74rem; font-weight: 550; }
+  .admin-content :global(h2) { font-size: 1.16rem; line-height: 1.32; font-weight: 625; letter-spacing: -.02em; }
+  @container administration (min-width: 55rem) {
+    .admin-layout { grid-template-columns: 10.2rem minmax(0,1fr); gap: 1.6rem; }
+    .admin-select { display: none; }
+    .admin-navigation { display: block; padding-right: .7rem; border-right: 1px solid hsl(var(--border)); }
+  }
+  @container admin-content (max-width: 35rem) {
+    .admin-content :global(table) { font-size: .78rem; }
+  }
+</style>

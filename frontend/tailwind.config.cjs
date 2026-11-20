@@ -2,7 +2,7 @@ const tokens = [
   "background", "foreground", "card", "card-foreground", "popover", "popover-foreground",
   "primary", "primary-foreground", "secondary", "secondary-foreground", "accent",
   "accent-foreground", "muted", "muted-foreground", "destructive", "destructive-foreground",
-  "border", "input", "ring", "sidebar",
+  "border", "input", "ring", "sidebar", "link",
 ];
 
 /** @type {import('tailwindcss').Config} */

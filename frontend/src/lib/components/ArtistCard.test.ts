@@ -35,8 +35,8 @@ describe('ArtistCard', () => {
     expect(link).toHaveAttribute('href', '/artists/artist-1');
   });
 
-  it('shows Artist label', () => {
-    render(ArtistCard, { props: { artist } });
-    expect(screen.getByText('Artist')).toBeInTheDocument();
+  it('shows the artist biography when the library has one', () => {
+    render(ArtistCard, { props: { artist: { ...artist, bio: 'An independent jazz quartet.' } } });
+    expect(screen.getByText('An independent jazz quartet.')).toBeInTheDocument();
   });
 });

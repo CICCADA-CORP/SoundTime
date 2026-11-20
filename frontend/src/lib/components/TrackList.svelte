@@ -1,6 +1,7 @@
 <script lang="ts">
   import { CircleHelp, Ellipsis, Flag, ListEnd, ListPlus, ListStart, Pause, Play, Radio, Share2, Sparkles, ListMinus } from "lucide-svelte";
   import { tick } from "svelte";
+  import { Portal } from "bits-ui";
   import type { PlaybackSource, Track } from "$lib/types";
   import { availabilityLabel, canPlay } from "$lib/catalog/availability";
   import { api } from "$lib/api";
@@ -12,6 +13,7 @@
   import { favoriteQuery } from "$lib/catalog/favorites.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import FavoriteButton from "./FavoriteButton.svelte";
+  import CatalogArtwork from "./catalog/CatalogArtwork.svelte";
   import TrackActions, { type TrackDialog } from "./catalog/TrackActions.svelte";
 
   let { tracks = [], showAlbum = true, showArtist = true, source = "collection", compact, onremove }: {
@@ -83,7 +85,7 @@
   {#if likes.failed}
     <div role="status" class="mb-2 flex flex-wrap gap-2 text-xs text-muted-foreground">{t("favorites.unavailable")} <button class="underline" onclick={likes.retry}>{t("radio.tryAgain")}</button></div>
   {/if}
-  <div class="track-line heading text-xs text-muted-foreground">
+  <div class="track-line heading text-muted-foreground">
     <span>#</span><span>{t("track.title")}</span>
     {#if !compactRows}
       <span class="album">{showAlbum ? t("track.album") : showArtist ? t("track.artist") : ""}</span>
@@ -94,17 +96,22 @@
   {#each tracks as track, index (track.id + ":" + (track.position ?? index))}
     {@const active = player.currentTrack?.id === track.id}
     {@const unavailable = !canPlay(track)}
-    <div role="group" aria-label={track.title} class:unavailable data-availability={track.availability} class="track-line group relative border-b border-border/70 text-sm {active ? 'bg-primary/5' : 'hover:bg-secondary/65'}"
+    <div role="group" aria-label={track.title} class:unavailable data-availability={track.availability} class="track-line track group relative text-sm {active ? 'bg-primary/5' : 'hover:bg-secondary/65'}"
       oncontextmenu={(e) => openMenu(e, track)}>
       <button type="button" disabled={unavailable} aria-label={t("track.play") + " " + track.title} class="play-cell {active ? 'text-primary' : 'text-muted-foreground'}"
         onclick={() => play(index)}>
         <span class="track-number">{source === "playlist" ? (track.position ?? index) + 1 : track.track_number ?? index + 1}</span>
         <span class="play-icon">{#if active && player.isPlaying}<Pause size={14} fill="currentColor" />{:else}<Play size={14} fill="currentColor" />{/if}</span>
       </button>
-      <div class="min-w-0">
-        <a class="block truncate font-medium hover:underline {active ? 'text-primary' : ''}" href="/tracks/{track.id}">{track.title}</a>
-        {#if unavailable}<span class="block text-xs text-muted-foreground">{availabilityLabel(track)}</span>{/if}
-        {#if showArtist && track.artist_name}<span class="block truncate text-xs text-muted-foreground">{track.artist_name}</span>{/if}
+      <div class="identity">
+        {#if source !== "album"}
+          <span class="thumbnail" aria-hidden="true"><CatalogArtwork artworkId={track.album_id ?? track.id} kind="album" source={track.cover_url} title={track.title} /></span>
+        {/if}
+        <div class="min-w-0">
+          <a class="block truncate font-medium hover:underline {active ? 'text-primary' : ''}" href="/tracks/{track.id}">{track.title}</a>
+          {#if unavailable}<span class="block truncate text-xs text-muted-foreground">{availabilityLabel(track)}</span>{/if}
+          {#if showArtist && track.artist_name}<span class="block truncate text-xs text-muted-foreground">{track.artist_name}</span>{/if}
+        </div>
       </div>
       {#if !compactRows}
         <div class="album truncate text-muted-foreground">
@@ -119,7 +126,7 @@
           {:else}—{/if}
         </span>
       {/if}
-      <span class="text-right text-xs tabular-nums text-muted-foreground">{formatDuration(track.duration_secs)}</span>
+      <span class="duration text-right text-xs tabular-nums text-muted-foreground">{formatDuration(track.duration_secs)}</span>
       <span class="like">
         {#if auth.user}<FavoriteButton trackId={track.id} disabled={likes.loading || likes.failed} liked={likedIds.has(track.id)} size={15} />{/if}
       </span>
@@ -131,7 +138,8 @@
 
 {#if menu}
   {@const track = menu.track}
-  <div role="menu" aria-label={t("track.options")} class="track-menu fixed z-[200] max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-xl border border-border bg-popover p-1 shadow-xl"
+  <Portal>
+  <div role="menu" aria-label={t("track.options")} class="track-menu fixed z-[200] max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-xl border border-border bg-popover p-1 shadow-lg"
     style:left={menu.x + "px"} style:top={menu.y + "px"} bind:this={menuElement}>
     <button role="menuitem" disabled={!canPlay(track)} onclick={() => { queue.addNext(track); closeMenu(true); }}><ListStart size={16} />{t("track.playNext")}</button>
     <button role="menuitem" disabled={!canPlay(track)} onclick={() => { queue.addToQueue(track); closeMenu(true); }}><ListEnd size={16} />{t("track.addToQueue")}</button>
@@ -143,6 +151,7 @@
     <button role="menuitem" onclick={() => openDialog("share")}><Share2 size={16} />{t("track.share")}</button>
     {#if auth.isAuthenticated}<button role="menuitem" class="text-destructive" onclick={() => openDialog("report")}><Flag size={16} />{t("track.report")}</button>{/if}
   </div>
+  </Portal>
 {/if}
 {#if dialog}
   <TrackActions track={dialog.track} action={dialog.action} close={() => { dialog?.origin?.focus(); dialog = null; }} />
@@ -153,8 +162,14 @@
   .unavailable .play-cell { opacity: 0.45; }
   .track-menu button:disabled { opacity: 0.5; }
   .track-table { container-type: inline-size; }
-  .track-line { display: grid; align-items: center; gap: .55rem; padding: .45rem .4rem; grid-template-columns: 1.75rem minmax(0,1fr) 2.7rem 2rem 2rem; }
-  .heading { border-bottom: 1px solid hsl(var(--border)); padding-block: .5rem; }
+  .track-line { display: grid; align-items: center; gap: .45rem; padding: .4rem .24rem; grid-template-columns: 1.35rem minmax(0,1fr) 2.3rem 1.5rem 1.9rem; }
+  .track { min-height: 2.95rem; border-bottom: 1px solid hsl(var(--foreground) / .07); }
+  .track:last-child { border-bottom-color: transparent; }
+  .identity { display: flex; min-width: 0; align-items: center; gap: .65rem; }
+  .thumbnail { display: block; width: 2.25rem; aspect-ratio: 1; flex: none; border-radius: .4rem; }
+  .duration, .plays, .quality { font-variant-numeric: tabular-nums; }
+  .track-number { font-size: .735rem; font-variant-numeric: tabular-nums; }
+  .heading { font-size: .735rem; font-weight: 550; border-bottom: 1px solid hsl(var(--foreground) / .16); padding-block: .45rem; }
   .heading > :first-child { text-align: center; }
   .album, .plays, .quality { display: none; }
   .like { display: grid; place-items: center; }
@@ -164,8 +179,9 @@
   .play-icon { display: none; }
   .track-line:hover .track-number, .play-cell:focus-visible .track-number { display: none; }
   .track-line:hover .play-icon, .play-cell:focus-visible .play-icon { display: block; }
-  .track-menu button { display: flex; align-items: center; gap: .65rem; width: 100%; border-radius: .4rem; padding: .5rem .7rem; font-size: .875rem; text-align: left; }
+  .track-menu button { display: flex; align-items: center; gap: .65rem; width: 100%; border-radius: .5rem; padding: .5rem .7rem; font-size: .875rem; text-align: left; }
   .track-menu button:hover, .track-menu button:focus-visible { background: hsl(var(--secondary)); }
+  @container (max-width: 22rem) { .thumbnail { width: 1.75rem; } .identity { gap: .35rem; } }
   @container (min-width: 420px) {
     .track-line { grid-template-columns: 1.75rem minmax(0,1fr) 3rem 1.5rem 2rem; }
   }

@@ -275,11 +275,11 @@
             {t('admin.sync.cleanEmpty')}
           </AlertDialog.Trigger>
           <AlertDialog.Portal>
-            <AlertDialog.Overlay class="fixed inset-0 z-[201] bg-black/40" />
+            <AlertDialog.Overlay class="ui-overlay z-[201]" />
             <AlertDialog.Content onCloseAutoFocus={event => {
               event.preventDefault();
               cleanupTrigger?.focus();
-            }} class="fixed left-1/2 top-1/2 z-[202] w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 -translate-y-1/2 space-y-4 rounded-xl border bg-background p-6 shadow-lg">
+            }} class="ui-dialog z-[202] space-y-4">
               <AlertDialog.Title class="text-lg font-semibold">{t('admin.sync.cleanEmpty')}</AlertDialog.Title>
               <AlertDialog.Description class="text-sm text-muted-foreground">
                 {t('admin.sync.confirmEmpty', { sources: confirmedSources.join(', ') })}

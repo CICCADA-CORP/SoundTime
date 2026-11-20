@@ -4,16 +4,17 @@
   import { Tabs } from "bits-ui";
   import { ArrowRight, ChevronRight, Search } from "lucide-svelte";
   import { homeApi } from "$lib/api";
-  import { selectCatalogPage } from "$lib/catalog/pagination";
   import { catalogQuery } from "$lib/catalog/query.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import ArtistCard from "$lib/components/ArtistCard.svelte";
+  import CatalogHeader from "$lib/components/catalog/CatalogHeader.svelte";
   import CatalogState from "$lib/components/catalog/CatalogState.svelte";
   import ExploreEditorial from "$lib/components/catalog/ExploreEditorial.svelte";
   import ExploreGenres from "$lib/components/catalog/ExploreGenres.svelte";
   import ExploreRecent from "$lib/components/catalog/ExploreRecent.svelte";
   import ExploreTrending from "$lib/components/catalog/ExploreTrending.svelte";
   import RecordShelf from "$lib/components/catalog/RecordShelf.svelte";
+  import SectionHeading from "$lib/components/catalog/SectionHeading.svelte";
 
   const tabs = [
     ["new", "explore.newInCatalog"], ["trending", "explore.trending"], ["artists", "explore.artists"],
@@ -34,17 +35,17 @@
 <svelte:head><title>{t("explore.title")} — SoundTime</title></svelte:head>
 
 <div class="explore">
-  <header class="explore-heading">
-    <h1>{t("explore.title")}</h1>
+  <div class="explore-heading">
+    <CatalogHeader title={t("explore.title")} />
     <form class="catalog-search" role="search" action="/search" method="GET" onsubmit={search}>
       <Search size={19} strokeWidth={1.7} aria-hidden="true" />
       <input name="q" type="search" bind:value={query} aria-label={t("explore.searchCatalog")}
         placeholder={t("explore.searchHint")} autocomplete="off" enterkeyhint="search" required />
       <button type="submit" aria-label={t("common.search")} disabled={!query.trim()}><ArrowRight size={17} /></button>
     </form>
-  </header>
+  </div>
 
-  <Tabs.Root value={active} onValueChange={(id) => { if (id !== active) void selectCatalogPage(1, id); }}>
+  <Tabs.Root value={active} onValueChange={(id) => { if (id !== active) void goto("/explore?tab=" + encodeURIComponent(id), { reset: false }); }}>
     <Tabs.List class="explore-tabs" aria-label={t("explore.title")}>
       {#each tabs as [id, label] (id)}
         <Tabs.Trigger class="explore-tab" value={id}>{t(label)}</Tabs.Trigger>
@@ -56,10 +57,7 @@
       {#if active === "trending"}<ExploreTrending />{/if}
     </Tabs.Content>
     <Tabs.Content class="explore-panel" value="artists" tabindex={-1}>
-      <div class="panel-heading">
-        <h2>{t("explore.discoverArtists")}</h2>
-        <a class="more" href="/artists">{t("explore.allArtists")} <ChevronRight size={15} /></a>
-      </div>
+      <SectionHeading title={t("explore.discoverArtists")} href="/artists" linkLabel={t("explore.allArtists")} />
       {#if artists.data?.data.length}
         <RecordShelf>{#each artists.data.data as artist (artist.id)}<ArtistCard {artist} />{/each}</RecordShelf>
       {:else}
@@ -79,28 +77,26 @@
 </div>
 
 <style>
-  .explore { width: 100%; max-width: 72rem; }
+  .explore { width: 100%; min-width: 0; container-type: inline-size; }
   .explore-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px 32px; margin-bottom: 24px; }
-  h1 { font-size: clamp(1.65rem, 2.4vw, 2rem); line-height: 1.14; font-weight: 620; letter-spacing: -.045em; }
-  .catalog-search { width: min(100%, 27rem); display: flex; align-items: center; gap: 10px; border: 1px solid hsl(var(--input)); border-radius: 9px; padding: 0 5px 0 12px; color: hsl(var(--muted-foreground)); }
+  .catalog-search { width: min(100%, 22rem); display: flex; align-items: center; gap: 10px; background: hsl(var(--card) / .52); border: 1px solid hsl(var(--border)); border-radius: var(--radius-control, .65rem); padding: 0 5px 0 12px; color: hsl(var(--muted-foreground)); }
   .catalog-search:focus-within { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
   .catalog-search input { flex: 1; min-width: 0; height: 42px; background: transparent; color: hsl(var(--foreground)); outline: none; font-size: .9375rem; }
-  .catalog-search button { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 6px; background: hsl(var(--foreground)); color: hsl(var(--background)); }
+  .catalog-search button { display: grid; place-items: center; width: 34px; height: 34px; border-radius: .45rem; background: hsl(var(--foreground)); color: hsl(var(--background)); }
   .catalog-search button:disabled { display: none; }
-  .explore :global(.explore-tabs) { display: flex; gap: clamp(12px, 2.2vw, 26px); overflow-x: auto; border-bottom: 1px solid hsl(var(--border)); }
-  .explore :global(.explore-tab) { flex: none; padding: 10px 1px; border-bottom: 2px solid transparent; color: hsl(var(--muted-foreground)); font-size: .875rem; font-weight: 520; }
-  .explore :global(.explore-tab[data-state="active"]) { color: hsl(var(--foreground)); border-color: currentColor; }
+  .explore :global(.explore-tabs) { display: flex; width: fit-content; max-width: 100%; gap: 3px; padding: 3px; overflow-x: auto;
+    border-radius: var(--radius-control, .65rem); background: hsl(var(--muted) / .65); }
+  .explore :global(.explore-tab) { flex: none; padding: .45rem .75rem; border-radius: calc(var(--radius-control, .65rem) - 2px); color: hsl(var(--muted-foreground)); font-size: .875rem; font-weight: 540; }
+  .explore :global(.explore-tab[data-state="active"]) { background: hsl(var(--card) / .86); color: hsl(var(--foreground)); box-shadow: 0 1px 4px hsl(var(--foreground) / .1); }
   .explore :global(.explore-tab:focus-visible) { outline-offset: -3px; }
   .explore :global(.explore-panel) { padding-top: 24px; }
-  .panel-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
-  .panel-heading h2 { font-size: 1.125rem; font-weight: 600; letter-spacing: -.025em; }
-  .more { display: inline-flex; align-items: center; gap: 2px; color: hsl(var(--muted-foreground)); font-size: .8125rem; }
+  .more { display: inline-flex; align-items: center; gap: 2px; color: hsl(var(--primary)); font-size: .8125rem; }
   .more:hover { text-decoration: underline; color: hsl(var(--foreground)); }
-  @media (max-width: 480px) {
-    .explore :global(.explore-tabs) { gap: 8px; justify-content: space-between; }
-    .explore :global(.explore-tab) { font-size: .8125rem; }
+  @container (max-width: 480px) {
+    .explore :global(.explore-tabs) { gap: 0; }
+    .explore :global(.explore-tab) { font-size: .78rem; padding: .5rem .55rem; }
   }
-  @media (max-width: 600px) {
+  @container (max-width: 600px) {
     .explore-heading { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-bottom: 16px; }
     .catalog-search { width: 100%; }
     .catalog-search input { font-size: 1rem; }

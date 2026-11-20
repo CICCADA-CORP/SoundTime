@@ -1,102 +1,103 @@
 <script lang="ts">
-  import { signInLink } from "$lib/access/navigation";
   import { page } from "$app/state";
-  import { PanelLeft, Plus, Search, Settings, UserRound } from "lucide-svelte";
-  import { Button } from "$lib/components/ui/button";
-  import { t, type TranslationKey } from "$lib/i18n/index.svelte";
+  import { Popover } from "bits-ui";
+  import { ChevronDown, ListMusic, Menu, Search, Settings, SunMoon, UserRound } from "lucide-svelte";
+  import SoundTimeSignature from "../SoundTimeSignature.svelte";
+  import { signInLink } from "$lib/access/navigation";
+  import AppearanceSwitcher from "$lib/components/ui/appearance-switcher.svelte";
+  import { t } from "$lib/i18n/index.svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
-  import { admin, catalog, discover, isActive, libraryHome, personal, utilities } from "./navigation";
 
-  let { expanded, toggleSidebar, openSearch }: {
-    expanded: boolean;
-    toggleSidebar: () => void;
-    openSearch: () => void;
+  let { mobile, menuOpen, openMenu, openSearch, queueVisible, openQueue }: {
+    mobile: boolean; menuOpen: boolean; openMenu: () => void; openSearch: () => void;
+    queueVisible: boolean; openQueue: (trigger: HTMLElement) => void;
   } = $props();
 
-  const auth = getAuthStore();
-  const sections = [...discover, ...catalog, libraryHome, ...personal, ...utilities, admin];
-  const otherPages: Record<string, TranslationKey> = {
-    "/login": "auth.login",
-    "/register": "auth.register",
-    "/search": "common.search",
-    "/tos": "tos.title",
-  };
-  const path = $derived(page.url.pathname);
-  const section = $derived(sections.find(item => isActive(path, item.href))?.label ?? otherPages[path]);
   const mac = typeof navigator !== "undefined" && /Mac|iPad|iPhone/i.test(navigator.platform);
+  const auth = getAuthStore();
+  const name = $derived(auth.user?.display_name || auth.user?.username || t("nav.settings"));
+  let accountOpen = $state(false);
+  let brokenAvatar = $state<string>();
 </script>
 
-<header class="workspace-header" class:local-search={path === "/explore"}>
-  <div class="location">
-    <button id="sidebar-toggle" class="icon-button" type="button" aria-label={t(expanded ? "workspace.hideMenu" : "workspace.showMenu")}
-      aria-expanded={expanded} aria-controls={expanded ? "workspace-sidebar" : undefined} onclick={toggleSidebar}
-      title={t(expanded ? "workspace.hideMenu" : "workspace.showMenu")}>
-      <PanelLeft size={18} strokeWidth={1.6} />
+<header class="workspace-header">
+  <div class="header-inner">
+    {#if mobile}
+      <a href="/" class="wordmark" data-workspace-home aria-label="SoundTime"><SoundTimeSignature width={118} /></a>
+      <button id="directory-toggle" class="command" type="button" aria-label={t(menuOpen ? "workspace.hideMenu" : "workspace.showMenu")}
+        aria-haspopup="dialog" aria-expanded={menuOpen} aria-controls={menuOpen ? "workspace-directory" : undefined} onclick={openMenu}>
+        <Menu size={18} />
+      </button>
+    {/if}
+    <button class="command search" type="button" aria-label={t("common.search")} aria-haspopup="dialog"
+      aria-keyshortcuts="Meta+K Control+K" onclick={event => { event.currentTarget.focus(); openSearch(); }}>
+      <Search size={17} /><span>{t("common.search")}</span><kbd>{mac ? "⌘K" : "Ctrl K"}</kbd>
     </button>
-    <span class="section-name">{section ? t(section) : "SoundTime"}</span>
-  </div>
-
-  <div class="actions">
-    {#if auth.isAuthenticated}
-    <Button href="/upload" size="sm" class="h-8 gap-2 rounded-lg px-3 text-sm shadow-none" aria-label={t("nav.upload")}>
-      <Plus size={15} /><span class="upload-label">{t("nav.upload")}</span>
-    </Button>
-    {/if}
-    {#if path !== "/explore"}
-    <button class="search-trigger" type="button" aria-label={t("common.search")} aria-haspopup="dialog"
-      aria-keyshortcuts="Meta+K Control+K" onclick={(event) => { event.currentTarget.focus(); openSearch(); }}>
-      <Search size={17} strokeWidth={1.65} />
-      <span>{t("search.placeholder")}</span>
-      <kbd>{mac ? "⌘K" : "Ctrl K"}</kbd>
-    </button>
-    {/if}
-  </div>
-
-  <div class="preferences">
-    {#if auth.isAuthenticated}
-      <a class="icon-button" href="/settings" aria-label={t("nav.settings")} title={t("nav.settings")}><Settings size={18} strokeWidth={1.6} /></a>
-    {:else}
-      <a class="icon-button" href={signInLink(page.url)} aria-label={t("nav.signIn")} title={t("nav.signIn")}><UserRound size={18} strokeWidth={1.6} /></a>
-    {/if}
+    <div class="tools">
+      {#if mobile}
+        <button class="command mobile-queue" type="button" aria-label={t("player.queue")} aria-haspopup="dialog" aria-expanded={queueVisible}
+          aria-controls={queueVisible ? "workspace-queue" : undefined} onclick={event => openQueue(event.currentTarget)}><ListMusic size={19} /></button>
+      {/if}
+      {#if !auth.isAuthenticated}
+        <a class="command sign-in" href={signInLink(page.url)} aria-label={t("nav.signIn")}><UserRound size={17} /><span>{t("nav.signIn")}</span></a>
+      {/if}
+      <Popover.Root bind:open={accountOpen}>
+        <Popover.Trigger class={auth.isAuthenticated ? "account-trigger" : "icon-button"}
+          aria-label={auth.isAuthenticated ? name : t("authAppearance.label")} title={auth.isAuthenticated ? name : t("authAppearance.label")}>
+          {#if auth.isAuthenticated}
+            <span class="account-name">{name}</span>
+            <span class="avatar" aria-hidden="true">
+              {#if auth.user?.avatar_url && brokenAvatar !== auth.user.avatar_url}
+                <img src={auth.user.avatar_url} alt="" onerror={() => brokenAvatar = auth.user?.avatar_url ?? undefined} />
+              {:else}{name.slice(0,1).toLocaleUpperCase()}{/if}
+            </span>
+            <ChevronDown size={12} class="account-chevron" />
+          {:else}<SunMoon size={17} />{/if}
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Content role="dialog" aria-label={auth.isAuthenticated ? name : t("authAppearance.label")} align="end" sideOffset={6} class="account-popover">
+            {#if auth.isAuthenticated}
+              <p class="account-title">{name}</p>
+              {#if auth.user?.email}<p class="account-detail">{auth.user.email}</p>{/if}
+              <a href="/settings" onclick={() => accountOpen = false}><Settings size={15} />{t("nav.settings")}</a>
+            {/if}
+            <div class="appearance-row"><span>{t("authAppearance.label")}</span><AppearanceSwitcher /></div>
+          </Popover.Content>
+        </Popover.Portal>
+      </Popover.Root>
+    </div>
   </div>
 </header>
 
 <style>
-  .workspace-header {
-    display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, min(53%, 510px)) minmax(36px, 1fr);
-    align-items: center; flex: none; gap: 12px; min-height: 48px; padding: 6px 16px;
-    background: hsl(var(--background));
-  }
-  .workspace-header.local-search { grid-template-columns: minmax(0, 1fr) auto auto; }
-  .location, .actions, .preferences { display: flex; align-items: center; min-width: 0; }
-  .location { gap: 10px; }
-  .section-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 14px; font-weight: 520; }
-  .actions { gap: 8px; }
-  .preferences { justify-content: flex-end; }
-  .icon-button { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 6px; color: hsl(var(--muted-foreground)); }
-  .icon-button:hover { background: hsl(var(--muted)); color: hsl(var(--foreground)); }
-  .search-trigger {
-    display: flex; align-items: center; flex: 1; min-width: 0; height: 32px; gap: 8px; padding: 0 8px 0 11px;
-    border: 1px solid hsl(var(--border)); border-radius: 9px; color: hsl(var(--muted-foreground));
-    background: hsl(var(--sidebar)); text-align: left; font-size: 14px;
-  }
-  .search-trigger:hover { border-color: hsl(var(--input)); }
-  .search-trigger :global(svg), kbd { flex: none; }
-  .search-trigger span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  kbd { margin-left: auto; padding: 0 4px; border: 1px solid hsl(var(--border)); border-radius: 4px; font-family: inherit; font-size: 11px; font-weight: 500; line-height: 18px; }
-  @media (max-width: 950px) {
-    .workspace-header { grid-template-columns: minmax(0, 1fr) minmax(200px, 55%) minmax(32px, .25fr); gap: 4px; }
-  }
+  .workspace-header { flex: none; min-width: 0; color: hsl(var(--foreground)); }
+  .header-inner { display: flex; align-items: center; min-width: 0; gap: 9px; min-height: 71px; padding: 9px clamp(18px,3.4cqi,38px); }
+  .wordmark { display: inline-flex; align-items: center; flex: none; min-height: 44px; }
+  .tools, .command, :global(.workspace-header .account-trigger) { display: flex; align-items: center; }
+  .tools { gap: 8px; margin-inline-start: auto; }
+  .command { justify-content: center; gap: 7px; min-height: 35px; padding-inline: 9px; border-radius: 10px; color: hsl(var(--muted-foreground)); font-size: .82rem; font-weight: 520; white-space: nowrap; }
+  .command:hover, :global(.workspace-header .account-trigger:hover) { background: hsl(var(--card) / .62); color: hsl(var(--foreground)); }
+  .search { width: min(62%, 350px); justify-content: flex-start; padding-inline: 12px; background: hsl(var(--card) / .58); border: 1px solid var(--glass-edge); }
+  kbd { margin-inline-start: auto; color: hsl(var(--muted-foreground)); font: inherit; font-size: .68rem; }
+  :global(.workspace-header .icon-button) { display: grid; place-items: center; min-width: 34px; min-height: 36px; border-radius: 8px; }
+  :global(.workspace-header .account-trigger) { min-height: 38px; gap: 6px; border-radius: 8px; padding: 2px 5px; font-size: .8rem; font-weight: 550; }
+  .account-name { max-width: 13ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .avatar { display: grid; place-items: center; flex: none; width: 29px; height: 29px; border-radius: 50%; overflow: hidden; background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); font-size: .77rem; font-weight: 650; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  :global(.account-chevron) { color: hsl(var(--muted-foreground)); }
+  :global(.account-popover) { z-index: 60; min-width: 225px; max-width: min(90vw,20rem); border: 1px solid hsl(var(--border)); border-radius: 12px; padding: 11px; color: hsl(var(--popover-foreground)); background: hsl(var(--popover)); box-shadow: 0 12px 36px -12px rgb(0 0 0 / .22); }
+  .account-title, .account-detail { padding-inline: 5px; overflow-wrap: anywhere; font-size: .84rem; font-weight: 600; }
+  .account-detail { color: hsl(var(--muted-foreground)); font-size: .76rem; font-weight: 450; }
+  :global(.account-popover) a { display: flex; align-items: center; gap: 8px; margin-block: 7px 3px; padding: 7px 5px; border-radius: 6px; font-size: .85rem; }
+  :global(.account-popover) a:hover { background: hsl(var(--muted)); }
+  .appearance-row { display: flex; gap: 8px; align-items: center; justify-content: space-between; padding-inline: 5px; font-size: .8rem; }
+  a + .appearance-row { border-top: 1px solid hsl(var(--border)); padding-top: 10px; }
   @media (max-width: 767px) {
-    .workspace-header { grid-template-columns: minmax(0, 1fr) auto auto; gap: 2px; min-height: 54px; padding: 4px 12px; border-bottom: 1px solid hsl(var(--border)); }
-    .location { gap: 5px; }
-    .section-name { font-size: 15px; font-weight: 600; }
-    .actions { gap: 4px; }
-    .icon-button, .search-trigger { width: 40px; height: 40px; }
-    .search-trigger { flex: none; justify-content: center; padding: 0; background: transparent; border: 0; color: hsl(var(--muted-foreground)); }
-    .search-trigger span, kbd { display: none; }
-  }
-  @media (max-width: 360px) {
-    .upload-label { display: none; }
+    .header-inner { gap: 2px; min-height: 54px; padding: 3px 8px 3px 13px; }
+    .wordmark { width: clamp(95px,29vw,136px); min-width: 0; flex-shrink: 1; margin-inline-end: auto; }
+    .tools { gap: 1px; margin: 0; }
+    .search span, kbd, .sign-in span, .account-name, :global(.account-chevron) { display: none; }
+    .search { width: auto; border: 0; background: transparent; }
+    .command, :global(.workspace-header .icon-button), :global(.workspace-header .account-trigger) { padding: 0; min-width: 37px; min-height: 44px; justify-content: center; }
   }
 </style>

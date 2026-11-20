@@ -64,7 +64,8 @@ describe('Authentication', () => {
 			cy.visit('/', {
 				onBeforeLoad(win) { win.localStorage.setItem('soundtime_lang', 'en'); },
 			});
-			cy.get('a[href="/settings"]:visible').first().click();
+			cy.get('.workspace-header button[data-popover-trigger]').click();
+			cy.get('[role=dialog] a[href="/settings"]').click();
 			cy.location('pathname').should('eq', '/settings');
 			cy.contains('main button', /^Logout$/).click();
 			cy.window().then((win) => {

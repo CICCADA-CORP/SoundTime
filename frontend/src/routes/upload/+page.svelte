@@ -4,6 +4,7 @@
   import { CircleCheck } from "lucide-svelte";
   import { Button } from "$lib/components/ui/button";
   import CatalogHeader from "$lib/components/catalog/CatalogHeader.svelte";
+  import SectionHeading from "$lib/components/catalog/SectionHeading.svelte";
   import CatalogState from "$lib/components/catalog/CatalogState.svelte";
   import UploadDropzone from "$lib/components/UploadDropzone.svelte";
   import type { UploadResponse } from "$lib/types";
@@ -27,7 +28,7 @@
     <UploadDropzone onuploaded={(result) => uploads = [result, ...uploads]} />
     {#if uploads.length}
       <section aria-live="polite">
-        <h2 class="mb-3 text-xl font-semibold">{t("shell.uploaded")}</h2>
+        <SectionHeading title={t("shell.uploaded")} />
         {#each uploads as upload (upload)}
           <div class="flex items-center gap-3 border-b py-3">
             <CircleCheck size={18} class="text-primary" />

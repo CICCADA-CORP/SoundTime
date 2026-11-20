@@ -10,6 +10,27 @@ type CatalogFixture = {
   withdrawn: { id: string; title: string };
 };
 
+function verifyWorkspaceFitsViewport() {
+  cy.document().should(doc => {
+    const view = doc.defaultView!;
+    const workspace = doc.querySelector<HTMLElement>('.workspace')!;
+    const frame = workspace.querySelector<HTMLElement>('.workspace-window')!;
+    const player = workspace.querySelector<HTMLElement>('[data-testid=audio-player]')!;
+    const bounds = frame.getBoundingClientRect();
+    const dock = player.getBoundingClientRect();
+    for (const element of [doc.body, workspace, frame]) {
+      expect(view.getComputedStyle(element).backgroundImage, element.tagName + ' ' + element.className).to.eq('none');
+    }
+    expect(bounds.top, 'workspace starts at the top').to.be.closeTo(0, 1);
+    for (const [name, rect] of [['workspace', bounds], ['player', dock]] as const) {
+      expect(rect.left, name + ' starts at the left edge').to.be.closeTo(0, 1);
+      expect(rect.right, name + ' reaches the right edge').to.be.closeTo(view.innerWidth, 1);
+    }
+    expect(bounds.bottom, 'workspace meets the player').to.be.closeTo(dock.top, 1);
+    expect(dock.bottom, 'player reaches the bottom edge').to.be.closeTo(view.innerHeight, 1);
+  });
+}
+
 describe('Catalog navigation and favorites', () => {
   for (const width of [390, 1440]) {
     it('finds an artist, plays an album track and retrieves the favorite at ' + width + 'px', () => {
@@ -64,15 +85,20 @@ describe('Catalog navigation and favorites', () => {
         cy.get('main [role=group]').filter((_, el) => el.getAttribute('aria-label') === track.title)
           .find('button.play-cell').click();
         cy.contains('[data-testid=audio-player]', track.title).should('be.visible');
+        verifyWorkspaceFitsViewport();
+        cy.intercept('POST', '**/api/favorites/' + track.id).as('addFavorite');
         cy.get('main [role=group]').filter((_, el) => el.getAttribute('aria-label') === track.title)
           .find('button[aria-pressed=false]').click();
+        cy.wait('@addFavorite').its('response.statusCode').should('be.within', 200, 299);
         cy.get('main [role=group]').filter((_, el) => el.getAttribute('aria-label') === track.title)
           .find('button[aria-pressed=true]').should('be.visible');
-        if (width === 390) cy.get('nav.mobile-tabs a[href="/library"]').click();
-        cy.get('a[href="/favorites"]:visible').first().click();
+        if (width === 390) cy.get('#directory-toggle').click();
+        cy.get('#workspace-directory nav a[href="/favorites"]').click();
         cy.contains('main a', track.title).should('have.attr', 'href', '/tracks/' + track.id);
+        cy.intercept('DELETE', '**/api/favorites/' + track.id).as('removeFavorite');
         cy.get('main [role=group]').filter((_, el) => el.getAttribute('aria-label') === track.title)
           .find('button[aria-pressed=true]').click();
+        cy.wait('@removeFavorite').its('response.statusCode').should('be.within', 200, 299);
         cy.contains('main a', track.title).should('not.exist');
         cy.contains('[data-testid=audio-player]', track.title).should('be.visible');
       });

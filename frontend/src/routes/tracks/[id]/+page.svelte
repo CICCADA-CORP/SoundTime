@@ -5,6 +5,7 @@
   import { goto } from "$app/navigation";
   import { catalogQuery } from "$lib/catalog/query.svelte";
   import CachePin from "$lib/components/catalog/CachePin.svelte";
+  import SectionHeading from "$lib/components/catalog/SectionHeading.svelte";
   import CatalogState from "$lib/components/catalog/CatalogState.svelte";
   import ReleaseHeader from "$lib/components/catalog/ReleaseHeader.svelte";
   import { availabilityLabel, canPlay } from "$lib/catalog/availability";
@@ -93,7 +94,7 @@
 
 {#if item}
   <div class="max-w-4xl space-y-8">
-    <ReleaseHeader kind="album" title={item.title} image={item.cover_url} label={t("track.trackLabel")}>
+    <ReleaseHeader artworkId={item.album_id ?? item.id} kind="album" title={item.title} image={item.cover_url} label={t("track.trackLabel")}>
       {#snippet info()}
         {#if item.artist_name}<a href="/artists/{item.artist_id}" class="hover:underline">{item.artist_name}</a> · {/if}
         {#if item.album_title && item.album_id}<a href="/albums/{item.album_id}" class="hover:underline">{item.album_title}</a> · {/if}
@@ -123,7 +124,7 @@
 
     <!-- Edit Form -->
     {#if editing && isOwner}
-      <form class="space-y-4 rounded-xl border bg-card p-6" onsubmit={(e) => { e.preventDefault(); saveEdit(); }}>
+      <form class="glass-surface space-y-4 rounded-xl p-5" onsubmit={(e) => { e.preventDefault(); saveEdit(); }}>
         <div>
           <label class="text-xs text-[hsl(var(--muted-foreground))] block mb-1" for="edit-title">{t('track.title')}</label>
           <input id="edit-title" type="text" bind:value={editForm.title} class="w-full px-3 py-2 rounded bg-[hsl(var(--secondary))] text-sm border-none outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]" />
@@ -153,68 +154,68 @@
     {/if}
 
     <!-- Metadata Table -->
-    <div class="overflow-hidden rounded-xl border bg-card">
-      <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">{t('track.technicalInfo')}</h2>
-      <div class="divide-y divide-[hsl(var(--border))]">
-        <div class="grid grid-cols-2 p-4">
-          <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.duration')}</span>
-          <span class="text-sm">{formatDuration(item.duration_secs)}</span>
+    <div class="min-w-0">
+      <SectionHeading title={t('track.technicalInfo')} />
+      <dl class="metadata">
+        <div>
+          <dt>{t('track.duration')}</dt>
+          <dd>{formatDuration(item.duration_secs)}</dd>
         </div>
-        <div class="grid grid-cols-2 p-4">
-          <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.format')}</span>
-          <span class="text-sm uppercase">{item.format}</span>
+        <div>
+          <dt>{t('track.format')}</dt>
+          <dd class="uppercase">{item.format}</dd>
         </div>
         {#if item.bitrate}
-          <div class="grid grid-cols-2 p-4">
-            <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.bitrate')}</span>
-            <span class="text-sm">{item.bitrate} kbps</span>
+          <div>
+            <dt>{t('track.bitrate')}</dt>
+            <dd>{item.bitrate} kbps</dd>
           </div>
         {/if}
         {#if item.sample_rate}
-          <div class="grid grid-cols-2 p-4">
-            <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.sampleRate')}</span>
-            <span class="text-sm">{(item.sample_rate / 1000).toFixed(1)} kHz</span>
+          <div>
+            <dt>{t('track.sampleRate')}</dt>
+            <dd>{(item.sample_rate / 1000).toFixed(1)} kHz</dd>
           </div>
         {/if}
         {#if item.genre}
-          <div class="grid grid-cols-2 p-4">
-            <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.genre')}</span>
-            <span class="text-sm">{item.genre}</span>
+          <div>
+            <dt>{t('track.genre')}</dt>
+            <dd>{item.genre}</dd>
           </div>
         {/if}
         {#if item.year}
-          <div class="grid grid-cols-2 p-4">
-            <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.year')}</span>
-            <span class="text-sm">{item.year}</span>
+          <div>
+            <dt>{t('track.year')}</dt>
+            <dd>{item.year}</dd>
           </div>
         {/if}
         {#if item.track_number}
-          <div class="grid grid-cols-2 p-4">
-            <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.trackLabel')}</span>
-            <span class="text-sm">{item.track_number}{item.disc_number ? ` (${t('track.disc', { n: item.disc_number })})` : ""}</span>
+          <div>
+            <dt>{t('track.trackLabel')}</dt>
+            <dd>{item.track_number}{item.disc_number ? ` (${t('track.disc', { n: item.disc_number })})` : ""}</dd>
           </div>
         {/if}
         {#if item.musicbrainz_id}
-          <div class="grid grid-cols-2 p-4">
-            <span class="text-sm text-[hsl(var(--muted-foreground))]">MusicBrainz ID</span>
-            <a href="https://musicbrainz.org/recording/{item.musicbrainz_id}" target="_blank" rel="noopener" class="text-sm text-[hsl(var(--primary))] hover:underline font-mono">{item.musicbrainz_id.slice(0,8)}…</a>
+          <div>
+            <dt>MusicBrainz ID</dt>
+            <dd><a href="https://musicbrainz.org/recording/{item.musicbrainz_id}" target="_blank" rel="noopener" class="text-sm text-[hsl(var(--primary))] hover:underline">{item.musicbrainz_id.slice(0,8)}…</a></dd>
           </div>
         {/if}
-        <div class="grid grid-cols-2 p-4">
-          <span class="text-sm text-[hsl(var(--muted-foreground))]">{t('track.addedOn')}</span>
-          <span class="text-sm">{new Date(item.created_at).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}</span>
+        <div>
+          <dt>{t('track.addedOn')}</dt>
+          <dd>{new Date(item.created_at).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}</dd>
         </div>
-      </div>
+      </dl>
     </div>
 
     {#if result.loading || result.failed}
       <CatalogState loading={result.loading} failed={result.failed} status={result.status} retry={result.retry} />
     {/if}
     {#if credits?.artist_name}
-      <div class="overflow-hidden rounded-xl border bg-card">
-        <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">{t('track.artistSection')}</h2>
-        <div class="p-5 flex items-center gap-4">
-          <div class="size-16 shrink-0"><CatalogArtwork kind="artist" source={credits.artist_image} title={credits.artist_name} /></div>
+      <div class="min-w-0">
+        <SectionHeading title={t('track.artistSection')} />
+        <div class="flex min-w-0 items-center gap-4 px-1 py-2">
+          <div class="size-16 shrink-0 rounded-full"><CatalogArtwork artworkId={credits.artist_id} kind="artist" source={credits.artist_image} title={credits.artist_name} /></div>
           <div>
             <a href="/artists/{credits.artist_id}" class="font-medium hover:text-[hsl(var(--primary))] transition">{credits.artist_name}</a>
             {#if credits.artist_bio}
@@ -230,10 +231,10 @@
 
     <!-- Album Info -->
     {#if credits?.album_id}
-      <div class="overflow-hidden rounded-xl border bg-card">
-        <h2 class="text-lg font-semibold p-5 border-b border-[hsl(var(--border))]">{t('track.albumSection')}</h2>
-        <div class="p-5 flex items-center gap-4">
-          <div class="size-16 shrink-0"><CatalogArtwork kind="album" source={credits.album_cover_url} title={credits.album_title ?? ""} /></div>
+      <div class="min-w-0">
+        <SectionHeading title={t('track.albumSection')} />
+        <div class="flex min-w-0 items-center gap-4 px-1 py-2">
+          <div class="size-16 shrink-0 rounded-lg"><CatalogArtwork artworkId={credits.album_id} kind="album" source={credits.album_cover_url} title={credits.album_title ?? ""} /></div>
           <div>
             <a href="/albums/{credits.album_id}" class="font-medium hover:text-[hsl(var(--primary))] transition">{credits.album_title}</a>
             {#if credits.album_genre}
@@ -253,3 +254,9 @@
 {:else}
   <CatalogState layout="detail" loading={track.loading} failed={track.failed} status={track.status} retry={track.retry} message={t("track.notFound")} />
 {/if}
+
+<style>
+  .metadata > div { display: grid; grid-template-columns: minmax(7rem, .8fr) minmax(0, 1.2fr); gap: .75rem; border-bottom: 1px solid hsl(var(--border)); padding: .6rem 0; }
+  dt { color: hsl(var(--muted-foreground)); font-size: .85rem; }
+  dd { overflow-wrap: anywhere; font-size: .86rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
+</style>

@@ -22,7 +22,8 @@ describe('Account and administration on a private instance', () => {
       const stream = '/api/tracks/' + fixture.tracks[0].id + '/stream';
       const range = { Range: 'bytes=0-12' };
       cy.request({ url: stream, headers: range, log: false }).its('status').should('eq', 206);
-      cy.get('header a[href="/settings"]').click();
+      cy.get('.workspace-header button[data-popover-trigger]').click();
+      cy.get('[role=dialog] a[href="/settings"]').click();
       cy.get('main input[type=range]').invoke('val', 37).trigger('input');
       cy.get('main [role=switch]').click();
       cy.contains('main button', 'Delete my account').click();

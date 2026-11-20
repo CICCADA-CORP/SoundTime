@@ -61,6 +61,10 @@ export function t(key: TranslationKey, params?: Record<string, string | number>)
   return text;
 }
 
+export function formatTrackCount(count: number): string {
+  return count === 1 ? t("workspaceHome.oneTrack") : t("workspaceHome.trackCount", { count });
+}
+
 // Initialize lang attribute
 if (typeof window !== "undefined") {
   document.documentElement.lang = getLocale();

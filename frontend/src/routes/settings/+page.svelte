@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsSection from "./SettingsSection.svelte";
   import CatalogHeader from "$lib/components/catalog/CatalogHeader.svelte";
   import CatalogState from "$lib/components/catalog/CatalogState.svelte";
   import { Button } from "$lib/components/ui/button";
@@ -21,20 +22,17 @@
   <CatalogState message={t("settings.loginRequired")}>
     <Button href={accountLink("/login", "/settings")}>{t("auth.signIn")}</Button>
   </CatalogState>
-  <section id="webradios" class="max-w-2xl space-y-4 py-6">
-    <h2 class="text-lg font-semibold">{t("nav.webradios")}</h2>
-    <Preference />
-  </section>
-{:else}
-  <div class="max-w-2xl">
+{/if}
+<div class="settings glass-surface">
+  {#if auth.isAuthenticated}
     <AccountSettings />
     <PlaybackSettings />
-    <section id="webradios" class="space-y-4 border-b border-border py-6">
-      <h2 class="text-lg font-semibold">{t("nav.webradios")}</h2>
-      <Preference />
-    </section>
-    <section class="space-y-4 border-b border-border py-6">
-      <h2 class="text-lg font-semibold">{t("settings.language")}</h2>
+  {/if}
+  <SettingsSection title={t("nav.webradios")}>
+    <div id="webradios"><Preference /></div>
+  </SettingsSection>
+  {#if auth.isAuthenticated}
+    <SettingsSection title={t("settings.language")}>
       <label class="flex flex-wrap items-center justify-between gap-3 text-sm">
         {t("settings.languageSelect")}
         <select class="rounded-md border border-input bg-background px-3 py-2"
@@ -44,8 +42,12 @@
           {/each}
         </select>
       </label>
-    </section>
+    </SettingsSection>
     <LastfmSettings />
     <AccountSession />
-  </div>
-{/if}
+  {/if}
+</div>
+
+<style>
+  .settings { max-width: 58rem; container: settings / inline-size; border-radius: 1.2rem; padding-inline: clamp(1rem, 3vw, 2rem); margin-top: 1.25rem; }
+</style>

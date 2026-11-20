@@ -250,7 +250,7 @@ async function run(chrome,tokens) {
         return play.apply(this,args);
       };
     }`});
-  const navRadio='a[href="/webradios"]', navSlot='#workspace-sidebar a[href="/radio"] + a[href="/webradios"]';
+  const navSlot='#workspace-directory a[href="/radio"] + a[href="/webradios"]';
   const radioPlay='article button[aria-label="Play Night Wave"]';
   const field=(label)=>`[...document.querySelectorAll("label")].find(el=>el.textContent.trim()===${q(label)})?.querySelector('input[role=switch]')`;
   const globalSwitch=field("Allow radio and podcasts on this instance"), personalSwitch=field("Show and play radio and podcasts");
@@ -266,8 +266,7 @@ async function run(chrome,tokens) {
   check("desktop_radio_then_webradios");
 
   await viewport(true);
-  await dom("mobile bottom navigation adjacency",`Boolean(${visible('.mobile-tabs a[href="/radio"] + '+navRadio)})`);
-  await clickCss("#sidebar-toggle");
+  await clickCss("#directory-toggle");
   await dom("mobile drawer adjacency",`Boolean(${visible(navSlot)})`);
   await capture("mobile");
   await clickCss(navSlot);
@@ -275,7 +274,7 @@ async function run(chrome,tokens) {
   await dom("mobile station grid",card("Night Wave"));
   await capture("grid-mobile");
   await viewport(false);
-  check("mobile_tabs_and_drawer_radio_then_webradios");
+  check("mobile_drawer_radio_then_webradios");
 
   await dom("station filters","!!document.querySelector('form input[name=name]')");
   await evaluate(`(()=>{const names=document.querySelector('input[name=name]'), tag=document.querySelector('input[name=tag]'); names.value='Wave'; tag.value='jazz'; names.form.requestSubmit();})()`,true);

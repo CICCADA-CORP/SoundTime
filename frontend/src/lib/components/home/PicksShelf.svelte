@@ -5,6 +5,7 @@
   import { Input } from "$lib/components/ui/input";
   import CatalogArtwork from "$lib/components/catalog/CatalogArtwork.svelte";
   import { getLocale, t } from "$lib/i18n/index.svelte";
+  import { canPlay } from "$lib/catalog/availability";
   import { getPlayerStore } from "$lib/stores/player.svelte";
   import { getQueueStore } from "$lib/stores/queue.svelte";
   import type { Track } from "$lib/types";
@@ -17,7 +18,8 @@
 
   const tabs = [["tracks", "workspaceHome.tracks"], ["albums", "explore.albums"], ["artists", "explore.artists"]] as const;
   let active = $state("tracks");
-  let view = $state<"grid" | "list">("grid");
+  let preferredView = $state<"grid" | "list">();
+  const view = $derived(preferredView ?? (active === "tracks" && !tracks.some(track => track.cover_url) ? "list" : "grid"));
   let search = $state("");
   let genre = $state("");
   let sort = $state("original");
@@ -102,8 +104,8 @@
               </select>
             </label>
             <div class="view-switch">
-              <button aria-label={copy.list} title={copy.list} aria-pressed={view === "list"} onclick={() => view = "list"}><List size={15} /></button>
-              <button aria-label={copy.grid} title={copy.grid} aria-pressed={view === "grid"} onclick={() => view = "grid"}><LayoutGrid size={14} /></button>
+              <button aria-label={copy.list} title={copy.list} aria-pressed={view === "list"} onclick={() => preferredView = "list"}><List size={15} /></button>
+              <button aria-label={copy.grid} title={copy.grid} aria-pressed={view === "grid"} onclick={() => preferredView = "grid"}><LayoutGrid size={14} /></button>
             </div>
           </div>
         </div>
@@ -123,7 +125,7 @@
               {@const playing = !!entry.track && entry.id === player.currentTrack?.id && player.isPlaying}
               {#snippet contents()}
                 <span class="art" aria-hidden="true">
-                  <CatalogArtwork source={entry.image} kind={active === "artists" ? "artist" : "album"} title={entry.title} />
+                  <CatalogArtwork source={entry.image} artworkId={entry.track?.album_id ?? entry.id} kind={active === "artists" ? "artist" : "album"} title={entry.title} />
                   {#if !entry.href}
                     <span class={["play-icon", { playing }]}>
                       {#if playing}<Pause size={13} fill="currentColor" />{:else}<Play size={13} fill="currentColor" />{/if}
@@ -135,7 +137,7 @@
               {#if entry.href}
                 <a href={entry.href} class="entry">{@render contents()}</a>
               {:else}
-                <button type="button" class="entry" aria-label={[playing ? copy.pause : copy.play, entry.title, entry.detail].filter(Boolean).join(" · ")} onclick={() => play(entry, index)}>{@render contents()}</button>
+                <button type="button" class="entry" disabled={entry.track && !canPlay(entry.track)} aria-label={[playing ? copy.pause : copy.play, entry.title, entry.detail].filter(Boolean).join(" · ")} onclick={() => play(entry, index)}>{@render contents()}</button>
               {/if}
             {/each}
           </div>
@@ -154,40 +156,39 @@
   .toolbar { flex-wrap: wrap; gap: 8px; margin-block: 16px; }
   .filter-input { position: relative; width: min(100%, 250px); }
   .filter-input > :global(svg) { position: absolute; z-index: 1; top: 8px; left: 11px; pointer-events: none; color: hsl(var(--muted-foreground)); }
-  .select-control, .refresh { position: relative; justify-content: center; height: 32px; gap: 7px; padding-inline: 9px; border-radius: 7px; color: hsl(var(--muted-foreground)); font-size: .81rem; font-weight: 500; }
+  .select-control, .refresh { position: relative; justify-content: center; height: 32px; gap: 7px; padding-inline: 9px; border-radius: .55rem; color: hsl(var(--muted-foreground)); font-size: .81rem; font-weight: 500; }
   .select-control:focus-within { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
   .select-control select { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; opacity: 0; }
   .select-control.bordered { border: 1px solid hsl(var(--input)); }
   .display-tools { margin-inline-start: auto; gap: 7px; }
-  .view-switch { padding: 2px; border-radius: 8px; background: hsl(var(--muted)); }
-  .view-switch button { display: grid; width: 29px; height: 27px; place-items: center; border: 1px solid transparent; border-radius: 6px; color: hsl(var(--muted-foreground)); }
+  .view-switch { padding: 2px; border-radius: .55rem; background: hsl(var(--muted)); }
+  .view-switch button { display: grid; width: 29px; height: 27px; place-items: center; border: 1px solid transparent; border-radius: .4rem; color: hsl(var(--muted-foreground)); }
   .view-switch [aria-pressed="true"] { color: hsl(var(--foreground)); background: hsl(var(--card)); border-color: hsl(var(--border)); }
-  .entries { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-  .entry { display: flex; flex-direction: column; min-width: 0; gap: 4px; padding: 8px; border: 1px solid hsl(var(--border)); border-radius: 11px; background: hsl(var(--card)); text-align: left; }
-  .entry:hover { border-color: hsl(var(--muted-foreground) / .5); }
-  .art { position: relative; display: grid; width: 100%; aspect-ratio: 8 / 5; overflow: hidden; place-items: center; border-radius: 7px; background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
+  .entries { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: clamp(.85rem, 2.65cqi, 1.8rem); }
+  .entry { display: flex; flex-direction: column; min-width: 0; gap: 4px; border-radius: .65rem; text-align: left; }
+  .entry:hover strong { text-decoration: underline; }
+  .art { position: relative; display: grid; width: 100%; aspect-ratio: 1; overflow: hidden; place-items: center; border-radius: .65rem; background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
   .art :global(.artwork) { min-width: 0; min-height: 0; border-radius: inherit; }
   .play-icon { position: absolute; right: 8px; bottom: 8px; display: grid; width: 28px; height: 28px; place-items: center; border-radius: 50%; background: hsl(var(--background)); color: hsl(var(--foreground)); opacity: 0; }
   .entry:hover .play-icon, .entry:focus-visible .play-icon, .play-icon.playing { opacity: 1; }
-  .caption { display: grid; min-width: 0; gap: 2px; padding: 7px 4px 5px; }
+  .caption { display: grid; min-width: 0; gap: 2px; padding: 4px 1px; }
   .caption strong, .caption small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .caption strong { font-size: .88rem; font-weight: 550; }
   .caption small { font-size: .76rem; color: hsl(var(--muted-foreground)); }
-  .rows { display: grid; grid-template-columns: 1fr; gap: 0; border: 1px solid hsl(var(--border)); border-radius: 10px; }
-  .rows .entry { flex-direction: row; align-items: center; border: 0; border-radius: 0; background: transparent; }
+  .rows { display: grid; grid-template-columns: 1fr; gap: 0; }
+  .rows .entry { flex-direction: row; align-items: center; gap: .7rem; padding-block: .45rem; border: 0; border-radius: 0; }
   .rows .entry + .entry { border-top: 1px solid hsl(var(--border)); }
   .rows .art { width: 42px; aspect-ratio: 1; }
   .empty { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 10px; min-height: 150px; color: hsl(var(--muted-foreground)); font-size: .875rem; }
   .empty button { text-decoration: underline; }
   @media (max-width: 1100px) { .filter-input { width: 210px; } }
-  @media (max-width: 900px) { .entries:not(.rows) { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @container (max-width: 560px) { .entries:not(.rows) { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 620px) {
     .toolbar { gap: 6px; margin-block: 12px; }
     .filter-input { width: 100%; }
     .display-tools { gap: 2px; }
     .select-control { padding-inline: 6px; }
     .entries { gap: 8px; }
-    .entry { padding: 6px; }
     .caption { padding: 4px 2px; }
   }
 </style>

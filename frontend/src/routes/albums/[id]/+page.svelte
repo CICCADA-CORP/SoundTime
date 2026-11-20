@@ -4,7 +4,7 @@
   import { apiFetch } from "$lib/api";
   import { canPlay } from "$lib/catalog/availability";
   import { catalogQuery } from "$lib/catalog/query.svelte";
-  import { t } from "$lib/i18n/index.svelte";
+  import { formatTrackCount, t } from "$lib/i18n/index.svelte";
   import type { Album } from "$lib/types";
   import { formatDuration } from "$lib/utils";
   import { getQueueStore } from "$lib/stores/queue.svelte";
@@ -24,17 +24,17 @@
 {#if album.data}
   {@const data = album.data}
   <div class="space-y-7">
-    <ReleaseHeader kind="album" title={data.title} image={data.cover_url} label={t("track.album")}>
+    <ReleaseHeader artworkId={data.id} kind="album" title={data.title} image={data.cover_url} label={t("track.album")}>
       {#snippet info()}
         {#if data.artist_name}<a class="hover:underline" href="/artists/{data.artist_id}">{data.artist_name}</a> · {/if}
-        {#if data.year}{data.year} · {/if}{tracks.length} {t("album.tracks")} · {formatDuration(tracks.reduce((sum, track) => sum + track.duration_secs, 0))}
+        {#if data.year}{data.year} · {/if}{formatTrackCount(tracks.length)} · {formatDuration(tracks.reduce((sum, track) => sum + track.duration_secs, 0))}
       {/snippet}
       {#snippet actions()}
-        <Button disabled={!tracks.some(canPlay)} onclick={() => queue.playQueue(tracks, 0, "album")}><Play size={15} fill="currentColor" />{t("album.playAll")}</Button>
+        <Button class="play-release" disabled={!tracks.some(canPlay)} onclick={() => queue.playQueue(tracks, 0, "album")}><Play size={15} fill="currentColor" />{t("album.playAll")}</Button>
         <CachePin scope="albums" id={data.id} />
       {/snippet}
     </ReleaseHeader>
-    {#if tracks.length}<TrackList source="album" {tracks} showAlbum={false} />{:else}<CatalogState message={t("explore.noTracks")} />{/if}
+    {#if tracks.length}<TrackList source="album" {tracks} showAlbum={false} compact />{:else}<CatalogState message={t("explore.noTracks")} />{/if}
   </div>
 {:else}
   <CatalogState layout="detail" loading={album.loading} failed={album.failed} status={album.status} retry={album.retry} />

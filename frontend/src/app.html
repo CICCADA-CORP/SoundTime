@@ -3,6 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <script nonce="%sveltekit.nonce%">
+      // Set the saved palette before the first stylesheet can paint the document.
+      let appearanceMode;
+      try { appearanceMode = localStorage.getItem("soundtime_auth_appearance"); } catch {}
+      document.documentElement.dataset.appearance = appearanceMode === "light" || appearanceMode === "dark"
+        ? appearanceMode : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    </script>
     <link rel="icon" href="%sveltekit.assets%/soundtime-logo.svg" />
     <title>SoundTime</title>
     %sveltekit.head%

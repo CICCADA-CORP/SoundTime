@@ -1,7 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { t, getLocale, setLocale, supportedLocales, localeNames, type Locale, type TranslationKey } from './index.svelte';
+import { t, formatTrackCount, getLocale, setLocale, supportedLocales, localeNames, type Locale, type TranslationKey } from './index.svelte';
 
 describe('i18n module', () => {
+  it('uses the localized singular for one track and the count for other totals', () => {
+    setLocale('en');
+    expect([0, 1, 2].map(formatTrackCount)).toEqual(['0 tracks', '1 track', '2 tracks']);
+    setLocale('fr');
+    expect([1, 2].map(formatTrackCount)).toEqual(['1 morceau', '2 morceaux']);
+  });
+
   describe('supportedLocales', () => {
     it('contains expected locales', () => {
       expect(supportedLocales).toEqual(['en', 'fr', 'es', 'zh', 'ru']);

@@ -14,8 +14,8 @@
   let { mode }: { mode: "login" | "register" } = $props();
   const auth = getAuthStore();
   const instance = catalogQuery(() => api.get<{ name: string; description: string; open_registration: boolean }>("/nodeinfo"));
-  const fieldStyle = "h-10 rounded-lg bg-background shadow-none focus-visible:ring-2";
-  const submitStyle = "h-10 w-full gap-2 rounded-lg shadow-none";
+  const fieldStyle = "h-10 bg-background focus-visible:ring-2";
+  const submitStyle = "h-10 w-full gap-2";
   const passwordId = $props.id();
 
   let email = $state("");

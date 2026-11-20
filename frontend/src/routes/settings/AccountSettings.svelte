@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsSection from "./SettingsSection.svelte";
   import { Copy, Check } from "lucide-svelte";
   import { onDestroy } from "svelte";
   import { getAuthStore } from "$lib/stores/auth.svelte";
@@ -36,9 +37,8 @@
   onDestroy(() => clearTimeout(clearCopied));
 </script>
 
-<section class="space-y-4 border-b border-border py-6">
-  <h2 class="text-lg font-semibold">{t('settings.account')}</h2>
-  <div class="grid gap-4 sm:grid-cols-2">
+<SettingsSection title={t('settings.account')}>
+  <div class="grid grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-4">
     <div>
       <span class="text-xs text-[hsl(var(--muted-foreground))] block mb-1">{t('auth.username')}</span>
       <p class="text-sm">{auth.user?.username}</p>
@@ -69,11 +69,10 @@
       </div>
     </div>
   </div>
-</section>
+</SettingsSection>
 
 <!-- Change Email -->
-<section class="space-y-4 border-b border-border py-6">
-  <h2 class="text-lg font-semibold">{t('settings.changeEmail')}</h2>
+<SettingsSection title={t('settings.changeEmail')}>
   {#if emailSuccess}
     <p role="status" class="text-sm text-foreground">{emailSuccess}</p>
   {/if}
@@ -108,11 +107,10 @@
       {emailLoading ? t('common.loading') : t('settings.changeEmail')}
     </Button>
   </form>
-</section>
+</SettingsSection>
 
 <!-- Change Password -->
-<section class="space-y-4 border-b border-border py-6">
-  <h2 class="text-lg font-semibold">{t('settings.changePassword')}</h2>
+<SettingsSection title={t('settings.changePassword')}>
   {#if passwordSuccess}
     <p role="status" class="text-sm text-foreground">{passwordSuccess}</p>
   {/if}
@@ -153,4 +151,4 @@
       {passwordLoading ? t('common.loading') : t('settings.changePassword')}
     </Button>
   </form>
-</section>
+</SettingsSection>

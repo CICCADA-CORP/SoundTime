@@ -16,8 +16,8 @@
     {/snippet}
   </Dialog.Trigger>
   <Dialog.Portal>
-    <Dialog.Overlay class="fixed inset-0 z-[150] bg-black/40" />
-    <Dialog.Content class="fixed left-1/2 top-1/2 z-[151] max-h-[90dvh] w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl bg-background p-6 shadow-xl">
+    <Dialog.Overlay class="ui-overlay z-[150]" />
+    <Dialog.Content class="ui-dialog z-[151]">
       <Dialog.Title class="mb-5 text-xl font-semibold">{t("playlists.createNew")}</Dialog.Title>
       <PlaylistForm oncancel={() => open = false} onsave={playlist => { open = false; void goto(`/playlists/${playlist.id}`); }} />
     </Dialog.Content>

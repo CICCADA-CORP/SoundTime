@@ -54,13 +54,13 @@
     </CatalogState>
   {:else}
     <nav aria-label={t("workspaceNav.yourMusic")} class="flex flex-wrap gap-2">
-      <Button href="/favorites" variant="outline"><Heart size={16} />{t("nav.favorites")}</Button>
-      <Button href="/history" variant="outline"><Clock3 size={16} />{t("nav.history")}</Button>
+      <Button href="/favorites" variant="secondary" size="sm"><Heart size={16} />{t("nav.favorites")}</Button>
+      <Button href="/history" variant="secondary" size="sm"><Clock3 size={16} />{t("nav.history")}</Button>
     </nav>
     <Tabs.Root value={active} onValueChange={(value) => selectCatalogPage(1, value)}>
-      <Tabs.List aria-label={t("library.title")} class="flex gap-4 border-b">
+      <Tabs.List aria-label={t("library.title")} class="flex max-w-full gap-4 overflow-x-auto border-b border-border">
         {#each tabs as [id, key] (id)}
-          <Tabs.Trigger value={id} class="-mb-px border-b-2 border-transparent pb-2 text-sm font-medium text-muted-foreground data-[state=active]:border-foreground data-[state=active]:text-foreground">{t(key)}</Tabs.Trigger>
+          <Tabs.Trigger value={id} class="shrink-0 border-b-2 border-transparent py-2 text-sm font-medium text-muted-foreground data-[state=active]:border-primary data-[state=active]:text-foreground">{t(key)}</Tabs.Trigger>
         {/each}
       </Tabs.List>
       {#each tabs as [id] (id)}

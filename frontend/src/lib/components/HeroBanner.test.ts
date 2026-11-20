@@ -1,11 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
-
-vi.mock('$lib/i18n/index.svelte', () => ({
-  t: (key: string) => key,
-}));
-
+import { setLocale } from '$lib/i18n/index.svelte';
 import HeroBanner from './HeroBanner.svelte';
+
+beforeEach(() => setLocale('en'));
 
 describe('HeroBanner', () => {
   const editorialItem = {
@@ -38,7 +36,7 @@ describe('HeroBanner', () => {
 
   it('renders "explore.featuredPlaylist" label for editorial type', () => {
     render(HeroBanner, { props: { item: editorialItem, type: 'editorial' } });
-    expect(screen.getByText('explore.featuredPlaylist')).toBeInTheDocument();
+    expect(screen.getByText('Featured Playlist')).toBeInTheDocument();
   });
 
   it('renders cover image when cover_url is set (editorial)', () => {
@@ -69,13 +67,13 @@ describe('HeroBanner', () => {
 
   it('renders track count when present (editorial)', () => {
     render(HeroBanner, { props: { item: editorialItem, type: 'editorial' } });
-    expect(screen.getByText('15 playlists.tracks')).toBeInTheDocument();
+    expect(screen.getByText('15 tracks')).toBeInTheDocument();
   });
 
   it('does not render track count when trackCount is 0 (falsy)', () => {
     const itemNoCount = { ...editorialItem, track_count: 0 };
     const { container } = render(HeroBanner, { props: { item: itemNoCount, type: 'editorial' } });
-    expect(screen.queryByText('playlists.tracks')).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+ tracks?/)).not.toBeInTheDocument();
   });
 
   // ─── Album type tests ─────────────────────────────────────────────
@@ -87,7 +85,7 @@ describe('HeroBanner', () => {
 
   it('renders "explore.featuredAlbum" label for album type', () => {
     render(HeroBanner, { props: { item: albumItem, type: 'album' } });
-    expect(screen.getByText('explore.featuredAlbum')).toBeInTheDocument();
+    expect(screen.getByText('Featured Album')).toBeInTheDocument();
   });
 
   it('renders artist_name as description for album type', () => {
@@ -106,7 +104,7 @@ describe('HeroBanner', () => {
 
   it('does not render trackCount for album type', () => {
     render(HeroBanner, { props: { item: albumItem, type: 'album' } });
-    expect(screen.queryByText('playlists.tracks')).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+ tracks?/)).not.toBeInTheDocument();
   });
 
   it('renders gradient fallback when album has no cover_url', () => {
@@ -136,7 +134,7 @@ describe('HeroBanner', () => {
 
   it('defaults to editorial type when type prop is not provided', () => {
     render(HeroBanner, { props: { item: editorialItem } });
-    expect(screen.getByText('explore.featuredPlaylist')).toBeInTheDocument();
+    expect(screen.getByText('Featured Playlist')).toBeInTheDocument();
     expect(screen.getByText('Chill Vibes')).toBeInTheDocument();
   });
 });
