@@ -3,8 +3,8 @@
 set -eu
 umask 077
 
-url=https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.0/SoundTime-CLI.zip
-expected=169dff5a9fd6b3e4cb64a3644c9ce86f4f070fed36026d2cf869d16c18cfc0bf
+url=https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.1/SoundTime-CLI.zip
+expected=d69e011bcf2dfea3920babf5d62810eb547c130afb37c8389f4ae0225cab48db
 
 if command -v unzip >/dev/null 2>&1; then
     extractor=unzip

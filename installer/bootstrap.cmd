@@ -6,9 +6,9 @@ powershell.exe -NoLogo -NoProfile -Command ^
   "$null = New-Item -ItemType Directory -Path $root;" ^
   "try {" ^
   "    $zip = Join-Path $root 'SoundTime-CLI.zip';" ^
-  "    $url = 'https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.0/SoundTime-CLI.zip';" ^
-  "    $expected = '169dff5a9fd6b3e4cb64a3644c9ce86f4f070fed36026d2cf869d16c18cfc0bf';" ^
-  "    Write-Host 'SoundTime CLI 2.0.0 ...';" ^
+  "    $url = 'https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.1/SoundTime-CLI.zip';" ^
+  "    $expected = 'd69e011bcf2dfea3920babf5d62810eb547c130afb37c8389f4ae0225cab48db';" ^
+  "    Write-Host 'SoundTime CLI 2.0.1 ...';" ^
   "    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12;" ^
   "    $client = New-Object Net.WebClient;" ^
   "    try { $client.DownloadFile($url, $zip) } finally { $client.Dispose() };" ^
