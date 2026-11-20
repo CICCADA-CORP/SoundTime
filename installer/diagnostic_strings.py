@@ -1,740 +1,217 @@
-"""Operator messages from the installer engine, in English, French, Spanish, Russian and Chinese."""
+"""Historical French diagnostics understood by current installer clients."""
 
 
-MESSAGES = (
-    (
-        'Choose disk storage or enter your S3 settings.',
-        'Choisissez le stockage sur disque ou renseignez les paramètres S3.',
-        'Elige el almacenamiento en disco o introduce la configuración de S3.',
-        'Выберите хранение на диске или укажите настройки S3.',
-        '请选择磁盘存储，或填写 S3 设置。',
-    ),
-    (
-        'Enter each S3 setting on a single line.',
-        'Les champs S3 doivent tenir chacun sur une ligne de texte.',
-        'Escribe cada valor de S3 en una sola línea.',
-        'Вводите каждый параметр S3 в одну строку.',
-        '每项 S3 设置只能占一行。',
-    ),
-    (
-        'Enter the bucket region, such as eu-west-3 for AWS or auto for R2.',
-        'Indiquez la région de votre bucket, par exemple eu-west-3 pour AWS ou auto pour R2.',
-        'Indica la región del bucket, por ejemplo eu-west-3 para AWS o auto para R2.',
-        'Укажите регион бакета, например eu-west-3 для AWS или auto для R2.',
-        '请输入存储桶区域，例如 AWS 的 eu-west-3 或 R2 的 auto。',
-    ),
-    (
-        'Enter an HTTP or HTTPS endpoint without credentials, query parameters or a fragment. Leave it blank for AWS.',
-        'L’adresse S3 doit être une URL HTTP ou HTTPS sans identifiants, paramètres ou fragment. Laissez-la vide pour AWS.',
-        'Introduce una URL HTTP o HTTPS sin credenciales, parámetros de consulta ni fragmento. Para AWS, deja el campo vacío.',
-        'Введите адрес HTTP или HTTPS без учётных данных, параметров запроса и фрагмента. Для AWS оставьте поле пустым.',
-        '请输入 HTTP 或 HTTPS 地址，不要包含凭据、查询参数或片段。使用 AWS 时请留空。',
-    ),
-    (
-        'Enter the access key and secret key for your S3 service.',
-        'Renseignez la clé d’accès et la clé secrète du service S3.',
-        'Introduce la clave de acceso y la clave secreta de tu servicio S3.',
-        'Введите ключ доступа и секретный ключ сервиса S3.',
-        '请输入 S3 服务的访问密钥 ID 和秘密访问密钥。',
-    ),
-    (
-        'Enter an S3 prefix without a “..” path component.',
-        'Indiquez un préfixe S3 sans composant « .. ».',
-        'Introduce un prefijo S3 sin segmentos «..».',
-        'Укажите префикс S3 без сегмента «..».',
-        'S3 前缀中不能包含“..”路径段。',
-    ),
-    (
-        'Some settings are missing. Reopen the installer and try again.',
-        'Les réglages sont incomplets. Relancez l’installateur et réessayez.',
-        'Faltan algunos ajustes. Vuelve a abrir el instalador e inténtalo de nuevo.',
-        'Заполнены не все настройки. Откройте установщик заново и повторите попытку.',
-        '设置不完整。请重新打开安装程序后重试。',
-    ),
-    (
-        'Choose a port between 1 and 65535.',
-        'Choisissez un numéro de port entre 1 et 65535.',
-        'Elige un puerto entre 1 y 65535.',
-        'Выберите порт от 1 до 65535.',
-        '请选择 1 到 65535 之间的端口。',
-    ),
-    (
-        'Choose one of the access and sharing options offered by the installer.',
-        'Choisissez une option d’accès et de partage proposée par l’assistant.',
-        'Elige una de las opciones de acceso y uso compartido del instalador.',
-        'Выберите доступный в установщике вариант доступа и обмена.',
-        '请从安装程序提供的选项中选择访问和共享方式。',
-    ),
-    (
-        'Enter a host name or IPv4 address, such as localhost or music.home.',
-        'Entrez un nom d’hôte ou une adresse IPv4, par exemple localhost ou musique.maison.',
-        'Introduce un nombre de host o una dirección IPv4, por ejemplo localhost o musica.casa.',
-        'Введите имя узла или адрес IPv4, например localhost или music.home.',
-        '请输入主机名或 IPv4 地址，例如 localhost 或 music.home。',
-    ),
-    (
-        'Enter a full folder path.',
-        'Choisissez un chemin de dossier complet.',
-        'Introduce la ruta completa de la carpeta.',
-        'Введите полный путь к папке.',
-        '请输入文件夹的完整路径。',
-    ),
-    (
-        'Choose a dedicated installation folder and use its absolute path.',
-        'Choisissez un dossier d’installation dédié avec un chemin absolu.',
-        'Elige una carpeta dedicada a la instalación e indica su ruta absoluta.',
-        'Выберите отдельную папку для установки и укажите её абсолютный путь.',
-        '请选择专用安装文件夹并输入其绝对路径。',
-    ),
-    (
-        'Choose an installation folder below the root of the drive.',
-        'Choisissez un dossier d’installation dédié, sous la racine du disque.',
-        'Elige una subcarpeta de la unidad para la instalación.',
-        'Выберите для установки папку внутри диска.',
-        '请选择磁盘根目录下的子文件夹作为安装目录。',
-    ),
-    (
-        'Enter the full path to your music folder.',
-        'Choisissez le chemin complet de votre dossier de musique.',
-        'Introduce la ruta completa de tu carpeta de música.',
-        'Укажите полный путь к папке с музыкой.',
-        '请输入音乐文件夹的完整路径。',
-    ),
-    (
-        'Choose either a music folder on disk or an S3 bucket for this installation.',
-        'Choisissez le dossier de musique sur disque ou le bucket S3 pour cette installation.',
-        'Elige una carpeta de música en disco o un bucket S3 para esta instalación.',
-        'Выберите для установки папку с музыкой на диске или бакет S3.',
-        '请选择磁盘上的音乐文件夹或 S3 存储桶。',
-    ),
-    (
-        'Choose a music folder separate from the installation folder.',
-        'Choisissez un dossier de musique dédié, séparé du dossier d’installation.',
-        'Elige una carpeta de música separada de la carpeta de instalación.',
-        'Выберите для музыки отдельную папку вне папки установки.',
-        '请选择与安装文件夹分开的音乐文件夹。',
-    ),
-    (
-        'The music folder must exist and be readable. Check its path or reconnect the drive.',
-        'Le dossier de musique doit exister et être lisible. Vérifiez son chemin ou reconnectez le disque.',
-        'La carpeta de música debe existir y permitir la lectura. Comprueba la ruta o vuelve a conectar el disco.',
-        'Папка с музыкой должна существовать и быть доступной для чтения. Проверьте путь или подключите диск.',
-        '音乐文件夹必须存在且可读取。请检查路径或重新连接磁盘。',
-    ),
-    (
-        'An installation file is missing or has been replaced. Check the selected folder.',
-        'Un fichier de l’installation est absent ou remplacé. Vérifiez le dossier choisi.',
-        'Falta un archivo de instalación o se ha sustituido. Comprueba la carpeta elegida.',
-        'Один из файлов установки отсутствует или заменён. Проверьте выбранную папку.',
-        '安装文件缺失或已被替换。请检查所选文件夹。',
-    ),
-    (
-        '{name} has changed. Keep this folder and manage it with Docker Compose, or choose an empty folder.',
-        'Le fichier {name} a été modifié. Conservez ce dossier et utilisez Docker Compose pour le gérer, ou choisissez un dossier vide.',
-        'Se ha modificado {name}. Conserva esta carpeta y adminístrala con Docker Compose, o elige una carpeta vacía.',
-        'Файл {name} изменён. Управляйте этой папкой через Docker Compose или выберите пустую папку.',
-        '文件 {name} 已更改。请保留此文件夹并通过 Docker Compose 管理它，或选择一个空文件夹。',
-    ),
-    (
-        'This path points to a file. Choose a folder.',
-        'Ce chemin désigne un fichier. Choisissez un dossier.',
-        'Esta ruta corresponde a un archivo. Elige una carpeta.',
-        'Этот путь указывает на файл. Выберите папку.',
-        '该路径指向文件。请选择文件夹。',
-    ),
-    (
-        'This folder already contains files. Choose an empty folder or an installation created with this installer.',
-        'Ce dossier contient déjà des fichiers. Choisissez un dossier vide ou une installation créée avec cet assistant.',
-        'La carpeta ya contiene archivos. Elige una carpeta vacía o una instalación creada con este instalador.',
-        'В папке уже есть файлы. Выберите пустую папку или установку, созданную этим установщиком.',
-        '该文件夹已有文件。请选择空文件夹，或选择由此安装程序创建的现有安装。',
-    ),
-    (
-        'The installation folder was moved or its credentials are incomplete. Restore the original configuration or choose an empty folder.',
-        'Le dossier de cette installation a été déplacé ou ses identifiants sont incomplets. Restaurez la configuration d’origine ou choisissez un dossier vide.',
-        'La carpeta de instalación se ha movido o faltan credenciales. Restaura la configuración original o elige una carpeta vacía.',
-        'Папка установки была перемещена или в ней не хватает учётных данных. Восстановите исходную конфигурацию или выберите пустую папку.',
-        '安装文件夹已移动或凭据不完整。请恢复原始配置或选择空文件夹。',
-    ),
-    (
-        'Choose a dedicated installation folder.',
-        'Choisissez un dossier d’installation dédié.',
-        'Elige una carpeta dedicada a esta instalación.',
-        'Выберите отдельную папку для установки.',
-        '请选择专用安装文件夹。',
-    ),
-    (
-        'Another installation is using this folder. Wait for it to finish, then try again.',
-        'Une autre installation utilise déjà ce dossier. Attendez sa fin, puis réessayez.',
-        'Otra instalación está usando la carpeta. Espera a que termine y vuelve a intentarlo.',
-        'Эту папку использует другая установка. Дождитесь её завершения и повторите попытку.',
-        '另一项安装正在使用此文件夹。请等待其完成后重试。',
-    ),
-    (
-        'The Docker files must be inside the selected installation folder.',
-        'Les fichiers Docker de l’installation doivent se trouver dans le dossier choisi.',
-        'Los archivos de Docker deben estar en la carpeta de instalación elegida.',
-        'Файлы Docker должны находиться в выбранной папке установки.',
-        'Docker 文件必须位于所选安装文件夹内。',
-    ),
-    (
-        '{name} has changed. Manage this installation with Docker Compose or select an empty folder.',
-        'Le fichier {name} a été modifié. Gérez cette installation depuis Docker Compose ou choisissez un dossier vide.',
-        'Se ha modificado {name}. Administra esta instalación con Docker Compose o elige una carpeta vacía.',
-        'Файл {name} изменён. Управляйте этой установкой через Docker Compose или выберите пустую папку.',
-        '文件 {name} 已更改。请通过 Docker Compose 管理此安装，或选择空文件夹。',
-    ),
-    (
-        'Docker took too long to respond. Check Docker and your connection, then try again.',
-        'Docker met trop de temps à répondre. Vérifiez son état et votre connexion, puis réessayez.',
-        'Docker tarda demasiado en responder. Comprueba Docker y la conexión y vuelve a intentarlo.',
-        'Docker не ответил вовремя. Проверьте его состояние и подключение, затем повторите попытку.',
-        'Docker 响应超时。请检查 Docker 状态和网络连接，然后重试。',
-    ),
-    (
-        'Install Docker Desktop on Mac or Windows, or Docker Engine with Compose on Linux, then run the checks again.',
-        'Installez Docker Desktop sur Mac ou Windows, ou Docker Engine avec Compose sur Linux, puis relancez la vérification.',
-        'Instala Docker Desktop en Mac o Windows, o Docker Engine con Compose en Linux, y repite la comprobación.',
-        'Установите Docker Desktop на Mac или Windows либо Docker Engine с Compose на Linux и повторите проверку.',
-        '请在 Mac 或 Windows 上安装 Docker Desktop，在 Linux 上安装 Docker Engine 和 Compose，然后重新检查。',
-    ),
-    (
-        'Open Docker Desktop or start Docker Engine, then run the checks again.',
-        'Ouvrez Docker Desktop ou démarrez Docker Engine, puis relancez la vérification.',
-        'Abre Docker Desktop o inicia Docker Engine y repite la comprobación.',
-        'Откройте Docker Desktop или запустите Docker Engine, затем повторите проверку.',
-        '请打开 Docker Desktop 或启动 Docker Engine，然后重新检查。',
-    ),
-    (
-        'Select this computer’s Docker engine. To install on a remote host, use the remote installation option or run the installer there.',
-        'Sélectionnez le moteur Docker de cet ordinateur. Pour un serveur distant, ouvrez l’assistant sur ce serveur.',
-        'Selecciona el motor Docker de este equipo. Para un host remoto, elige la instalación remota o abre el instalador allí.',
-        'Выберите движок Docker этого компьютера. Для удалённого узла выберите удалённую установку или откройте установщик на нём.',
-        '请选择本机 Docker 引擎。如需安装到远程主机，请选择远程安装或在目标主机上运行安装程序。',
-    ),
-    (
-        'Docker is installed. Start it and make sure your account can access it, then try again.',
-        'Docker est installé. Démarrez-le et vérifiez que votre compte y a accès, puis réessayez.',
-        'Docker está instalado. Inícialo, comprueba que tu cuenta tiene acceso y vuelve a intentarlo.',
-        'Docker установлен. Запустите его, проверьте доступ вашей учётной записи и повторите попытку.',
-        'Docker 已安装。请启动 Docker 并确认当前账户可以访问，然后重试。',
-    ),
-    (
-        'SoundTime runs in Linux x86-64 or ARM64 containers. On Windows, switch Docker Desktop to Linux containers.',
-        'SoundTime utilise des conteneurs Linux x86-64 ou ARM64. Sur Windows, activez les conteneurs Linux dans Docker Desktop.',
-        'SoundTime utiliza contenedores Linux x86-64 o ARM64. En Windows, activa los contenedores Linux en Docker Desktop.',
-        'SoundTime использует контейнеры Linux x86-64 или ARM64. В Windows переключите Docker Desktop на контейнеры Linux.',
-        'SoundTime 使用 Linux x86-64 或 ARM64 容器。在 Windows 上，请将 Docker Desktop 切换为 Linux 容器。',
-    ),
-    (
-        'Update Docker Compose to version 2.24.4 or later, then try again.',
-        'Mettez à jour Docker Compose vers la version 2.24.4 ou ultérieure, puis réessayez.',
-        'Actualiza Docker Compose a la versión 2.24.4 o posterior y vuelve a intentarlo.',
-        'Обновите Docker Compose до версии 2.24.4 или новее и повторите попытку.',
-        '请将 Docker Compose 更新到 2.24.4 或更高版本后重试。',
-    ),
-    (
-        'Docker is running. Compose {version} is available.',
-        'Docker est démarré. Compose {version} est disponible.',
-        'Docker está en marcha. Compose {version} está disponible.',
-        'Docker запущен. Доступен Compose {version}.',
-        'Docker 正在运行，Compose {version} 可用。',
-    ),
-    (
-        'Port {port} is in use or reserved. Choose another port in the settings.',
-        'Le port {port} est occupé ou réservé. Choisissez un autre numéro dans les réglages.',
-        'El puerto {port} está en uso o reservado. Elige otro en los ajustes.',
-        'Порт {port} занят или зарезервирован. Выберите другой порт в настройках.',
-        '端口 {port} 已被占用或保留。请在设置中选择其他端口。',
-    ),
-    (
-        'Settings',
-        'Réglages',
-        'Ajustes',
-        'Настройки',
-        '设置',
-    ),
-    (
-        'Choose a folder your account can write to.',
-        'Choisissez un dossier dans lequel votre compte peut écrire.',
-        'Elige una carpeta en la que tu cuenta pueda escribir.',
-        'Выберите папку, в которую у вашей учётной записи есть право записи.',
-        '请选择当前账户具有写入权限的文件夹。',
-    ),
-    (
-        'The existing installation will resume.',
-        'L’installation existante sera reprise.',
-        'Se reanudará la instalación existente.',
-        'Существующая установка будет продолжена.',
-        '将继续现有安装。',
-    ),
-    (
-        'The folder is available for SoundTime.',
-        'Le dossier est disponible pour SoundTime.',
-        'La carpeta está disponible para SoundTime.',
-        'Папка доступна для SoundTime.',
-        '该文件夹可用于安装 SoundTime。',
-    ),
-    (
-        'The selected ports are available.',
-        'Les ports choisis sont disponibles pour cette installation.',
-        'Los puertos elegidos están disponibles.',
-        'Выбранные порты свободны.',
-        '所选端口可用。',
-    ),
-    (
-        'Network ports',
-        'Ports réseau',
-        'Puertos de red',
-        'Сетевые порты',
-        '网络端口',
-    ),
-    (
-        'S3 configuration',
-        'Configuration S3',
-        'Configuración de S3',
-        'Настройки S3',
-        'S3 配置',
-    ),
-    (
-        'The S3 settings are filled in. Upload and play a track to verify access to the bucket.',
-        'Paramètres renseignés. Un premier téléversement et sa lecture permettront de vérifier les droits sur le bucket.',
-        'Los campos de S3 están completos. Sube y reproduce una pista para comprobar el acceso al bucket.',
-        'Настройки S3 заполнены. Загрузите и воспроизведите трек, чтобы проверить доступ к бакету.',
-        'S3 设置已填写。请上传并播放一首音乐，以验证存储桶访问权限。',
-    ),
-    (
-        'Another application just reserved the port. Change the port in settings and restart the installation.',
-        'Un port vient d’être réservé par une autre application. Changez le port dans les réglages et relancez l’installation.',
-        'Otra aplicación acaba de reservar el puerto. Cambia el puerto en los ajustes y reinicia la instalación.',
-        'Другое приложение только что заняло порт. Измените его в настройках и запустите установку снова.',
-        '其他应用刚刚占用了此端口。请在设置中更改端口，然后重新安装。',
-    ),
-    (
-        'Docker’s disk is full. Free some space and try again using the same folder.',
-        'Le disque utilisé par Docker est plein. Libérez de la place, puis réessayez avec le même dossier.',
-        'El disco de Docker está lleno. Libera espacio y vuelve a intentarlo con la misma carpeta.',
-        'Диск Docker заполнен. Освободите место и повторите попытку с той же папкой.',
-        'Docker 使用的磁盘已满。请释放空间，然后使用同一文件夹重试。',
-    ),
-    (
-        'The Docker configuration is invalid. Check your Compose version.',
-        'La configuration Docker est invalide. Vérifiez votre version de Compose.',
-        'La configuración de Docker no es válida. Comprueba la versión de Compose.',
-        'Некорректная конфигурация Docker. Проверьте версию Compose.',
-        'Docker 配置无效。请检查 Compose 版本。',
-    ),
-    (
-        'Docker Compose found no images in the configuration.',
-        'Docker Compose n’a trouvé aucune image dans la configuration.',
-        'Docker Compose no encontró imágenes en la configuración.',
-        'Docker Compose не нашёл образы в конфигурации.',
-        'Docker Compose 在配置中没有找到镜像。',
-    ),
-    (
-        '{i}/{total} · Downloading {image}.',
-        '{i}/{total} · Téléchargement de {image}.',
-        '{i}/{total} · Descargando {image}.',
-        '{i}/{total} · Загрузка {image}.',
-        '{i}/{total} · 正在下载 {image}。',
-    ),
-    (
-        'Docker could not download {image}. Check your connection, disk space and registry access, then try again.',
-        'Docker n’a pas pu télécharger {image}. Vérifiez votre connexion, l’espace disque et l’accès au registre, puis réessayez.',
-        'Docker no pudo descargar {image}. Comprueba la conexión, el espacio libre y el acceso al registro, y vuelve a intentarlo.',
-        'Docker не смог скачать {image}. Проверьте соединение, свободное место и доступ к реестру образов, затем повторите попытку.',
-        'Docker 无法下载 {image}。请检查网络、磁盘空间以及镜像仓库访问权限，然后重试。',
-    ),
-    (
-        'SoundTime is still starting or a service needs attention. Retry with the same folder. Run “docker compose logs --tail=100” in that folder to see which service is affected.',
-        'SoundTime démarre encore ou un service rencontre un problème. Réessayez avec le même dossier. Le journal « docker compose logs --tail=100 » dans ce dossier indique le service concerné.',
-        'SoundTime aún se está iniciando o hay un problema con un servicio. Vuelve a intentarlo con la misma carpeta. Ejecuta «docker compose logs --tail=100» allí para identificar el servicio afectado.',
-        'SoundTime ещё запускается или произошла ошибка службы. Повторите попытку с той же папкой. Команда «docker compose logs --tail=100» в этой папке покажет проблемную службу.',
-        'SoundTime 仍在启动或某项服务遇到问题。请使用同一文件夹重试。在该文件夹运行“docker compose logs --tail=100”可查看相关服务。',
-    ),
-    (
-        'Docker could not start the services. Check disk space and Docker Desktop file sharing, then try again. Run “docker compose logs --tail=100” in this folder for details.',
-        'Docker n’a pas pu démarrer les services. Vérifiez l’espace disque et le partage du dossier dans Docker Desktop, puis réessayez. Le journal « docker compose logs --tail=100 » est disponible dans ce dossier.',
-        'Docker no pudo iniciar los servicios. Comprueba el espacio en disco y el uso compartido de archivos en Docker Desktop. Vuelve a intentarlo o ejecuta «docker compose logs --tail=100» en esta carpeta para ver los detalles.',
-        'Docker не смог запустить службы. Проверьте свободное место и общий доступ к папке в Docker Desktop. Повторите попытку или запустите «docker compose logs --tail=100» в этой папке.',
-        'Docker 无法启动服务。请检查磁盘空间和 Docker Desktop 的文件共享设置后重试。在本文件夹运行“docker compose logs --tail=100”可查看日志。',
-    ),
-    (
-        'Finish creating your account and setting up SoundTime, then enable network access again.',
-        'Terminez la création du compte et la configuration dans SoundTime, puis activez à nouveau l’accès réseau.',
-        'Termina de crear tu cuenta y configurar SoundTime antes de volver a activar el acceso de red.',
-        'Завершите создание учётной записи и настройку SoundTime, затем снова включите доступ по сети.',
-        '请完成账户创建和 SoundTime 设置，然后再次启用网络访问。',
-    ),
-    (
-        'Enabling access from your network.',
-        'Activation de l’accès depuis votre réseau.',
-        'Activando el acceso desde tu red.',
-        'Включаем доступ из вашей сети.',
-        '正在启用局域网访问。',
-    ),
-    (
-        'Checking access to SoundTime.',
-        'Vérification de l’accès à SoundTime.',
-        'Comprobando el acceso a SoundTime.',
-        'Проверяем доступ к SoundTime.',
-        '正在检查 SoundTime 访问状态。',
-    ),
-    (
-        'Checking Docker, the folder and the ports.',
-        'Vérification de Docker, du dossier et des ports.',
-        'Comprobando Docker, la carpeta y los puertos.',
-        'Проверяем Docker, папку и порты.',
-        '正在检查 Docker、文件夹和端口。',
-    ),
-    (
-        'Downloading missing images. Docker will reuse images already available.',
-        'Téléchargement des images manquantes. Docker réutilise les images déjà disponibles.',
-        'Descargando las imágenes que faltan. Docker reutiliza las que ya están disponibles.',
-        'Загружаем недостающие образы. Docker повторно использует уже имеющиеся.',
-        '正在下载缺少的镜像。Docker 将复用已有镜像。',
-    ),
-    (
-        'Starting the music library and its services.',
-        'Démarrage de la bibliothèque et de ses services.',
-        'Iniciando la biblioteca de música y sus servicios.',
-        'Запускаем медиатеку и её службы.',
-        '正在启动音乐库及其服务。',
-    ),
-    (
-        'Checking the server, database and setup page.',
-        'Vérification du serveur, de la base de données et de la page de configuration.',
-        'Comprobando el servidor, la base de datos y la página de configuración.',
-        'Проверяем сервер, базу данных и страницу настройки.',
-        '正在检查服务器、数据库和设置页面。',
-    ),
-    (
-        'Select an existing installation configured for local network access.',
-        'Choisissez une installation existante configurée pour le réseau local.',
-        'Selecciona una instalación existente configurada para el acceso desde la red local.',
-        'Выберите существующую установку с доступом по локальной сети.',
-        '请选择已配置局域网访问的现有安装。',
-    ),
-    (
-        'The installation or its settings have changed. Run the checks again using the same folder.',
-        'L’installation ou ses réglages ont changé. Relancez la vérification avec le même dossier.',
-        'La instalación o sus ajustes han cambiado. Repite la comprobación con la misma carpeta.',
-        'Установка или её настройки изменились. Повторите проверку с той же папкой.',
-        '安装或其设置已更改。请使用同一文件夹重新检查。',
-    ),
-    (
-        'Choose a destination and an SSH account.',
-        'Choisissez une destination et un compte SSH.',
-        'Elige un destino y una cuenta SSH.',
-        'Выберите целевую машину и учётную запись SSH.',
-        '请选择目标主机和 SSH 账户。',
-    ),
-    (
-        'Enter the Linux username for the SSH connection.',
-        'Indiquez le nom du compte Linux utilisé pour la connexion SSH.',
-        'Introduce el nombre de usuario de Linux para la conexión SSH.',
-        'Введите имя пользователя Linux для соединения SSH.',
-        '请输入用于 SSH 连接的 Linux 用户名。',
-    ),
-    (
-        'Enter the machine’s host name or IP address.',
-        'Indiquez le nom d’hôte ou l’adresse IP de la machine.',
-        'Introduce el nombre de host o la dirección IP de la máquina.',
-        'Введите имя узла или IP-адрес машины.',
-        '请输入主机名或 IP 地址。',
-    ),
-    (
-        'The server’s IPv6 address is invalid.',
-        'L’adresse IPv6 du serveur est invalide.',
-        'La dirección IPv6 del servidor no es válida.',
-        'Некорректный IPv6-адрес сервера.',
-        '服务器的 IPv6 地址无效。',
-    ),
-    (
-        'Use an IPv6 address without an interface identifier.',
-        'Utilisez une adresse IPv6 sans identifiant d’interface.',
-        'Utiliza una dirección IPv6 sin identificador de interfaz.',
-        'Используйте IPv6-адрес без идентификатора интерфейса.',
-        '请使用不含网络接口标识符的 IPv6 地址。',
-    ),
-    (
-        'Enter a host name or IP address without a protocol or path.',
-        'Indiquez un nom d’hôte ou une adresse IP, sans protocole ni chemin.',
-        'Introduce un nombre de host o una dirección IP sin protocolo ni ruta.',
-        'Введите имя узла или IP-адрес без протокола и пути.',
-        '请输入主机名或 IP 地址，省略协议和路径。',
-    ),
-    (
-        'Enter an SSH port between 1 and 65535.',
-        'Indiquez un port SSH entre 1 et 65535.',
-        'Introduce un puerto SSH entre 1 y 65535.',
-        'Укажите порт SSH от 1 до 65535.',
-        '请输入 1 到 65535 之间的 SSH 端口。',
-    ),
-    (
-        'Install the OpenSSH client on this computer, or export a Docker project to import on the target.',
-        'Installez le client OpenSSH sur cet ordinateur, ou choisissez le projet Docker à importer.',
-        'Instala el cliente OpenSSH en este equipo o exporta un proyecto Docker para importarlo en el destino.',
-        'Установите клиент OpenSSH на этом компьютере или экспортируйте проект Docker для импорта на целевом узле.',
-        '请在本机安装 OpenSSH 客户端，或导出 Docker 项目并在目标主机上导入。',
-    ),
-    (
-        'This package is missing the SSH agent. Open a complete copy of the installer.',
-        'L’agent SSH est absent de ce paquet. Rouvrez une distribution complète de l’assistant.',
-        'Falta el agente SSH en este paquete. Abre una copia completa del instalador.',
-        'В пакете отсутствует агент SSH. Откройте полную версию установщика.',
-        '此软件包缺少 SSH 代理。请打开完整的安装程序。',
-    ),
-    (
-        'This host key is unknown. Verify its fingerprint with your provider, then connect once using SSH from this computer.',
-        'La clé de cet hôte n’est pas reconnue. Vérifiez son empreinte auprès de votre hébergeur, puis connectez-vous une première fois avec SSH depuis cet ordinateur.',
-        'La clave del host es desconocida. Comprueba su huella con tu proveedor y conéctate una vez por SSH desde este equipo.',
-        'Ключ этого узла неизвестен. Сверьте его отпечаток с данными провайдера и один раз подключитесь к узлу по SSH с этого компьютера.',
-        '主机密钥未知。请与服务提供方核对指纹，然后从本机通过 SSH 连接一次。',
-    ),
-    (
-        'The server rejected the account or its SSH key. Check the username and load the key into your SSH agent.',
-        'Le serveur a refusé le compte ou sa clé SSH. Vérifiez le nom du compte et chargez sa clé dans votre agent SSH.',
-        'El servidor ha rechazado la cuenta o su clave SSH. Comprueba el usuario y carga la clave en tu agente SSH.',
-        'Сервер отклонил учётную запись или ключ SSH. Проверьте имя пользователя и добавьте ключ в SSH-агент.',
-        '服务器拒绝了该账户或 SSH 密钥。请检查用户名，并将密钥加载到 SSH 代理。',
-    ),
-    (
-        'Install Python 3.9 or later on the server, or export a Docker project to import there.',
-        'Installez Python 3.9 ou ultérieur sur le serveur ou utilisez le projet Docker à importer.',
-        'Instala Python 3.9 o posterior en el servidor o exporta un proyecto Docker para importarlo allí.',
-        'Установите на сервер Python 3.9 или новее либо экспортируйте проект Docker для импорта на сервере.',
-        '请在服务器上安装 Python 3.9 或更高版本，或导出 Docker 项目并在服务器上导入。',
-    ),
-    (
-        'The SSH connection was interrupted. Check the server address, port, key and network connection.',
-        'Connexion SSH interrompue. Vérifiez l’adresse, le port, la clé et l’accès réseau au serveur.',
-        'La conexión SSH se ha interrumpido. Comprueba la dirección, el puerto, la clave y la conexión de red al servidor.',
-        'Соединение SSH прервано. Проверьте адрес сервера, порт, ключ и доступность сети.',
-        'SSH 连接已中断。请检查服务器地址、端口、密钥和网络连接。',
-    ),
-    (
-        'The SSH client could not start.',
-        'Le client SSH n’a pas pu démarrer.',
-        'No se pudo iniciar el cliente SSH.',
-        'Не удалось запустить клиент SSH.',
-        '无法启动 SSH 客户端。',
-    ),
-    (
-        'SoundTime is running on the server. Check your SSH client and TCP forwarding, then open the indicated tunnel to access your library.',
-        'SoundTime fonctionne sur le serveur. Vérifiez le client SSH et la redirection TCP, puis ouvrez le tunnel indiqué pour accéder à votre bibliothèque.',
-        'SoundTime está en marcha en el servidor. Comprueba el cliente SSH y el reenvío TCP. Abre el túnel indicado para acceder a tu biblioteca.',
-        'SoundTime работает на сервере. Проверьте клиент SSH и перенаправление TCP, затем откройте указанный туннель для доступа к медиатеке.',
-        'SoundTime 已在服务器上运行。请检查 SSH 客户端和 TCP 转发设置，然后打开所示隧道以访问音乐库。',
-    ),
-    (
-        'Choose a Linux host with Docker Engine and Compose.',
-        'Choisissez un hôte Linux avec Docker Engine et Compose.',
-        'Elige un host Linux con Docker Engine y Compose.',
-        'Выберите узел Linux с Docker Engine и Compose.',
-        '请选择已安装 Docker Engine 和 Compose 的 Linux 主机。',
-    ),
-    (
+LEGACY_FRENCH = {
+    'Action distante inconnue.':
         'Unknown remote action.',
-        'Action distante inconnue.',
-        'Acción remota desconocida.',
-        'Неизвестная удалённая операция.',
-        '未知的远程操作。',
-    ),
-    (
-        'The server could not access the folder or Docker. Check the SSH account permissions.',
-        'Le serveur n’a pas pu accéder au dossier ou à Docker. Vérifiez les droits du compte SSH.',
-        'El servidor no pudo acceder a la carpeta o a Docker. Comprueba los permisos de la cuenta SSH.',
-        'Сервер не смог получить доступ к папке или Docker. Проверьте права учётной записи SSH.',
-        '服务器无法访问文件夹或 Docker。请检查 SSH 账户权限。',
-    ),
-    (
-        'The remote agent encountered an error. Run the checks again.',
-        'L’agent distant a rencontré une erreur. Relancez la vérification.',
-        'El agente remoto ha encontrado un error. Repite la comprobación.',
-        'В удалённом агенте произошла ошибка. Повторите проверку.',
-        '远程代理遇到错误。请重新检查。',
-    ),
-    (
-        'A project variable contains a line break.',
-        'Une variable du projet contient un retour à la ligne.',
-        'Una variable del proyecto contiene un salto de línea.',
-        'Переменная проекта содержит перевод строки.',
-        '项目变量包含换行符。',
-    ),
-    (
-        'This Nginx configuration cannot protect the first account during setup.',
-        'Impossible de préparer la protection du premier compte avec cette configuration Nginx.',
-        'Esta configuración de Nginx no permite proteger la creación de la primera cuenta.',
-        'Эта конфигурация Nginx не позволяет защитить создание первой учётной записи.',
-        '无法使用此 Nginx 配置保护首个账户的创建过程。',
-    ),
-    (
+    'Activation de l’accès depuis votre réseau.':
+        'Enabling access from your network.',
+    'Ce chemin désigne un fichier. Choisissez un dossier.':
+        'This path points to a file. Choose a folder.',
+    'Ce dossier contient déjà des fichiers. Choisissez un dossier vide ou une installation créée avec cet assistant.':
+        'This folder already contains files. Choose an empty folder or an installation created with this installer.',
+    'Choisissez le chemin complet de votre dossier de musique.':
+        'Enter the full path to your music folder.',
+    'Choisissez le dossier de musique sur disque ou le bucket S3 pour cette installation.':
+        'Choose either a music folder on disk or an S3 bucket for this installation.',
+    'Choisissez le stockage sur disque ou renseignez les paramètres S3.':
+        'Choose disk storage or enter your S3 settings.',
+    'Choisissez un chemin de dossier complet.':
+        'Enter a full folder path.',
+    'Choisissez un dossier dans lequel votre compte peut écrire.':
+        'Choose a folder your account can write to.',
+    'Choisissez un dossier de musique dédié, séparé du dossier d’installation.':
+        'Choose a music folder separate from the installation folder.',
+    'Choisissez un dossier d’installation dédié avec un chemin absolu.':
+        'Choose a dedicated installation folder and use its absolute path.',
+    'Choisissez un dossier d’installation dédié, sous la racine du disque.':
+        'Choose an installation folder below the root of the drive.',
+    'Choisissez un dossier d’installation dédié.':
+        'Choose a dedicated installation folder.',
+    'Choisissez un hôte Linux avec Docker Engine et Compose.':
+        'Choose a Linux host with Docker Engine and Compose.',
+    'Choisissez un numéro de port entre 1 et 65535.':
+        'Choose a port between 1 and 65535.',
+    'Choisissez une destination et un compte SSH.':
+        'Choose a destination and an SSH account.',
+    'Choisissez une destination parmi NAS, serveur dédié, VPS, VM et cloud.':
         'Choose NAS, dedicated server, VPS, virtual machine or cloud as the destination.',
-        'Choisissez une destination parmi NAS, serveur dédié, VPS, VM et cloud.',
-        'Elige como destino un NAS, un servidor dedicado, un VPS, una máquina virtual o una instancia en la nube.',
-        'Выберите NAS, выделенный сервер, VPS, виртуальную машину или облачный сервер.',
-        '请选择 NAS、独立服务器、VPS、虚拟机或云实例作为目标。',
-    ),
-    (
-        'Enter the existing bucket name using 3 to 63 lowercase letters, digits, dots or hyphens.',
-        'Indiquez le nom du bucket existant (3 à 63 lettres minuscules, chiffres, points ou tirets).',
-        'Introduce el nombre del bucket existente con entre 3 y 63 letras minúsculas, dígitos, puntos o guiones.',
-        'Введите имя существующего бакета длиной от 3 до 63 символов. Допустимы строчные латинские буквы, цифры, точки и дефисы.',
-        '请输入已有存储桶的名称，长度为 3 到 63 个字符，只能使用小写字母、数字、点和连字符。',
-    ),
-    (
-        'Restore {name} from the original installation before continuing.',
-        'Restaurez le fichier {name} de l’installation d’origine avant de reprendre.',
-        'Restaura {name} de la instalación original antes de continuar.',
-        'Перед продолжением восстановите файл {name} из исходной установки.',
-        '请从原安装中恢复文件 {name} 后继续。',
-    ),
-    (
-        'Docker and Compose',
-        'Docker et Compose',
-        'Docker y Compose',
-        'Docker и Compose',
-        'Docker 和 Compose',
-    ),
-    (
-        'Installation folder',
-        'Dossier d’installation',
-        'Carpeta de instalación',
-        'Папка установки',
-        '安装文件夹',
-    ),
-    (
-        '{i}/{total} · {image} is already available on this computer.',
-        '{i}/{total} · {image} est disponible sur cet ordinateur.',
-        '{i}/{total} · {image} ya está disponible en este equipo.',
-        '{i}/{total} · Образ {image} уже есть на этом компьютере.',
-        '{i}/{total} · 本机已有镜像 {image}。',
-    ),
-    (
+    'Choisissez une installation existante configurée pour le réseau local.':
+        'Select an existing installation configured for local network access.',
+    'Choisissez une option d’accès et de partage proposée par l’assistant.':
+        'Choose one of the access and sharing options offered by the installer.',
+    'Configuration S3':
+        'S3 configuration',
+    'Connexion SSH interrompue. Vérifiez l’adresse, le port, la clé et l’accès réseau au serveur.':
+        'The SSH connection was interrupted. Check the server address, port, key and network connection.',
+    'Connexion au serveur':
         'Server connection',
-        'Connexion au serveur',
-        'Conexión con el servidor',
-        'Соединение с сервером',
-        '服务器连接',
-    ),
-    (
-        'SSH authenticated successfully and the agent is running on {host}.',
-        'La clé SSH est reconnue et l’agent fonctionne sur {host}.',
-        'La autenticación SSH se ha completado y el agente está en marcha en {host}.',
-        'Проверка SSH пройдена. Агент работает на {host}.',
-        'SSH 身份验证成功，代理已在 {host} 上运行。',
-    ),
-    (
+    'Connexion à {host} avec votre clé SSH.':
         'Connecting to {host} with your SSH key.',
-        'Connexion à {host} avec votre clé SSH.',
-        'Conectando con {host} mediante tu clave SSH.',
-        'Подключаемся к {host} с вашим ключом SSH.',
-        '正在使用 SSH 密钥连接到 {host}。',
-    ),
-    (
-        'Missing QNAP project variable {name}.',
-        'Variable du projet QNAP manquante : {name}',
-        'Falta la variable {name} del proyecto QNAP.',
-        'В проекте QNAP отсутствует переменная {name}.',
-        'QNAP 项目缺少变量 {name}。',
-    ),
-    (
-        'Python 3.9 or later is required on the server.',
-        'Python 3.9 ou plus récent est requis sur le serveur.',
-        'El servidor necesita Python 3.9 o posterior.',
-        'На сервере требуется Python 3.9 или новее.',
-        '服务器需要 Python 3.9 或更高版本。',
-    ),
-    (
-        'Enter the username for the SSH connection.',
-        'Indiquez le nom du compte utilisé pour la connexion SSH.',
-        'Introduce el nombre de usuario de la conexión SSH.',
-        'Введите имя пользователя для подключения по SSH.',
-        '请输入 SSH 连接使用的用户名。',
-    ),
-    (
-        'The server timed out. Check the SSH connection.',
-        'Le serveur a mis trop de temps à répondre. Vérifiez la connexion SSH.',
-        'El servidor tardó demasiado en responder. Comprueba la conexión SSH.',
-        'Сервер не ответил вовремя. Проверьте соединение SSH.',
-        '服务器响应超时。请检查 SSH 连接。',
-    ),
-    (
-        'Could not identify the server. Use Linux, macOS or Windows with OpenSSH.',
-        'Impossible d’identifier le serveur. Utilisez Linux, macOS ou Windows avec OpenSSH.',
-        'No se pudo identificar el servidor. Usa Linux, macOS o Windows con OpenSSH.',
-        'Не удалось определить систему сервера. Выберите Linux, macOS или Windows с OpenSSH.',
-        '无法识别服务器。请使用安装了 OpenSSH 的 Linux、macOS 或 Windows 系统。',
-    ),
-    (
-        'The installer supports 64-bit Intel/AMD and ARM processors.',
-        'L’installateur prend en charge les processeurs 64 bits Intel/AMD et ARM.',
-        'El instalador admite procesadores Intel/AMD y ARM de 64 bits.',
-        'Установщик поддерживает 64-разрядные процессоры Intel/AMD и ARM.',
-        '安装程序支持 64 位 Intel/AMD 和 ARM 处理器。',
-    ),
-    (
-        'The detected operating system does not match the selected destination.',
-        'Le système détecté ne correspond pas à la destination choisie.',
-        'El sistema operativo detectado no coincide con el destino elegido.',
-        'Обнаруженная операционная система отличается от выбранной целевой системы.',
-        '检测到的操作系统与选择的目标系统不符。',
-    ),
-    (
+    'Docker Compose n’a trouvé aucune image dans la configuration.':
+        'Docker Compose found no images in the configuration.',
+    'Docker est démarré. Compose {version} est disponible.':
+        'Docker is running. Compose {version} is available.',
+    'Docker est installé. Démarrez-le et vérifiez que votre compte y a accès, puis réessayez.':
+        'Docker is installed. Start it and make sure your account can access it, then try again.',
+    'Docker et Compose':
+        'Docker and Compose',
+    'Docker met trop de temps à répondre. Vérifiez son état et votre connexion, puis réessayez.':
+        'Docker took too long to respond. Check Docker and your connection, then try again.',
+    'Docker n’a pas pu démarrer les services. Vérifiez l’espace disque et le partage du dossier dans Docker Desktop, puis réessayez. Le journal « docker compose logs --tail=100 » est disponible dans ce dossier.':
+        'Docker could not start the services. Check disk space and Docker Desktop file sharing, then try again. Run “docker compose logs --tail=100” in this folder for details.',
+    'Docker n’a pas pu télécharger {image}. Vérifiez votre connexion, l’espace disque et l’accès au registre, puis réessayez.':
+        'Docker could not download {image}. Check your connection, disk space and registry access, then try again.',
+    'Dossier d’installation':
+        'Installation folder',
+    'Démarrage de la bibliothèque et de ses services.':
+        'Starting the music library and its services.',
+    'Entrez un nom d’hôte ou une adresse IPv4, par exemple localhost ou musique.maison.':
+        'Enter a host name or IPv4 address, such as localhost or music.home.',
+    'Extrayez l’archive universelle complète pour utiliser le moteur de la machine distante.':
         'Extract the complete universal archive to use the deployment engine for the remote host.',
-        'Extrayez l’archive universelle complète pour utiliser le moteur de la machine distante.',
-        'Extrae el archivo universal completo para usar el motor de instalación del equipo remoto.',
-        'Чтобы использовать модуль установки для удалённой машины, полностью распакуйте универсальный архив.',
-        '请完整解压通用安装包，以使用远程主机所需的部署程序。',
-    ),
-    (
+    'Impossible de préparer la protection du premier compte avec cette configuration Nginx.':
+        'This Nginx configuration cannot protect the first account during setup.',
+    'Impossible de préparer le moteur sur le serveur. Vérifiez l’espace disponible et les droits du compte.':
         'Could not prepare the deployment engine on the server. Check the free space and account permissions.',
-        'Impossible de préparer le moteur sur le serveur. Vérifiez l’espace disponible et les droits du compte.',
-        'No se pudo preparar el motor de instalación en el servidor. Comprueba el espacio libre y los permisos de la cuenta.',
-        'Не удалось подготовить модуль установки на сервере. Проверьте свободное место на диске и права учётной записи.',
-        '无法在服务器上准备部署程序。请检查可用磁盘空间和账户权限。',
-    ),
-    (
-        'Open a terminal to confirm the server’s SSH fingerprint.',
-        'Ouvrez un terminal pour confirmer l’empreinte SSH du serveur.',
-        'Abre una terminal para confirmar la huella SSH del servidor.',
-        'Откройте терминал, чтобы подтвердить отпечаток SSH-ключа сервера.',
-        '请打开终端以确认服务器的 SSH 密钥指纹。',
-    ),
-    (
-        'The SSH tunnel cannot reach SoundTime. Check the web port and TCP forwarding on the server.',
-        'Le tunnel SSH ne rejoint pas SoundTime. Vérifiez le port web et la redirection TCP du serveur.',
-        'El túnel SSH no puede conectar con SoundTime. Comprueba el puerto web y el reenvío TCP del servidor.',
-        'Туннелю SSH не удалось подключиться к SoundTime. Проверьте порт веб-сервера и перенаправление TCP на сервере.',
-        'SSH 隧道无法连接到 SoundTime。请检查服务器上的 Web 端口和 TCP 转发设置。',
-    ),
-    (
+    'Impossible de reprendre automatiquement ces réglages. Restaurez la configuration de cette installation ou choisissez un dossier vide.':
         'These settings could not be recovered automatically. Restore the original configuration or choose an empty folder.',
-        'Impossible de reprendre automatiquement ces réglages. Restaurez la configuration de cette installation ou choisissez un dossier vide.',
-        'No se han podido recuperar estos ajustes automáticamente. Restaura la configuración original o elige una carpeta vacía.',
-        'Не удалось автоматически восстановить эти настройки. Восстановите исходную конфигурацию или выберите пустую папку.',
-        '无法自动恢复这些设置。请恢复原有配置，或选择一个空文件夹。',
-    ),
-    (
-        'To change the S3 storage settings, enter the bucket credentials again.',
-        'Pour modifier le stockage S3, renseignez de nouveau les clés du bucket.',
-        'Para modificar el almacenamiento S3, vuelve a introducir las claves del bucket.',
-        'Чтобы изменить настройки хранилища S3, введите ключи доступа к бакету ещё раз.',
-        '要更改 S3 存储设置，请重新输入存储桶的访问密钥。',
-    ),
-    (
-        'Enter the bucket credentials to export an S3 configuration.',
-        'Pour exporter une configuration S3, fournissez les clés du bucket.',
-        'Introduce las claves del bucket para exportar la configuración S3.',
-        'Чтобы экспортировать конфигурацию S3, введите ключи доступа к бакету.',
-        '要导出 S3 配置，请输入存储桶的访问密钥。',
-    ),
-    (
+    'Impossible d’identifier le serveur. Utilisez Linux, macOS ou Windows avec OpenSSH.':
+        'Could not identify the server. Use Linux, macOS or Windows with OpenSSH.',
+    'Indiquez la région de votre bucket, par exemple eu-west-3 pour AWS ou auto pour R2.':
+        'Enter the bucket region, such as eu-west-3 for AWS or auto for R2.',
+    'Indiquez le nom du bucket existant (3 à 63 lettres minuscules, chiffres, points ou tirets).':
+        'Enter the existing bucket name using 3 to 63 lowercase letters, digits, dots or hyphens.',
+    'Indiquez le nom du compte Linux utilisé pour la connexion SSH.':
+        'Enter the Linux username for the SSH connection.',
+    'Indiquez le nom du compte utilisé pour la connexion SSH.':
+        'Enter the username for the SSH connection.',
+    'Indiquez le nom d’hôte ou l’adresse IP de la machine.':
+        'Enter the machine’s host name or IP address.',
+    'Indiquez un nom d’hôte ou une adresse IP, sans protocole ni chemin.':
+        'Enter a host name or IP address without a protocol or path.',
+    'Indiquez un port SSH entre 1 et 65535.':
+        'Enter an SSH port between 1 and 65535.',
+    'Indiquez un préfixe S3 sans composant « .. ».':
+        'Enter an S3 prefix without a “..” path component.',
+    'Installez Docker Desktop sur Mac ou Windows, ou Docker Engine avec Compose sur Linux, puis relancez la vérification.':
+        'Install Docker Desktop on Mac or Windows, or Docker Engine with Compose on Linux, then run the checks again.',
+    'Installez Python 3.9 ou ultérieur sur le serveur ou utilisez le projet Docker à importer.':
+        'Install Python 3.9 or later on the server, or export a Docker project to import there.',
+    'Installez le client OpenSSH sur cet ordinateur, ou choisissez le projet Docker à importer.':
+        'Install the OpenSSH client on this computer, or export a Docker project to import on the target.',
+    'La clé SSH est reconnue et l’agent fonctionne sur {host}.':
+        'SSH authenticated successfully and the agent is running on {host}.',
+    'La clé de cet hôte n’est pas reconnue. Vérifiez son empreinte auprès de votre hébergeur, puis connectez-vous une première fois avec SSH depuis cet ordinateur.':
+        'This host key is unknown. Verify its fingerprint with your provider, then connect once using SSH from this computer.',
+    'La configuration Docker est invalide. Vérifiez votre version de Compose.':
+        'The Docker configuration is invalid. Check your Compose version.',
+    'Le client SSH n’a pas pu démarrer.':
+        'The SSH client could not start.',
+    'Le disque utilisé par Docker est plein. Libérez de la place, puis réessayez avec le même dossier.':
+        'Docker’s disk is full. Free some space and try again using the same folder.',
+    'Le dossier de cette installation a été déplacé ou ses identifiants sont incomplets. Restaurez la configuration d’origine ou choisissez un dossier vide.':
+        'The installation folder was moved or its credentials are incomplete. Restore the original configuration or choose an empty folder.',
+    'Le dossier de musique doit exister et être lisible. Vérifiez son chemin ou reconnectez le disque.':
+        'The music folder must exist and be readable. Check its path or reconnect the drive.',
+    'Le dossier est disponible pour SoundTime.':
+        'The folder is available for SoundTime.',
+    'Le fichier {name} a été modifié. Conservez ce dossier et utilisez Docker Compose pour le gérer, ou choisissez un dossier vide.':
+        '{name} has changed. Keep this folder and manage it with Docker Compose, or choose an empty folder.',
+    'Le fichier {name} a été modifié. Gérez cette installation depuis Docker Compose ou choisissez un dossier vide.':
+        '{name} has changed. Manage this installation with Docker Compose or select an empty folder.',
+    'Le moteur est incompatible avec ce système. Sur un NAS, utilisez le projet Docker à importer.':
         'The installer engine is incompatible with this system. On a NAS, use the Docker project import option.',
-        'Le moteur est incompatible avec ce système. Sur un NAS, utilisez le projet Docker à importer.',
-        'El motor de instalación es incompatible con este sistema. Si usas un NAS, elige la opción de importar un proyecto Docker.',
-        'Модуль установки несовместим с этой системой. На NAS выберите импорт проекта Docker.',
-        '安装程序与此系统不兼容。如果使用 NAS，请选择导入 Docker 项目。',
-    ),
-)
+    'Le port {port} est occupé ou réservé. Choisissez un autre numéro dans les réglages.':
+        'Port {port} is in use or reserved. Choose another port in the settings.',
+    'Le serveur a mis trop de temps à répondre. Vérifiez la connexion SSH.':
+        'The server timed out. Check the SSH connection.',
+    'Le serveur a refusé le compte ou sa clé SSH. Vérifiez le nom du compte et chargez sa clé dans votre agent SSH.':
+        'The server rejected the account or its SSH key. Check the username and load the key into your SSH agent.',
+    'Le serveur n’a pas pu accéder au dossier ou à Docker. Vérifiez les droits du compte SSH.':
+        'The server could not access the folder or Docker. Check the SSH account permissions.',
+    'Le système détecté ne correspond pas à la destination choisie.':
+        'The detected operating system does not match the selected destination.',
+    'Le tunnel SSH ne rejoint pas SoundTime. Vérifiez le port web et la redirection TCP du serveur.':
+        'The SSH tunnel cannot reach SoundTime. Check the web port and TCP forwarding on the server.',
+    'Les champs S3 doivent tenir chacun sur une ligne de texte.':
+        'Enter each S3 setting on a single line.',
+    'Les fichiers Docker de l’installation doivent se trouver dans le dossier choisi.':
+        'The Docker files must be inside the selected installation folder.',
+    'Les ports choisis sont disponibles pour cette installation.':
+        'The selected ports are available.',
+    'Les réglages sont incomplets. Relancez l’installateur et réessayez.':
+        'Some settings are missing. Reopen the installer and try again.',
+    'L’adresse IPv6 du serveur est invalide.':
+        'The server’s IPv6 address is invalid.',
+    'L’adresse S3 doit être une URL HTTP ou HTTPS sans identifiants, paramètres ou fragment. Laissez-la vide pour AWS.':
+        'Enter an HTTP or HTTPS endpoint without credentials, query parameters or a fragment. Leave it blank for AWS.',
+    'L’agent SSH est absent de ce paquet. Rouvrez une distribution complète de l’assistant.':
+        'This package is missing the SSH agent. Open a complete copy of the installer.',
+    'L’agent distant a rencontré une erreur. Relancez la vérification.':
+        'The remote agent encountered an error. Run the checks again.',
+    'L’installateur prend en charge les processeurs 64 bits Intel/AMD et ARM.':
+        'The installer supports 64-bit Intel/AMD and ARM processors.',
+    'L’installation existante sera reprise.':
+        'The existing installation will resume.',
+    'L’installation ou ses réglages ont changé. Relancez la vérification avec le même dossier.':
+        'The installation or its settings have changed. Run the checks again using the same folder.',
+    'Mettez à jour Docker Compose vers la version 2.24.4 ou ultérieure, puis réessayez.':
+        'Update Docker Compose to version 2.24.4 or later, then try again.',
+    'Ouvrez Docker Desktop ou démarrez Docker Engine, puis relancez la vérification.':
+        'Open Docker Desktop or start Docker Engine, then run the checks again.',
+    'Ouvrez un terminal pour confirmer l’empreinte SSH du serveur.':
+        'Open a terminal to confirm the server’s SSH fingerprint.',
+    'Paramètres renseignés. Un premier téléversement et sa lecture permettront de vérifier les droits sur le bucket.':
+        'The S3 settings are filled in. Upload and play a track to verify access to the bucket.',
+    'Ports réseau':
+        'Network ports',
+    'Pour exporter une configuration S3, fournissez les clés du bucket.':
+        'Enter the bucket credentials to export an S3 configuration.',
+    'Pour modifier le stockage S3, renseignez de nouveau les clés du bucket.':
+        'To change the S3 storage settings, enter the bucket credentials again.',
+    'Python 3.9 ou plus récent est requis sur le serveur.':
+        'Python 3.9 or later is required on the server.',
+    'Renseignez la clé d’accès et la clé secrète du service S3.':
+        'Enter the access key and secret key for your S3 service.',
+    'Restaurez le fichier {name} de l’installation d’origine avant de reprendre.':
+        'Restore {name} from the original installation before continuing.',
+    'Réglages':
+        'Settings',
+    'SoundTime démarre encore ou un service rencontre un problème. Réessayez avec le même dossier. Le journal « docker compose logs --tail=100 » dans ce dossier indique le service concerné.':
+        'SoundTime is still starting or a service needs attention. Retry with the same folder. Run “docker compose logs --tail=100” in that folder to see which service is affected.',
+    'SoundTime fonctionne sur le serveur. Vérifiez le client SSH et la redirection TCP, puis ouvrez le tunnel indiqué pour accéder à votre bibliothèque.':
+        'SoundTime is running on the server. Check your SSH client and TCP forwarding, then open the indicated tunnel to access your library.',
+    'SoundTime utilise des conteneurs Linux x86-64 ou ARM64. Sur Windows, activez les conteneurs Linux dans Docker Desktop.':
+        'SoundTime runs in Linux x86-64 or ARM64 containers. On Windows, switch Docker Desktop to Linux containers.',
+    'Sélectionnez le moteur Docker de cet ordinateur. Pour un serveur distant, ouvrez l’assistant sur ce serveur.':
+        'Select this computer’s Docker engine. To install on a remote host, use the remote installation option or run the installer there.',
+    'Terminez la création du compte et la configuration dans SoundTime, puis activez à nouveau l’accès réseau.':
+        'Finish creating your account and setting up SoundTime, then enable network access again.',
+    'Téléchargement des images manquantes. Docker réutilise les images déjà disponibles.':
+        'Downloading missing images. Docker will reuse images already available.',
+    'Un fichier de l’installation est absent ou remplacé. Vérifiez le dossier choisi.':
+        'An installation file is missing or has been replaced. Check the selected folder.',
+    'Un port vient d’être réservé par une autre application. Changez le port dans les réglages et relancez l’installation.':
+        'Another application just reserved the port. Change the port in settings and restart the installation.',
+    'Une autre installation utilise déjà ce dossier. Attendez sa fin, puis réessayez.':
+        'Another installation is using this folder. Wait for it to finish, then try again.',
+    'Une variable du projet contient un retour à la ligne.':
+        'A project variable contains a line break.',
+    'Utilisez une adresse IPv6 sans identifiant d’interface.':
+        'Use an IPv6 address without an interface identifier.',
+    'Variable du projet QNAP manquante : {name}':
+        'Missing QNAP project variable {name}.',
+    'Vérification de Docker, du dossier et des ports.':
+        'Checking Docker, the folder and the ports.',
+    'Vérification de l’accès à SoundTime.':
+        'Checking access to SoundTime.',
+    'Vérification du serveur, de la base de données et de la page de configuration.':
+        'Checking the server, database and setup page.',
+    '{i}/{total} · Téléchargement de {image}.':
+        '{i}/{total} · Downloading {image}.',
+    '{i}/{total} · {image} est disponible sur cet ordinateur.':
+        '{i}/{total} · {image} is already available on this computer.',
+    "Les réglages sont incomplets. Rechargez la page de l’assistant.":
+        "Some settings are missing. Reopen the installer and try again.",
+}

@@ -56,7 +56,7 @@ powershell.exe -NoProfile -Command "$f=Join-Path $env:TEMP ('SoundTime-'+[guid]:
 
 Choose **This computer** to detect your operating system, or **Another machine** to install over SSH. For SSH, enter the host, account and port. The CLI detects the remote system and architecture, shows where your music will live, and checks Docker, the installation folder and the ports before you confirm. For a NAS managed through Synology Container Manager or QNAP Container Station, choose the project export under **Another machine**.
 
-SoundTime needs Docker with Linux containers on the host that will run your library. You can choose local or S3-compatible audio storage and create your first administrator account in the terminal. The CLI supports English, French, Spanish, Russian and Chinese. Add `--lang fr` to select French, or `--help` to see the commands. [Installation guide in French](docs/installateur.md)
+SoundTime needs Docker with Linux containers on the host that will run your library. You can choose local or S3-compatible audio storage and create your first administrator account in the terminal. The installer runs in English. Use `--help` to see its commands. [Installation guide](docs/installateur.md)
 
 To keep a copy of the CLI, download and extract the complete archive. [Download ZIP](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.0/SoundTime-CLI.zip) · [SHA-256 checksum](https://github.com/CICCADA-CORP/SoundTime/releases/download/installer-v2.0.0/SoundTime-CLI.zip.sha256)
 

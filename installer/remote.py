@@ -20,6 +20,11 @@ import zipfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
+if __package__:
+    from .diagnostics import english
+else:
+    from diagnostics import english
+
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
 TARGETS = ("nas", "server", "vps", "vm", "cloud", "auto", "linux", "macos", "windows")
@@ -28,7 +33,7 @@ PREFIX = b"SOUNDTIME-INSTALLER "
 # travel over the encrypted stdin stream and never become command-line arguments.
 BOOTSTRAP = """import base64, io, json, os, runpy, sys, tempfile, zipfile
 if sys.version_info < (3, 9):
-    print('SOUNDTIME-INSTALLER ' + json.dumps({'kind':'error','message':'Python 3.9 ou plus récent est requis sur le serveur.'}), flush=True)
+    print('SOUNDTIME-INSTALLER ' + json.dumps({'kind':'error','message':'Python 3.9 or later is required on the server.'}), flush=True)
     sys.exit(1)
 with tempfile.TemporaryDirectory(prefix='soundtime-agent-') as directory:
     with zipfile.ZipFile(io.BytesIO(base64.b64decode(sys.stdin.buffer.readline()))) as archive:
@@ -41,27 +46,27 @@ with tempfile.TemporaryDirectory(prefix='soundtime-agent-') as directory:
 
 def validate_destination(target, ssh):
     if target not in TARGETS or not isinstance(ssh, dict):
-        raise ValueError("Choisissez une destination et un compte SSH.")
+        raise ValueError("Choose a destination and an SSH account.")
     user, host, port = (ssh.get(k) for k in ("user", "host", "port"))
     username = r"[A-Za-z0-9_][A-Za-z0-9_.@-]{0,126}"
     if target in ("auto", "windows"):
         # A domain account or a local Windows account may contain a space.
         username = r"(?:[\w.-]+\\)?[\w][\w.@ -]{0,126}"
     if not isinstance(user, str) or len(user) > 160 or not re.fullmatch(username, user) or user.endswith(" "):
-        raise ValueError("Indiquez le nom du compte utilisé pour la connexion SSH.")
+        raise ValueError("Enter the username for the SSH connection.")
     if not isinstance(host, str) or not host or len(host) > 253:
-        raise ValueError("Indiquez le nom d’hôte ou l’adresse IP de la machine.")
+        raise ValueError("Enter the machine’s host name or IP address.")
     if ":" in host:
         try:
             ipaddress.IPv6Address(host)
         except ValueError:
-            raise ValueError("L’adresse IPv6 du serveur est invalide.") from None
+            raise ValueError("The server’s IPv6 address is invalid.") from None
         if "%" in host:
-            raise ValueError("Utilisez une adresse IPv6 sans identifiant d’interface.")
+            raise ValueError("Use an IPv6 address without an interface identifier.")
     elif not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", host):
-        raise ValueError("Indiquez un nom d’hôte ou une adresse IP, sans protocole ni chemin.")
+        raise ValueError("Enter a host name or IP address without a protocol or path.")
     if type(port) is not int or not 1 <= port <= 65535:
-        raise ValueError("Indiquez un port SSH entre 1 et 65535.")
+        raise ValueError("Enter an SSH port between 1 and 65535.")
     result = {"host": host, "user": user, "port": port}
     if target in ("auto", "linux", "macos", "windows"):
         result["os"] = target
@@ -79,7 +84,7 @@ def _ssh_environment():
 def _client(ssh, *, interactive=False):
     client = shutil.which("ssh")
     if not client:
-        raise ValueError("Installez le client OpenSSH sur cet ordinateur, ou choisissez le projet Docker à importer.")
+        raise ValueError("Install the OpenSSH client on this computer, or export a Docker project to import on the target.")
     return [client, "-T", "-o", "BatchMode=no" if interactive else "BatchMode=yes",
             "-o", "StrictHostKeyChecking=ask" if interactive else "StrictHostKeyChecking=yes",
             "-o", "ConnectTimeout=12", "-o", "ConnectionAttempts=1",
@@ -92,7 +97,7 @@ def _client(ssh, *, interactive=False):
 def prepare_login(ssh):
     """Explicit terminal-only first contact. OpenSSH owns fingerprint and passphrase prompts."""
     if not sys.stdin.isatty() or not sys.stderr.isatty():
-        raise ValueError("Ouvrez un terminal pour confirmer l’empreinte SSH du serveur.")
+        raise ValueError("Open a terminal to confirm the server’s SSH fingerprint.")
     cmd = _client(ssh, interactive=True) + ["-o", "ClearAllForwardings=yes",
         "-o", "AddKeysToAgent=15m", ssh["host"], "exit 0"]
     return subprocess.run(cmd, env=_ssh_environment()).returncode == 0
@@ -107,21 +112,21 @@ def _bundle():
         for path in ("docker-compose.yml", "docker/nginx.conf"):
             archive.write(ROOT / path, path)
         if not {"installer/engine.py", "installer/remote_agent.py"}.issubset(archive.namelist()):
-            raise RuntimeError("L’agent SSH est absent de ce paquet. Rouvrez une distribution complète de l’assistant.")
+            raise RuntimeError("This package is missing the SSH agent. Open a complete copy of the installer.")
     return output.getvalue()
 
 
 def _ssh_error(diagnostic):
     if b"host key verification failed" in diagnostic or b"host identification has changed" in diagnostic:
-        return "La clé de cet hôte n’est pas reconnue. Vérifiez son empreinte auprès de votre hébergeur, puis connectez-vous une première fois avec SSH depuis cet ordinateur."
+        return "This host key is unknown. Verify its fingerprint with your provider, then connect once using SSH from this computer."
     if b"permission denied" in diagnostic:
-        return "Le serveur a refusé le compte ou sa clé SSH. Vérifiez le nom du compte et chargez sa clé dans votre agent SSH."
+        return "The server rejected the account or its SSH key. Check the username and load the key into your SSH agent."
     if b"glibc_" in diagnostic or b"exec format error" in diagnostic or b"bad cpu type" in diagnostic:
-        return "Le moteur est incompatible avec ce système. Sur un NAS, utilisez le projet Docker à importer."
+        return "The installer engine is incompatible with this system. On a NAS, use the Docker project import option."
     if any(name in diagnostic for name in (b"python3", b"python.exe", b"py.exe")) and (
             b"not found" in diagnostic or b"introuvable" in diagnostic or b"not recognized" in diagnostic):
-        return "Installez Python 3.9 ou ultérieur sur le serveur ou utilisez le projet Docker à importer."
-    return "Connexion SSH interrompue. Vérifiez l’adresse, le port, la clé et l’accès réseau au serveur."
+        return "Install Python 3.9 or later on the server, or export a Docker project to import there."
+    return "The SSH connection was interrupted. Check the server address, port, key and network connection."
 
 
 def _powershell(script):
@@ -140,7 +145,7 @@ def _exec(ssh, script, *, input_file=None, timeout=35):
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, env=_ssh_environment(),
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except subprocess.TimeoutExpired:
-        raise RuntimeError("Le serveur a mis trop de temps à répondre. Vérifiez la connexion SSH.") from None
+        raise RuntimeError("The server timed out. Check the SSH connection.") from None
 
 
 def detect(ssh):
@@ -167,14 +172,14 @@ printf 'SOUNDTIME-PLATFORM %s %s %s\\n' "$os" "$arch" "$nas" """
             raise RuntimeError(_ssh_error(result.stderr.lower()))
         match = re.search(rb"^SOUNDTIME-PLATFORM ([A-Za-z0-9_]+)\s*$", result.stdout, re.M)
         if result.returncode or not match:
-            raise ValueError("Impossible d’identifier le serveur. Utilisez Linux, macOS ou Windows avec OpenSSH.")
+            raise ValueError("Could not identify the server. Use Linux, macOS or Windows with OpenSSH.")
         os_name, architecture, nas = "windows", match[1].decode().lower(), b"none"
     choices = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}
     if architecture not in choices:
-        raise ValueError("L’installateur prend en charge les processeurs 64 bits Intel/AMD et ARM.")
+        raise ValueError("The installer supports 64-bit Intel/AMD and ARM processors.")
     expected = ssh.get("os", "linux")
     if expected not in ("auto", os_name):
-        raise ValueError("Le système détecté ne correspond pas à la destination choisie.")
+        raise ValueError("The detected operating system does not match the selected destination.")
     found = {"os": os_name, "arch": choices[architecture]}
     if nas != b"none":
         found["nas"] = nas.decode("ascii")
@@ -189,7 +194,7 @@ def _native_binary(platform):
     if binary.is_file():
         return binary
     if frozen:
-        raise ValueError("Extrayez l’archive universelle complète pour utiliser le moteur de la machine distante.")
+        raise ValueError("Extract the complete universal archive to use the deployment engine for the remote host.")
     return None
 
 
@@ -255,7 +260,7 @@ def _call(ssh, action, settings, report):
     if result.returncode:
         if result.returncode == 255:
             raise RuntimeError(_ssh_error(result.stderr.lower()))
-        raise RuntimeError("Impossible de préparer le moteur sur le serveur. Vérifiez l’espace disponible et les droits du compte.")
+        raise RuntimeError("Could not prepare the deployment engine on the server. Check the free space and account permissions.")
     try:
         return _exchange(_command(ssh, execute), request, action, report)
     finally:
@@ -288,9 +293,9 @@ def _exchange(cmd, payload, action, report):
                     continue
                 event = json.loads(line[len(PREFIX):])
                 if event.get("kind") == "event":
-                    report(event["stage"], event["message"])
+                    report(event["stage"], english(event["message"]))
                 elif event.get("kind") == "error":
-                    message = event["message"]
+                    message = english(event["message"])
                 elif event.get("kind") == "result":
                     result = event["result"]
             code = process.wait()
@@ -314,10 +319,12 @@ def preflight(ssh, settings):
     try:
         result = _call(ssh, "check", settings, lambda *_: None)
     except (ValueError, OSError, RuntimeError) as exc:
-        message = str(exc) if not isinstance(exc, OSError) else "Le client SSH n’a pas pu démarrer."
-        return {"ok": False, "checks": [{"id": "ssh", "label": "Connexion au serveur", "ok": False, "detail": message}]}
-    result["checks"].insert(0, {"id": "ssh", "label": "Connexion au serveur", "ok": True,
-                                "detail": "La clé SSH est reconnue et l’agent fonctionne sur " + ssh["host"] + "."})
+        message = str(exc) if not isinstance(exc, OSError) else "The SSH client could not start."
+        return {"ok": False, "checks": [{"id": "ssh", "label": "Server connection", "ok": False, "detail": message}]}
+    for check in result["checks"]:
+        check.update(label=english(check["label"]), detail=english(check["detail"]))
+    result["checks"].insert(0, {"id": "ssh", "label": "Server connection", "ok": True,
+                                "detail": f"SSH authenticated successfully and the agent is running on {ssh['host']}."})
     return result
 
 
@@ -375,15 +382,15 @@ class RemoteInstaller:
 
     def open_tunnel(self, ssh, port):
         if type(port) is not int or not 1 <= port <= 65535:
-            raise ValueError("Choisissez un numéro de port entre 1 et 65535.")
+            raise ValueError("Choose a port between 1 and 65535.")
         self._connect_tunnel(ssh, port)
         if not _tunnel_ready(self.tunnel, self.local_port):
             self.close()
-            raise RuntimeError("Le tunnel SSH ne rejoint pas SoundTime. Vérifiez le port web et la redirection TCP du serveur.")
+            raise RuntimeError("The SSH tunnel cannot reach SoundTime. Check the web port and TCP forwarding on the server.")
         return self.local_port
 
     def run(self, ssh, action, settings, report):
-        report("prepare", "Connexion à " + ssh["host"] + " avec votre clé SSH.")
+        report("prepare", f"Connecting to {ssh['host']} with your SSH key.")
         result = _call(ssh, action, settings, report)
         port = settings["port"]
         try:
@@ -405,5 +412,5 @@ class RemoteInstaller:
             result["url"] = url
         else:
             self.close()
-            result.update(url="", tunnelError="SoundTime fonctionne sur le serveur. Vérifiez le client SSH et la redirection TCP, puis ouvrez le tunnel indiqué pour accéder à votre bibliothèque.")
+            result.update(url="", tunnelError="SoundTime is running on the server. Check your SSH client and TCP forwarding, then open the indicated tunnel to access your library.")
         return result

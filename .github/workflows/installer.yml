@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Optional version to publish, for example installer-v2.0.0"
+        description: "Optional version to publish, for example installer-v2.0.1"
         type: string
         required: false
   pull_request:
@@ -84,7 +84,7 @@ jobs:
         run: |
           sha256sum -c SoundTime-CLI.zip.sha256
           unzip -q SoundTime-CLI.zip -d extracted
-          extracted/soundtime --lang fr --help
+          SOUNDTIME_LANG=fr extracted/soundtime --help
       - uses: actions/upload-artifact@v7
         with:
           name: SoundTime-CLI
@@ -111,4 +111,4 @@ jobs:
           gh release create "$RELEASE_TAG" SoundTime-CLI.zip SoundTime-CLI.zip.sha256 \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
             --title "SoundTime CLI ${RELEASE_TAG#installer-v}" \
-            --notes 'Extract the complete SoundTime-CLI.zip. On macOS or Linux, run `./soundtime`. In Windows PowerShell run `.\soundtime.cmd`; in cmd run `soundtime.cmd`. The terminal wizard detects the local or remote host, supports NAS project export, and includes English, French, Spanish, Russian and Chinese. No Python installation is required. [Setup guide and manual Docker Compose installation](https://github.com/CICCADA-CORP/SoundTime#quick-start).'
+            --notes 'Extract the complete SoundTime-CLI.zip. On macOS or Linux, run `./soundtime`. In Windows PowerShell run `.\soundtime.cmd`; in cmd run `soundtime.cmd`. The terminal wizard detects the local or remote host and can export a project for your NAS. The installer and its guides are in English. No Python installation is required. [Setup guide and manual Docker Compose installation](https://github.com/CICCADA-CORP/SoundTime#quick-start).'

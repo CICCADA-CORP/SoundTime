@@ -8,8 +8,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from installer import cli, i18n, onboarding
-from installer.cli_strings import ROWS
+from installer import cli, onboarding
 
 
 def invoke(args):
@@ -20,15 +19,18 @@ def invoke(args):
 
 
 class TerminalTests(unittest.TestCase):
-    def test_translated_help_for_every_command(self):
-        for lang in i18n.LANGUAGES:
-            for command in ("check", "install", "setup", "enable-lan", "export", "wizard"):
-                code, output, _ = invoke([command, "--lang", lang, "--help"])
-                with self.subTest(lang=lang, command=command):
+    def test_help_is_english_for_all_commands_and_legacy_language_flags(self):
+        for command in ("check", "install", "setup", "enable-lan", "export", "wizard"):
+            _, expected, _ = invoke([command, "--help"])
+            self.assertIn("Usage: soundtime", expected)
+            self.assertIn("Show this help.", expected)
+            self.assertNotIn("--lang", expected)
+            with patch.dict(os.environ, {"LANGUAGE": "fr", "LC_ALL": "fr_CA.UTF-8", "SOUNDTIME_LANG": "fr"}):
+                for flag in ("en", "fr", "es", "ru", "zh", "fr_CA.UTF-8", "es-MX", "zh-Hans-CN"):
+                    code, output, _ = invoke([command, "--lang", flag, "--help"])
+                    with self.subTest(command=command, flag=flag):
+                        self.assertEqual(output, expected)
                     self.assertEqual(code, 0)
-                    self.assertIn(i18n.text(lang, ROWS, command).split()[0], output)
-                    self.assertIn(i18n.text(lang, ROWS, "usage"), output)
-        self.assertTrue(all(len(line) == len(i18n.LANGUAGES) and all(line) for line in ROWS.values()))
 
     def test_bad_settings_are_reported_as_one_json_failure(self):
         code, output, _ = invoke(["--json", "check", "--port", "0", "--lang", "es"])
@@ -36,7 +38,8 @@ class TerminalTests(unittest.TestCase):
         response = json.loads(output)
         self.assertFalse(response["ok"])
         self.assertEqual(response["checks"][0]["id"], "settings")
-        self.assertNotIn("Choisissez", output)
+        self.assertEqual(response["checks"][0]["label"], "Settings")
+        self.assertIn("Choose a port", response["checks"][0]["detail"])
 
     def test_private_values_never_enter_diagnostics(self):
         secret = "highly-sensitive-placeholder"
@@ -113,8 +116,8 @@ class TerminalTests(unittest.TestCase):
                 patch.object(cli.engine, "install") as install:
             code, text, _ = invoke(["--lang", "fr"])
         self.assertEqual(code, 0)
-        self.assertIn("Où souhaitez-vous installer SoundTime", text.splitlines()[1])
-        self.assertIn("Sur une autre machine", text)
+        self.assertIn("Where do you want to install SoundTime?", text.splitlines()[1])
+        self.assertIn("Another machine", text)
         install.assert_not_called()
 
     def test_remote_wizard_detects_host_before_preflight(self):
@@ -134,7 +137,7 @@ class TerminalTests(unittest.TestCase):
 
     def test_setup_uses_loopback_port_and_protected_credentials(self):
         with patch.dict(os.environ, {"SOUNDTIME_ADMIN_PASSWORD": "test-password"}), \
-                patch.object(cli.onboarding, "configure", side_effect=lambda port, load, lang, **_:
+                patch.object(cli.onboarding, "configure", side_effect=lambda port, load, **_:
                     {"setupComplete": load()["username"] == "music", "alreadyComplete": False}) as setup:
             code, output, _ = invoke(["setup", "--port", "9123", "--admin-user", "music", "--admin-email", "a@b.test", "--json"])
             self.assertTrue(json.loads(output)["setupComplete"])
@@ -204,8 +207,8 @@ class OnboardingTests(unittest.TestCase):
     def test_invalid_destination_and_non_soundtime_server_never_receive_password(self):
         for port in ("https://example.org", 0, True):
             with patch.object(onboarding, "_request") as http:
-                with self.assertRaises(ValueError):
-                    onboarding.configure(port, self.account)
+                with self.assertRaisesRegex(ValueError, "Enter a number from 1 to 65535"):
+                    onboarding.configure(port, self.account, lang="fr")
                 http.assert_not_called()
         with patch.object(onboarding, "_request", return_value=(200, {"foreign": True}, [])) as http, \
                 self.assertRaisesRegex(RuntimeError, "SoundTime"):

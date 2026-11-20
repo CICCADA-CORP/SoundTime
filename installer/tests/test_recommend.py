@@ -31,7 +31,7 @@ class RecommendationTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
 
     def test_all_candidate_ports_occupied_falls_back_to_failing_preflight(self):
-        message = "Le port 8880 est occupé ou réservé. Choisissez un autre numéro dans les réglages."
+        message = "Port 8880 is in use or reserved. Choose another port in the settings."
         with patch.object(engine, "_docker_ready", return_value="Docker"), \
                 patch.object(engine, "_check_port", side_effect=ValueError(message)) as check:
             plan = engine.recommend(self.path)
@@ -50,7 +50,7 @@ class RecommendationTests(unittest.TestCase):
         with patch.object(engine, "_check_port") as check:
             self.assertEqual(engine.recommend(self.path), self.settings)
             check.assert_not_called()
-        with self.assertRaisesRegex(ValueError, "reconnectez"):
+        with self.assertRaisesRegex(ValueError, "reconnect"):
             engine._settings(engine.recommend(self.path))
 
     def test_owned_s3_install_recovers_public_fields_and_retains_credentials(self):
@@ -74,11 +74,11 @@ class RecommendationTests(unittest.TestCase):
                 self.assertEqual(engine.recommend(self.path), restored)
                 override = config.read_bytes()
                 different = {**restored, "storage": {**restored["storage"], "endpoint": "https://different.example"}}
-                with self.assertRaisesRegex(ValueError, "clés"):
+                with self.assertRaisesRegex(ValueError, "credentials"):
                     engine._configure(self.path, different)
                 self.assertEqual(env.read_bytes(), original)
                 self.assertEqual(config.read_bytes(), override)
-                with self.assertRaisesRegex(ValueError, "clés"):
+                with self.assertRaisesRegex(ValueError, "credentials"):
                     engine.export_project({**restored, "directory": "/srv/soundtime"}, "nas", language="en")
 
     def test_normalization_protects_foreign_and_unsupported_files(self):
@@ -86,12 +86,12 @@ class RecommendationTests(unittest.TestCase):
         config = self.path / "compose.override.yaml"
         modified = config.read_bytes() + b"# edited outside SoundTime\n"
         config.write_bytes(modified)
-        with self.assertRaisesRegex(ValueError, "modifi"):
+        with self.assertRaisesRegex(ValueError, "has changed"):
             engine.recommend(self.path)
         self.assertEqual(modified, config.read_bytes())
         unsupported = engine._seal(b"services: {}\n")
         config.write_bytes(unsupported)
-        with self.assertRaisesRegex(ValueError, "automatiquement"):
+        with self.assertRaisesRegex(ValueError, "automatically"):
             engine.recommend(self.path)
         self.assertEqual(unsupported, config.read_bytes())
 

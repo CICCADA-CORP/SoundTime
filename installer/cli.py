@@ -12,15 +12,14 @@ import warnings
 from pathlib import Path
 
 if __package__:
-    from . import diagnostics, engine, i18n, onboarding, remote
-    from .cli_strings import ROWS
+    from . import diagnostics, engine, onboarding, remote
+    from .cli_strings import text
 else:
     import diagnostics
     import engine
-    import i18n
     import onboarding
     import remote
-    from cli_strings import ROWS
+    from cli_strings import text
 
 
 SYSTEMS = {"Darwin": "macos", "Windows": "windows", "Linux": "linux"}
@@ -33,66 +32,74 @@ class UsageError(Exception):
     pass
 
 
+class EnglishHelpFormatter(argparse.HelpFormatter):
+    def add_usage(self, usage, actions, groups, prefix=None):
+        # argparse otherwise translates the usage heading using system gettext.
+        super().add_usage(usage, actions, groups, "Usage: " if prefix is None else prefix)
+
+
 class Parser(argparse.ArgumentParser):
-    def __init__(self, *args, tr, **kwargs):
-        super().__init__(*args, add_help=False, allow_abbrev=False, **kwargs)
-        self.tr = tr
-        self._optionals.title = tr("options")
-        self.add_argument("-h", "--help", action="help", help=tr("help"))
-
-    def format_usage(self):
-        return super().format_usage().replace("usage:", self.tr("usage") + ":", 1)
-
-    def format_help(self):
-        return super().format_help().replace("usage:", self.tr("usage") + ":", 1)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, add_help=False, allow_abbrev=False,
+                         formatter_class=EnglishHelpFormatter, **kwargs)
+        self._optionals.title = text("options")
+        self.add_argument("-h", "--help", action="help", help=text("help"))
 
     def error(self, message):
         # argparse normally repeats unknown arguments verbatim, including a
         # credential mistakenly pasted where an option name was expected.
-        raise UsageError(self.tr("invalid_args"))
+        raise UsageError(text("invalid_args"))
 
 
-def _parser(tr):
-    parser = Parser(prog="soundtime", tr=tr, description=tr("title"), epilog=tr("secrets"))
+def _legacy_language(value):
+    code = value.strip().lower().split(".", 1)[0].split("@", 1)[0].replace("_", "-").split("-", 1)[0]
+    if code not in ("en", "fr", "es", "ru", "zh"):
+        raise ValueError
+    return "en"
+
+
+def _parser():
+    parser = Parser(prog="soundtime", description=text("title"), epilog=text("secrets"))
 
     def shared(p):
-        p.add_argument("--lang", choices=tuple(i18n.LANGUAGES), default=argparse.SUPPRESS, help=tr("lang"))
-        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help=tr("json"))
+        # Accept flags used by previous releases without presenting a language selector.
+        p.add_argument("--lang", type=_legacy_language, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        p.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help=text("json"))
 
     shared(parser)
-    subs = parser.add_subparsers(dest="command", title=tr("commands"))
+    subs = parser.add_subparsers(dest="command", title=text("commands"))
     for command in ("wizard", "check", "install", "setup", "enable-lan", "export"):
-        p = subs.add_parser(command, tr=tr, help=tr(command), description=tr(command), epilog=tr("secrets"))
+        p = subs.add_parser(command, help=text(command), description=text(command), epilog=text("secrets"))
         shared(p)
         if command == "wizard":
             continue
         choices = EXPORT_TARGETS if command == "export" else TARGETS
-        p.add_argument("--target", choices=choices, required=command == "export", help=tr("target"))
+        p.add_argument("--target", choices=choices, required=command == "export", help=text("target"))
         if command != "export":
             for key in ("ssh-host", "ssh-user"):
-                p.add_argument("--" + key, metavar=key.upper().replace("-", "_"), help=tr(key))
-            p.add_argument("--ssh-port", type=int, metavar="PORT", default=22, help=tr("ssh-port"))
-        p.add_argument("--port", type=int, metavar="PORT", help=tr("port"))
-        p.add_argument("--directory", metavar="PATH", help=tr("directory"))
+                p.add_argument("--" + key, metavar=key.upper().replace("-", "_"), help=text(key))
+            p.add_argument("--ssh-port", type=int, metavar="PORT", default=22, help=text("ssh-port"))
+        p.add_argument("--port", type=int, metavar="PORT", help=text("port"))
+        p.add_argument("--directory", metavar="PATH", help=text("directory"))
         peer = p.add_mutually_exclusive_group()
-        peer.add_argument("--p2p", dest="p2p", action="store_true", default=None, help=tr("p2p"))
-        peer.add_argument("--no-p2p", dest="p2p", action="store_false", default=None, help=tr("no_p2p"))
+        peer.add_argument("--p2p", dest="p2p", action="store_true", default=None, help=text("p2p"))
+        peer.add_argument("--no-p2p", dest="p2p", action="store_false", default=None, help=text("no_p2p"))
         if command == "setup":
             for key in ("admin-user", "admin-email", "instance-name"):
                 p.add_argument("--" + key, default="SoundTime" if key == "instance-name" else None,
-                               metavar=key.upper().replace("-", "_"), help=tr(key))
-            p.add_argument("--public", action="store_true", help=tr("public"))
-            p.add_argument("--open-registrations", action="store_true", help=tr("registrations"))
+                               metavar=key.upper().replace("-", "_"), help=text(key))
+            p.add_argument("--public", action="store_true", help=text("public"))
+            p.add_argument("--open-registrations", action="store_true", help=text("registrations"))
             continue
-        p.add_argument("--music-directory", metavar="PATH", help=tr("music-directory"))
-        p.add_argument("--domain", metavar="HOST", help=tr("domain"))
-        p.add_argument("--access", choices=("local", "lan"), default="lan" if command == "enable-lan" else None, help=tr("access"))
-        p.add_argument("--peer-port", type=int, metavar="PORT", help=tr("peer-port"))
-        p.add_argument("--storage", choices=("local", "s3"), help=tr("storage"))
+        p.add_argument("--music-directory", metavar="PATH", help=text("music-directory"))
+        p.add_argument("--domain", metavar="HOST", help=text("domain"))
+        p.add_argument("--access", choices=("local", "lan"), default="lan" if command == "enable-lan" else None, help=text("access"))
+        p.add_argument("--peer-port", type=int, metavar="PORT", help=text("peer-port"))
+        p.add_argument("--storage", choices=("local", "s3"), help=text("storage"))
         for key in ("s3-endpoint", "s3-bucket", "s3-region", "s3-prefix"):
-            p.add_argument("--" + key, metavar="VALUE", help=tr(key))
+            p.add_argument("--" + key, metavar="VALUE", help=text(key))
         if command == "export":
-            p.add_argument("--output", metavar="FILE", help=tr("output"))
+            p.add_argument("--output", metavar="FILE", help=text("output"))
     return parser
 
 
@@ -107,26 +114,26 @@ def _accent(value):
     return f"\033[1;36m{value}\033[0m" if color else value
 
 
-def _choice(tr, key, items, default=0):
-    print("\n" + _accent(tr(key)))
+def _choice(key, items, default=0):
+    print("\n" + _accent(text(key)))
     for i, item in enumerate(items, 1):
-        print(f"  {i}. {tr(item)}")
+        print(f"  {i}. {text(item)}")
     while True:
-        answer = _ask(tr("choose", default=default + 1), str(default + 1))
+        answer = _ask(text("choose", default=default + 1), str(default + 1))
         if answer.isascii() and answer.isdigit() and len(answer) < 4 and 1 <= int(answer) <= len(items):
             return items[int(answer) - 1]
-        print(tr("bad_choice"), file=sys.stderr)
+        print(text("bad_choice"), file=sys.stderr)
 
 
-def _port(tr, key, default):
+def _port(key, default):
     while True:
-        value = _ask(tr(key), str(default))
+        value = _ask(text(key), str(default))
         if value.isascii() and value.isdigit() and len(value) <= 5 and 1 <= int(value) <= 65535:
             return int(value)
-        print(tr("number"), file=sys.stderr)
+        print(text("number"), file=sys.stderr)
 
 
-def _secret(tr, variable, key, interactive):
+def _secret(variable, key, interactive):
     value = os.environ.get(variable)
     if value:
         return value
@@ -135,22 +142,22 @@ def _secret(tr, variable, key, interactive):
             # A redirected terminal cannot silently fall back to echoing input.
             with warnings.catch_warnings():
                 warnings.simplefilter("error", getpass.GetPassWarning)
-                return getpass.getpass(tr(key) + " ")
+                return getpass.getpass(text(key) + " ")
         except getpass.GetPassWarning:
             pass
-    raise ValueError(tr("missing_secret", variable=variable))
+    raise ValueError(text("missing_secret", variable=variable))
 
 
-def _ssh(args, tr):
+def _ssh(args):
     host, user, port = args.ssh_host, args.ssh_user, args.ssh_port
     system = SYSTEMS.get(platform.system())
     if args.target == "nas" and not host and not user:
-        raise UsageError(tr("nas_export"))
+        raise UsageError(text("nas_export"))
     if args.target == "local" and (host or user or port != 22):
-        raise UsageError(tr("local_ssh"))
+        raise UsageError(text("local_ssh"))
     if host or user or port != 22 or args.target not in ("local", system):
         if not host or not user:
-            raise UsageError(tr("require_ssh"))
+            raise UsageError(text("require_ssh"))
         credentials = {"host": host, "user": user, "port": port}
         target = "linux" if args.target == "nas" else args.target
         ssh = remote.validate_destination(target, credentials)
@@ -173,7 +180,7 @@ def _recommended(directory, ssh):
     return remote.recommend(ssh, directory=directory) if ssh else engine.recommend(directory)
 
 
-def _settings(args, ssh, tr, interactive):
+def _settings(args, ssh, interactive):
     if args.command == "export":
         plan = {**engine.defaults(), "directory": args.directory or _default_folder(args.target, True, None),
                 "access": "lan" if args.target == "nas" else "local"}
@@ -187,7 +194,7 @@ def _settings(args, ssh, tr, interactive):
                        ("prefix", args.s3_prefix), ("endpoint", args.s3_endpoint)) if value is not None}
     if args.storage == "local":
         if storage_options:
-            raise UsageError(tr("invalid_args"))
+            raise UsageError(text("invalid_args"))
         plan["storage"] = {"kind": "local"}
     elif args.storage == "s3" or storage_options:
         saved = plan["storage"]
@@ -197,20 +204,20 @@ def _settings(args, ssh, tr, interactive):
         supplied_keys = os.environ.get("SOUNDTIME_S3_ACCESS_KEY") or os.environ.get("SOUNDTIME_S3_SECRET_KEY")
         if not (saved.get("reuseCredentials") and not supplied_keys and all(public[k] == saved[k] for k in public)):
             plan["storage"] = {"kind": "s3", **public,
-                               "accessKey": _secret(tr, "SOUNDTIME_S3_ACCESS_KEY", "accessKey", interactive),
-                               "secretKey": _secret(tr, "SOUNDTIME_S3_SECRET_KEY", "secretKey", interactive)}
+                               "accessKey": _secret("SOUNDTIME_S3_ACCESS_KEY", "accessKey", interactive),
+                               "secretKey": _secret("SOUNDTIME_S3_SECRET_KEY", "secretKey", interactive)}
     return plan
 
 
-def _save_archive(settings, target, output, lang, tr):
-    filename, data = engine.export_project(settings, target, language=lang)
+def _save_archive(settings, target, output):
+    filename, data = engine.export_project(settings, target)
     path = Path(output or filename).expanduser().absolute()
     try:
         # O_EXCL also protects dangling symlinks and concurrent exports. The
         # archive contains passwords and is private from the first write.
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
-        raise ValueError(tr("exists", path=path)) from None
+        raise ValueError(text("exists", path=path)) from None
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
@@ -222,28 +229,28 @@ def _save_archive(settings, target, output, lang, tr):
     return {"ok": True, "archive": str(path), "target": target}
 
 
-def _checks(settings, ssh, lang):
+def _checks(settings, ssh):
     result = remote.preflight(ssh, settings) if ssh else engine.preflight(settings)
-    return {**result, "checks": [{**check, "label": diagnostics.localize(lang, check["label"]),
-                                  "detail": diagnostics.localize(lang, check["detail"])} for check in result["checks"]]}
+    return {**result, "checks": [{**check, "label": diagnostics.english(check["label"]),
+                                  "detail": diagnostics.english(check["detail"])} for check in result["checks"]]}
 
 
-def _profile(args, tr, interactive):
+def _profile(args, interactive):
     user = args.admin_user
     email = args.admin_email
     if interactive:
-        user = user or _ask(tr("admin-user"), "admin")
-        email = email or _ask(tr("admin-email"))
+        user = user or _ask(text("admin-user"), "admin")
+        email = email or _ask(text("admin-email"))
     profile = {"username": user, "email": email, "instanceName": args.instance_name, "p2p": args.p2p,
                "private": not args.public, "openRegistrations": args.open_registrations}
     if not user or not email:
-        raise UsageError(tr("profile"))
-    profile["password"] = _secret(tr, "SOUNDTIME_ADMIN_PASSWORD", "password", interactive)
+        raise UsageError(text("profile"))
+    profile["password"] = _secret("SOUNDTIME_ADMIN_PASSWORD", "password", interactive)
     profile["bootstrapPassword"] = os.environ.get("SOUNDTIME_BOOTSTRAP_PASSWORD", "")
     return profile
 
 
-def _setup(args, ssh, client, lang, tr, interactive):
+def _setup(args, ssh, client, interactive):
     if args.port is None:
         saved = _recommended(args.directory, ssh)
         port = saved["port"]
@@ -254,16 +261,16 @@ def _setup(args, ssh, client, lang, tr, interactive):
     if args.p2p is None:
         args.p2p = False
     if type(port) is not int or not 1 <= port <= 65535:
-        raise UsageError(tr("number"))
+        raise UsageError(text("number"))
     if ssh:
         port = client.open_tunnel(ssh, port)
-    return {"ok": True, **onboarding.configure(port, lambda: _profile(args, tr, interactive), lang,
+    return {"ok": True, **onboarding.configure(port, lambda: _profile(args, interactive),
                                                bootstrap_password=os.environ.get("SOUNDTIME_BOOTSTRAP_PASSWORD"))}
 
 
-def _deploy(settings, ssh, client, action, lang):
+def _deploy(settings, ssh, client, action):
     def report(stage, message):
-        print(diagnostics.localize(lang, message), file=sys.stderr, flush=True)
+        print(diagnostics.english(message), file=sys.stderr, flush=True)
     if ssh:
         result = client.run(ssh, action, settings, report)
     else:
@@ -271,7 +278,7 @@ def _deploy(settings, ssh, client, action, lang):
         result = operation(settings, report)
     result = {"ok": True, **result}
     if result.get("tunnelError"):
-        result["tunnelError"] = diagnostics.localize(lang, result["tunnelError"])
+        result["tunnelError"] = diagnostics.english(result["tunnelError"])
     return result
 
 
@@ -283,148 +290,148 @@ def _closed_result(result):
     return result
 
 
-def _show(result, tr):
+def _show(result):
     if "checks" in result:
         for c in result["checks"]:
             print(f"{'✓' if c['ok'] else '×'} {c['label']} — {c['detail']}")
         if any(c["id"] == "docker" and not c["ok"] for c in result["checks"]):
-            print(tr("docker_help") + "  https://docs.docker.com/get-started/get-docker/")
+            print(text("docker_help") + "  https://docs.docker.com/get-started/get-docker/")
     elif "archive" in result:
-        print(tr("new_zip", path=result["archive"]))
+        print(text("new_zip", path=result["archive"]))
     elif "setupComplete" in result:
-        print(tr("done_setup"))
+        print(text("done_setup"))
     else:
-        print(tr("success"))
+        print(text("success"))
         if result.get("setupTunnel"):
             if result.get("tunnelError"):
                 print(result["tunnelError"])
-            print(tr("reconnect") + "\n  " + result["setupTunnel"])
+            print(text("reconnect") + "\n  " + result["setupTunnel"])
         url = result.get("lanUrl") or result.get("url") or result.get("setupManualUrl")
         if url:
-            print(tr("url") + "  " + url)
+            print(text("url") + "  " + url)
             if url.endswith("/setup"):
-                print(tr("need_setup"))
+                print(text("need_setup"))
         if result.get("lanPending"):
-            print(tr("pending"))
+            print(text("pending"))
 
 
-def _remote_destination(lang, tr):
+def _remote_destination():
     while True:
-        credentials = {"host": _ask(tr("ssh-host")), "user": _ask(tr("ssh-user")),
-                       "port": _port(tr, "ssh-port", 22)}
+        credentials = {"host": _ask(text("ssh-host")), "user": _ask(text("ssh-user")),
+                       "port": _port("ssh-port", 22)}
         try:
             conn = remote.validate_destination("auto", credentials)
             try:
                 detected = remote.detect(conn)
             except RuntimeError as exc:
-                if _choice(tr, "first_login", ("no", "yes")) != "yes":
+                if _choice("first_login", ("no", "yes")) != "yes":
                     raise exc
                 if not remote.prepare_login(conn):
-                    raise RuntimeError(tr("ssh_failed"))
+                    raise RuntimeError(text("ssh_failed"))
                 detected = remote.detect(conn)
             system = detected["os"]
-            print(tr("detected", system=tr(system), arch=detected["arch"]))
+            print(text("detected", system=text(system), arch=detected["arch"]))
             vendor = detected.get("nas")
             if vendor in ("synology", "qnap"):
-                print("NAS  " + tr(vendor))
-                if _choice(tr, "method", ("archive", "ssh")) == "archive":
+                print("NAS  " + text(vendor))
+                if _choice("method", ("archive", "ssh")) == "archive":
                     return "nas", None, vendor
             return system, remote.validate_destination(system, credentials), None
         except (RuntimeError, ValueError) as exc:
-            print(diagnostics.localize(lang, str(exc)), file=sys.stderr)
-            if _choice(tr, "retry", ("yes", "no")) == "no":
+            print(diagnostics.english(str(exc)), file=sys.stderr)
+            if _choice("retry", ("yes", "no")) == "no":
                 return None
 
 
-def _destination(lang, tr):
-    if _choice(tr, "where", ("local", "another")) == "another":
-        if _choice(tr, "method", ("ssh", "nas_archive")) == "nas_archive":
-            return "nas", None, _choice(tr, "vendor", ("synology", "qnap", "other_nas"))
-        return _remote_destination(lang, tr)
+def _destination():
+    if _choice("where", ("local", "another")) == "another":
+        if _choice("method", ("ssh", "nas_archive")) == "nas_archive":
+            return "nas", None, _choice("vendor", ("synology", "qnap", "other_nas"))
+        return _remote_destination()
     name = platform.system()
     system = SYSTEMS.get(name, "local")
-    print(tr("detected", system=tr(system) if system != "local" else name, arch=platform.machine()))
+    print(text("detected", system=text(system) if system != "local" else name, arch=platform.machine()))
     try:
-        print(tr("space", gib=shutil.disk_usage(Path.home()).free // 1024**3))
+        print(text("space", gib=shutil.disk_usage(Path.home()).free // 1024**3))
     except OSError:
         pass
     return system, None, None
 
 
-def _custom_settings(initial, tr, recommend):
-    directory = _ask(tr("directory"), initial["directory"])
+def _custom_settings(initial, recommend):
+    directory = _ask(text("directory"), initial["directory"])
     settings = (recommend(directory) if directory != initial["directory"] and recommend else initial.copy())
     settings["directory"] = directory
-    settings["port"] = _port(tr, "port", settings["port"])
-    settings["domain"] = _ask(tr("domain"), settings["domain"])
-    access = _choice(tr, "access", ("loopback", "lan"), int(settings["access"] == "lan"))
+    settings["port"] = _port("port", settings["port"])
+    settings["domain"] = _ask(text("domain"), settings["domain"])
+    access = _choice("access", ("loopback", "lan"), int(settings["access"] == "lan"))
     settings["access"] = "lan" if access == "lan" else "local"
-    settings["p2p"] = _choice(tr, "p2p", ("no", "yes"), int(settings["p2p"])) == "yes"
+    settings["p2p"] = _choice("p2p", ("no", "yes"), int(settings["p2p"])) == "yes"
     if settings["p2p"]:
-        settings["peerPort"] = _port(tr, "peer-port", settings["peerPort"])
+        settings["peerPort"] = _port("peer-port", settings["peerPort"])
     storage = settings["storage"]
-    if _choice(tr, "storage", ("disk", "s3"), int(storage["kind"] == "s3")) == "s3":
+    if _choice("storage", ("disk", "s3"), int(storage["kind"] == "s3")) == "s3":
         settings["musicDirectory"] = ""
-        if not storage.get("reuseCredentials") or _choice(tr, "keep_s3", ("yes", "no")) == "no":
+        if not storage.get("reuseCredentials") or _choice("keep_s3", ("yes", "no")) == "no":
             settings["storage"] = {
-                "kind": "s3", "bucket": _ask(tr("s3-bucket"), storage.get("bucket", "")),
-                "endpoint": _ask(tr("s3-endpoint"), storage.get("endpoint", "")),
-                "region": _ask(tr("s3-region"), storage.get("region", "us-east-1")),
-                "prefix": _ask(tr("s3-prefix"), storage.get("prefix", "")),
-                "accessKey": _secret(tr, "SOUNDTIME_S3_ACCESS_KEY", "accessKey", True),
-                "secretKey": _secret(tr, "SOUNDTIME_S3_SECRET_KEY", "secretKey", True),
+                "kind": "s3", "bucket": _ask(text("s3-bucket"), storage.get("bucket", "")),
+                "endpoint": _ask(text("s3-endpoint"), storage.get("endpoint", "")),
+                "region": _ask(text("s3-region"), storage.get("region", "us-east-1")),
+                "prefix": _ask(text("s3-prefix"), storage.get("prefix", "")),
+                "accessKey": _secret("SOUNDTIME_S3_ACCESS_KEY", "accessKey", True),
+                "secretKey": _secret("SOUNDTIME_S3_SECRET_KEY", "secretKey", True),
             }
     else:
         settings["storage"] = {"kind": "local"}
-        settings["musicDirectory"] = _ask(tr("music-directory"), settings["musicDirectory"])
+        settings["musicDirectory"] = _ask(text("music-directory"), settings["musicDirectory"])
     return settings
 
 
-def _review(settings, target, ssh, tr):
-    print("\n" + _accent(tr("review")))
+def _review(settings, target, ssh):
+    print("\n" + _accent(text("review")))
     storage = settings["storage"]
-    rows = [("target", tr(target) + (f" · {ssh['user']}@{ssh['host']}" if ssh else "")),
+    rows = [("target", text(target) + (f" · {ssh['user']}@{ssh['host']}" if ssh else "")),
             ("directory", settings["directory"]), ("domain", settings["domain"]), ("port", settings["port"]),
-            ("access", tr("nas_guard" if target == "nas" and settings["access"] == "lan"
+            ("access", text("nas_guard" if target == "nas" and settings["access"] == "lan"
                           else "lan" if settings["access"] == "lan" else "loopback")),
-            ("storage", tr("disk") if storage["kind"] == "local" else f"S3 · {storage['bucket']} · {storage['region']}"),
-            ("p2p", f"UDP {settings['peerPort']}" if settings["p2p"] else tr("no"))]
+            ("storage", text("disk") if storage["kind"] == "local" else f"S3 · {storage['bucket']} · {storage['region']}"),
+            ("p2p", f"UDP {settings['peerPort']}" if settings["p2p"] else text("no"))]
     if settings["musicDirectory"]:
         rows.append(("music-directory", settings["musicDirectory"]))
     for key, value in rows:
-        print(f"  {tr(key)}  {value}")
+        print(f"  {text(key)}  {value}")
 
 
-def _wizard_setup(settings, ssh, client, result, lang, tr):
-    if not result.get("url", "").endswith("/setup") or _choice(tr, "configure", ("yes", "no")) == "no":
+def _wizard_setup(settings, ssh, client, result):
+    if not result.get("url", "").endswith("/setup") or _choice("configure", ("yes", "no")) == "no":
         return result
     while True:
         try:
-            args = argparse.Namespace(admin_user=None, admin_email=None, instance_name=_ask(tr("instance-name"), "SoundTime"),
+            args = argparse.Namespace(admin_user=None, admin_email=None, instance_name=_ask(text("instance-name"), "SoundTime"),
                                       p2p=settings["p2p"], public=False, open_registrations=False)
-            profile = _profile(args, tr, True)
-            profile["private"] = _choice(tr, "public", ("no", "yes")) != "yes"
+            profile = _profile(args, True)
+            profile["private"] = _choice("public", ("no", "yes")) != "yes"
             if not profile["private"]:
-                profile["openRegistrations"] = _choice(tr, "registrations", ("no", "yes")) == "yes"
-            onboarding.configure(client.local_port if ssh else settings["port"], profile, lang)
+                profile["openRegistrations"] = _choice("registrations", ("no", "yes")) == "yes"
+            onboarding.configure(client.local_port if ssh else settings["port"], profile)
             break
         except (ValueError, RuntimeError) as exc:
-            print(diagnostics.localize(lang, str(exc)), file=sys.stderr)
-            if _choice(tr, "retry", ("yes", "no")) != "yes":
+            print(diagnostics.english(str(exc)), file=sys.stderr)
+            if _choice("retry", ("yes", "no")) != "yes":
                 raise
-    print(tr("done_setup"))
+    print(text("done_setup"))
     result["url"] = result["url"].removesuffix("setup")
     if result.get("setupManualUrl"):
         result["setupManualUrl"] = result["setupManualUrl"].removesuffix("setup")
-    if result.get("lanPending") and _choice(tr, "publish", ("yes", "no")) == "yes":
-        return _deploy(settings, ssh, client, "lan", lang)
+    if result.get("lanPending") and _choice("publish", ("yes", "no")) == "yes":
+        return _deploy(settings, ssh, client, "lan")
     return result
 
 
-def _wizard(lang, tr):
+def _wizard():
     if sys.stdout.isatty():
         print("\n" + _accent("◉  SoundTime"))
-    selection = _destination(lang, tr)
+    selection = _destination()
     if not selection:
         return 1
     target, ssh, vendor = selection
@@ -434,50 +441,50 @@ def _wizard(lang, tr):
         initial = {**engine.defaults(), "directory": dirs[vendor], "access": "lan"}
     else:
         recommend = (lambda directory=None: remote.recommend(ssh, directory=directory)) if ssh else engine.recommend
-        print(tr("inspect"))
+        print(text("inspect"))
         try:
             initial = recommend()
         except (ValueError, RuntimeError) as exc:
-            print(diagnostics.localize(lang, str(exc)), file=sys.stderr)
-            initial = recommend(_ask(tr("directory")))
+            print(diagnostics.english(str(exc)), file=sys.stderr)
+            initial = recommend(_ask(text("directory")))
     with contextlib.closing(remote.RemoteInstaller()) as client:
         while True:
-            custom = _choice(tr, "mode", ("quick", "custom")) == "custom"
+            custom = _choice("mode", ("quick", "custom")) == "custom"
             try:
-                settings = _custom_settings(initial, tr, recommend) if custom else initial.copy()
+                settings = _custom_settings(initial, recommend) if custom else initial.copy()
             except (ValueError, RuntimeError) as exc:
-                print(diagnostics.localize(lang, str(exc)), file=sys.stderr)
-                if _choice(tr, "retry", ("yes", "no")) == "yes":
+                print(diagnostics.english(str(exc)), file=sys.stderr)
+                if _choice("retry", ("yes", "no")) == "yes":
                     continue
                 return 1
-            _review(settings, target, ssh, tr)
+            _review(settings, target, ssh)
             if vendor:
-                output = _ask(tr("output"), f"soundtime-{target}.zip")
+                output = _ask(text("output"), f"soundtime-{target}.zip")
             else:
-                checks = _checks(settings, ssh, lang)
-                _show(checks, tr)
+                checks = _checks(settings, ssh)
+                _show(checks)
                 if not checks["ok"]:
-                    if _choice(tr, "retry", ("yes", "no")) == "yes":
+                    if _choice("retry", ("yes", "no")) == "yes":
                         continue
                     return 1
-            if _choice(tr, "confirm", ("yes", "no")) != "yes":
-                print(tr("cancelled"))
+            if _choice("confirm", ("yes", "no")) != "yes":
+                print(text("cancelled"))
                 return 0
             try:
                 if vendor:
-                    result = _save_archive(settings, target, output, lang, tr)
-                    _show(result, tr)
-                    print(tr("nas_" + vendor))
+                    result = _save_archive(settings, target, output)
+                    _show(result)
+                    print(text("nas_" + vendor))
                     return 0
-                result = _deploy(settings, ssh, client, "install", lang)
+                result = _deploy(settings, ssh, client, "install")
             except (OSError, ValueError, RuntimeError) as exc:
-                msg = tr("filesystem") if isinstance(exc, OSError) else diagnostics.localize(lang, str(exc))
+                msg = text("filesystem") if isinstance(exc, OSError) else diagnostics.english(str(exc))
                 print(msg, file=sys.stderr)
-                if _choice(tr, "retry", ("yes", "no")) == "yes":
+                if _choice("retry", ("yes", "no")) == "yes":
                     continue
                 return 1
-            result = _wizard_setup(settings, ssh, client, result, lang, tr)
-            _show(_closed_result(result), tr)
+            result = _wizard_setup(settings, ssh, client, result)
+            _show(_closed_result(result))
             return 0
 
 
@@ -487,56 +494,48 @@ def main(argv=None):
             if hasattr(stream, "reconfigure") and not stream.isatty():
                 stream.reconfigure(encoding="utf-8", errors="replace")
     args_in = list(sys.argv[1:] if argv is None else argv)
-    explicit = None
-    for i, token in enumerate(args_in):
-        if token == "--lang" and i + 1 < len(args_in):
-            explicit = args_in[i + 1]
-        elif token.startswith("--lang="):
-            explicit = token.split("=", 1)[1]
-    lang = i18n.language(explicit if explicit in i18n.LANGUAGES else None)
-    tr = lambda key, **values: i18n.text(lang, ROWS, key, **values)
     json_mode = "--json" in args_in
     try:
         try:
-            args = _parser(tr).parse_args(args_in)
+            args = _parser().parse_args(args_in)
         except SystemExit as exc:
             return exc.code
         command = args.command or "wizard"
         if command == "wizard":
             if json_mode:
-                raise UsageError(tr("no_json_wizard"))
-            return _wizard(lang, tr)
+                raise UsageError(text("no_json_wizard"))
+            return _wizard()
         if command != "export" and args.target is None:
             args.target = "auto" if args.ssh_host or args.ssh_user else "local"
-        ssh = _ssh(args, tr) if command != "export" else None
+        ssh = _ssh(args) if command != "export" else None
         interactive = not json_mode and sys.stdin.isatty()
         with contextlib.closing(remote.RemoteInstaller()) as client:
             if command == "setup":
-                result = _setup(args, ssh, client, lang, tr, interactive)
+                result = _setup(args, ssh, client, interactive)
             else:
-                settings = _settings(args, ssh, tr, interactive)
+                settings = _settings(args, ssh, interactive)
                 if command == "export":
-                    result = _save_archive(settings, args.target, args.output, lang, tr)
+                    result = _save_archive(settings, args.target, args.output)
                 elif command == "check":
-                    result = _checks(settings, ssh, lang)
+                    result = _checks(settings, ssh)
                 else:
-                    result = _closed_result(_deploy(settings, ssh, client, "lan" if command == "enable-lan" else "install", lang))
+                    result = _closed_result(_deploy(settings, ssh, client, "lan" if command == "enable-lan" else "install"))
         if json_mode:
             print(json.dumps(result, ensure_ascii=False))
         else:
-            _show(result, tr)
+            _show(result)
         return 0 if result["ok"] else 1
     except (KeyboardInterrupt, EOFError, OSError, RuntimeError, ValueError, UsageError) as exc:
         if isinstance(exc, KeyboardInterrupt):
-            code, message = 130, tr("cancelled")
+            code, message = 130, text("cancelled")
         elif isinstance(exc, EOFError):
-            code, message = 2, tr("no_input")
+            code, message = 2, text("no_input")
         elif isinstance(exc, UsageError):
             code, message = 2, str(exc)
         elif isinstance(exc, OSError):
-            code, message = 1, tr("unavailable")
+            code, message = 1, text("unavailable")
         else:
-            code, message = 1, diagnostics.localize(lang, str(exc))
+            code, message = 1, diagnostics.english(str(exc))
         if json_mode:
             print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
         else:

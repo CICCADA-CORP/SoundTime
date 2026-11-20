@@ -51,7 +51,7 @@ def build():
 def assemble(directory):
     wrappers = ROOT / "installer" / "packaging" / "wrappers"
     files = [(wrappers / name, name) for name in ("soundtime", "soundtime.cmd")]
-    files.append((ROOT / "installer" / "packaging" / "LIRE-MOI.txt", "README.txt"))
+    files.append((ROOT / "installer" / "packaging" / "README.txt", "README.txt"))
     for system in SYSTEMS:
         for arch in ARCHES:
             rel = relative_binary(system, arch)
