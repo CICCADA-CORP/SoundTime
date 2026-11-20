@@ -464,7 +464,11 @@ def webradio_browser(node, directory):
         proc = subprocess.run(command, input=json.dumps(credentials), capture_output=True, text=True,
                               timeout=210, env={**os.environ, "TMPDIR": profile_dir})
     require(proc.stdout.strip(), f"Webradio browser did not produce evidence: {proc.stderr[-900:]}")
-    evidence = json.loads(proc.stdout)
+    try:
+        evidence = json.loads(proc.stdout)
+    except json.JSONDecodeError as error:
+        raise ScenarioError(f"Invalid web radio browser output at character {error.pos} "
+                            f"of {len(proc.stdout)} (exit {proc.returncode}): {proc.stderr[-900:]}") from error
     result = evidence["report"]
     expected = {"webradios-desktop.png": (1366, 900), "webradios-mobile.png": (390, 844),
                 "webradios-grid-mobile.png": (390, 844), "webradios-podcast.png": (1366, 900), "webradios-live.png": (1366, 900), "webradios-disabled.png": (1366, 900)}

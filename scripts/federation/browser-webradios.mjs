@@ -140,6 +140,21 @@ function openChrome(profile) {
   return {attach,command,evaluate,close,intercept:fn=>{handle=fn;}};
 }
 
+// The admin panel changes navigation based on its own width, including on desktop.
+function openAdminSettings() {
+  const select = document.querySelector("main select.admin-select");
+  if (select?.getClientRects().length && select.querySelector('option[value="settings"]')) {
+    select.value = "settings";
+    select.dispatchEvent(new Event("change", {bubbles: true}));
+    return true;
+  }
+  const button = [...document.querySelectorAll("main .admin-navigation button")].find(element =>
+    element.textContent.trim() === "Settings" && element.getClientRects().length);
+  if (!button) return false;
+  button.click();
+  return true;
+}
+
 const sleep=ms=>delay(ms);
 async function run(chrome,tokens) {
   const {command,evaluate}=chrome;
@@ -341,8 +356,7 @@ async function run(chrome,tokens) {
   check("saved_personal_choice_and_deep_link");
 
   await page("/admin");
-  const settingsTab='[...document.querySelectorAll("main button")].find(b=>b.textContent.trim()==="Settings" && b.getClientRects().length)';
-  await click(settingsTab,"admin Settings tab");
+  await wait("admin Settings navigation", () => evaluate("(" + openAdminSettings.toString() + ")()", true));
   await click(globalSwitch,"admin global switch");
   await dom("global switch off",`!!(${globalSwitch}) && !(${globalSwitch}).checked && !(${visible(navSlot)})`);
   assert.equal((await api("/webradios/status")).instance_enabled,false);
@@ -379,8 +393,14 @@ finally {
     }
   } catch(error) { failure??=error; report.settings_restored=false; }
   if(failure) report.error=failure.message;
-  if (piped) console.log(JSON.stringify({report,screenshots}));
+  if (piped) {
+    // Docker attaches stdout as a pipe. Flush large PNGs even when the test fails.
+    const evidence = JSON.stringify({report,screenshots}) + "\n";
+    await new Promise((done, reject) => process.stdout.write(evidence, error => error ? reject(error) : done()));
+  }
   else await writeFile(join(artifacts,"webradios-browser.json"),JSON.stringify(report,null,2)+"\n");
 }
-if(failure) throw failure;
-if (!piped) console.log(JSON.stringify({checks:report.checks,screenshots:report.screenshots,artifacts}));
+if (failure) {
+  console.error(failure);
+  process.exitCode = 1;
+} else if (!piped) console.log(JSON.stringify({checks:report.checks,screenshots:report.screenshots,artifacts}));

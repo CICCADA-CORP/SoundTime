@@ -65,6 +65,7 @@ jobs:
         run: docker compose --env-file /dev/null -p st-fed-validate -f scripts/federation/compose.yml -f scripts/federation/browser.yml --profile measurement config --quiet
 
       - name: Capture baseline on a fresh project
+        id: baseline
         env:
           FEDERATION_ARTIFACT_DIR: ${{ runner.temp }}/soundtime-federation/baseline
         run: scripts/test-p2p-federation.sh baseline
@@ -75,6 +76,7 @@ jobs:
         run: scripts/test-p2p-federation.sh acceptance
 
       - name: Check durable retention and reseeding after restart
+        if: ${{ !cancelled() && steps.baseline.outcome == 'success' }}
         env:
           FEDERATION_ARTIFACT_DIR: ${{ runner.temp }}/soundtime-federation/retention
         run: scripts/test-p2p-federation.sh retention
