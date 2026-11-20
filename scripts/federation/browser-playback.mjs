@@ -94,8 +94,19 @@ try {
   const mutations = [];
   const logins = [];
   let sequence = 0;
+  let mainFrameId;
+  let documentContext;
   socket.addEventListener("message", ({ data }) => {
     const msg = JSON.parse(data);
+    if (msg.method === "Page.frameNavigated" && !msg.params.frame.parentId) {
+      mainFrameId = msg.params.frame.id;
+    } else if (msg.method === "Runtime.executionContextCreated") {
+      const context = msg.params.context;
+      if (context.auxData?.isDefault && context.auxData.frameId === mainFrameId) documentContext = context.id;
+    } else if (msg.method === "Runtime.executionContextsCleared" ||
+        (msg.method === "Runtime.executionContextDestroyed" && msg.params.executionContextId === documentContext)) {
+      documentContext = undefined;
+    }
     if (msg.id && pending.has(msg.id)) {
       const { resolve, reject } = pending.get(msg.id);
       if (msg.error) reject(new Error(msg.error.message));
@@ -135,18 +146,26 @@ try {
       pending.delete(id);
     }
   }
-  async function evaluate(expression, userGesture = false, awaitPromise = false) {
-    const value = await send("Runtime.evaluate", { expression, returnByValue: true, userGesture, awaitPromise });
+  async function evaluate(expression, userGesture = false, awaitPromise = false, input = null) {
+    const executionContextId = await until("active page context", () => documentContext);
+    const value = await send("Runtime.callFunctionOn", {
+      executionContextId,
+      functionDeclaration: `function(fixture, input) { return (${expression}); }`,
+      arguments: [{ value: { title, track, playlist } }, { value: input }],
+      returnByValue: true, userGesture, awaitPromise,
+    });
     if (value.exceptionDetails) throw new Error(value.exceptionDetails.text);
     return value.result.value;
   }
 
   await send("Page.enable");
+  mainFrameId = (await send("Page.getFrameTree")).frameTree.frame.id;
+  await send("Runtime.enable");
   await send("Network.enable");
   await send("Emulation.setLocaleOverride", {locale:"en-US"});
   const row = `Array.from(document.querySelectorAll('[role="group"]'))
-    .find(row => row.getAttribute('aria-label') === ${JSON.stringify(title)}
-      && row.querySelector('a')?.getAttribute('href') === ${JSON.stringify("/tracks/" + track)})`;
+    .find(row => row.getAttribute('aria-label') === fixture.title
+      && row.querySelector('a')?.getAttribute('href') === '/tracks/' + fixture.track)`;
   const button = row + "?.querySelector('button.play-cell')";
   const playerSelector = '[data-testid="audio-player"]';
   const seekSelector = 'input[type="range"][aria-label="Playback position"]';
@@ -178,13 +197,13 @@ try {
     await until("login form",()=>evaluate("Boolean(document.querySelector('form input[name=password]'))"));
     const submit = () => evaluate(`(()=>{
       const form=document.querySelector("form input[name=password]").form;
-      for(const [name,value] of Object.entries(${JSON.stringify({username:listener.username,password:listener.password})})){
-        const input=form.elements.namedItem(name);
-        input.value=value;
-        input.dispatchEvent(new Event("input",{bubbles:true}));
+      for(const [name,value] of Object.entries(input)){
+        const field=form.elements.namedItem(name);
+        field.value=value;
+        field.dispatchEvent(new Event("input",{bubbles:true}));
       }
       form.requestSubmit();
-    })()`,true);
+    })()`,true,false,{username:listener.username,password:listener.password});
     const deadline = Date.now() + 60000;
     for (;;) {
       const checkpoint = logins.length;
@@ -201,21 +220,21 @@ try {
       await delay(wait);
     }
     await until("signed-in listener's playlist",()=>evaluate(
-      "location.pathname===" + JSON.stringify(destination) +
-      " && Boolean(document.querySelector('button.play-cell')) && !!localStorage.getItem('soundtime_access_token')"));
+      "location.pathname===input && Boolean(document.querySelector('button.play-cell')) && !!localStorage.getItem('soundtime_access_token')",
+      false, false, destination));
     activeListener=listener.username;
   }
-  async function click(expression,label) {
+  async function click(expression,label,input = null) {
     try {
-      await until(label, () => evaluate(`Boolean(${expression})`));
+      await until(label, () => evaluate(`Boolean(${expression})`, false, false, input));
     } catch(error) {
       const state=await evaluate("({path:location.pathname,menu:[...document.querySelectorAll('[role=menuitem]')].map(el=>el.textContent.trim()),dialog:document.querySelector('[role=dialog] h2')?.textContent})");
       throw new Error(error.message+" "+JSON.stringify(state));
     }
-    await evaluate(`(${expression}).click()`,true);
+    await evaluate(`(${expression}).click()`,true,false,input);
   }
-  function byText(selector,label) {
-    return `Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(el=>el.textContent.trim()===${JSON.stringify(label)})`;
+  function byText(selector) {
+    return `Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(el=>el.textContent.trim()===input)`;
   }
   function noMedia(start) {
     const paths=requests.slice(start);
@@ -249,8 +268,8 @@ try {
         screenshots["search-desktop"] = await screenshot();
       }
       await click(row + "?.querySelector('[aria-haspopup=menu]')","indexed remote track");
-      await click(byText('[role=menuitem]',"Add to playlist"),"playlist action");
-      await click(byText('[role=dialog] button',listener.name),"listener's playlist");
+      await click(byText('[role=menuitem]'),"playlist action","Add to playlist");
+      await click(byText('[role=dialog] button'),"listener's playlist",listener.name);
       const path="/api/playlists/" + listener.playlist + "/tracks";
       await until("new playlist membership",()=>mutations.slice(checkpoint).some(m=>m.path===path && m.status===201));
       added.push(listener.playlist);
@@ -261,8 +280,8 @@ try {
   async function openPlaylist(listener) {
     await asListener(listener);
     await send("Page.navigate",{url:origin + "/playlists/" + listener.playlist});
-    await until("listener's playlist",()=>evaluate("location.pathname===" + JSON.stringify("/playlists/" + listener.playlist)
-      + " && Boolean(" + row + ")"));
+    await until("listener's playlist",()=>evaluate("location.pathname===input && Boolean(" + row + ")",
+      false, false, "/playlists/" + listener.playlist));
   }
   async function withdrawals(listeners) {
     const start=requests.length;
@@ -280,7 +299,7 @@ try {
     await openPlaylist(owner);
     const checkpoint=mutations.length;
     await click(row+"?.querySelector('[aria-haspopup=menu]')","track options");
-    await click(byText('[role=menuitem]',"Remove from this playlist"),"remove own entry");
+    await click(byText('[role=menuitem]'),"remove own entry","Remove from this playlist");
     const path="/api/playlists/"+owner.playlist+"/tracks/"+track;
     await until("playlist removal",()=>mutations.slice(checkpoint).some(m=>m.path===path && m.status===204));
     await until("withdrawn entry removed from display",()=>evaluate("!Boolean("+row+") && document.querySelectorAll('button.play-cell').length===2"));
@@ -332,25 +351,25 @@ try {
       window.soundtimeTestSeek = null;
       audio.addEventListener("seeked", () => { window.soundtimeTestSeek = audio.currentTime; }, {once:true});
       const control = ${slider};
-      control.value = ${target};
+      control.value = input;
       control.dispatchEvent(new Event("input", {bubbles:true}));
-    })()`, true);
+    })()`, true, false, target);
     await until("media seeked to requested position", () => evaluate(
-      `window.soundtimeTestSeek !== null && Math.abs(window.soundtimeTestSeek - ${target}) < 1`));
+      "window.soundtimeTestSeek !== null && Math.abs(window.soundtimeTestSeek - input) < 1", false, false, target));
     const after = await until("decoded progress after seek", () => evaluate(
-      `window.soundtimeTestAudio.currentTime >= ${target + 0.5} && window.soundtimeTestAudio.currentTime`));
+      "window.soundtimeTestAudio.currentTime >= input + 0.5 && window.soundtimeTestAudio.currentTime", false, false, target));
     return {before_seek_seconds:before, seek_to_seconds:target, after_seek_seconds:after};
   }
   async function openExpandedPlayer() {
     await click(expandButton, "expand the current track");
     await until("expanded player for the fixture track", () => evaluate(
-      `Array.from(document.querySelectorAll('[role=dialog] h2')).some(h => h.textContent.trim() === ${JSON.stringify(title)})
+      `Array.from(document.querySelectorAll('[role=dialog] h2')).some(h => h.textContent.trim() === fixture.title)
         && Boolean(${visibleSeek("[role=dialog]")})`));
   }
   async function playback(capture = false, credit) {
     await send("Page.navigate", { url: origin + "/playlists/" + encodeURIComponent(playlist) });
     await until("the remote track in its playlist", () => evaluate(
-      "location.pathname===" + JSON.stringify("/playlists/" + playlist) + " && Boolean(" + button + ")"));
+      "location.pathname==='/playlists/'+fixture.playlist && Boolean(" + button + ")"));
     if (capture) await viewport(false);
     if (credit) await checkRowCredit(credit);
     const checkpoint = responses.length;
@@ -424,7 +443,7 @@ try {
         const began=performance.now();
         await send("Page.navigate",{url:origin+"/search?q="+encodeURIComponent(title)});
         await until("search result visible",()=>evaluate("location.pathname==='/search' && "+
-          "new URL(location.href).searchParams.get('q')==="+JSON.stringify(title)+
+          "new URL(location.href).searchParams.get('q')===fixture.title"+
           " && Boolean("+row+"?.getBoundingClientRect().height)"));
         const visible=performance.now()-began;
         const navigation = await evaluate(`(${navigationTimings.toString()})()`);
