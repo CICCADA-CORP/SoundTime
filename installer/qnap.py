@@ -19,14 +19,14 @@ def _expand(value, variables):
             return variables[name]
         if match[2] and match[2].startswith(":-"):
             return match[3]
-        raise ValueError(f"Variable du projet QNAP manquante : {name}")
+        raise ValueError(f"Missing QNAP project variable {name}.")
 
     return VARIABLE.sub(replace, value)
 
 
 def _env_line(key, value):
     if any(ch in value for ch in ("\x00", "\r", "\n")):
-        raise ValueError("Une variable du projet contient un retour à la ligne.")
+        raise ValueError("A project variable contains a line break.")
     # Quoted Compose env-file values preserve spaces, #, quotes and backslashes.
     # $$ protects literal dollar signs from Compose variable interpolation.
     escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "$$")

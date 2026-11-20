@@ -1,18 +1,12 @@
-"""Localize engine and older SSH-agent messages without rewriting external details."""
+"""Read historical deployment-agent diagnostics in the English installer."""
 
 import re
 from string import Formatter
 
 if __package__:
-    from . import i18n
-    from .diagnostic_strings import MESSAGES
+    from .diagnostic_strings import LEGACY_FRENCH
 else:
-    import i18n
-    from diagnostic_strings import MESSAGES
-
-
-# French is the wire format used by earlier versions of the deployment agent.
-_ROWS = {row[1]: row for row in MESSAGES}
+    from diagnostic_strings import LEGACY_FRENCH
 
 
 def _pattern(template):
@@ -25,21 +19,22 @@ def _pattern(template):
     return re.compile("".join(parts))
 
 
-_DYNAMIC = [(template, _pattern(template)) for template in _ROWS if "{" in template]
+_DYNAMIC = [(_pattern(source), translation) for source, translation in LEGACY_FRENCH.items() if "{" in source]
+
+
+def english(message):
+    """Preserve paths and raw external details when reading previous agents' messages."""
+    if not isinstance(message, str):
+        return message
+    if message in LEGACY_FRENCH:
+        return LEGACY_FRENCH[message]
+    for pattern, translation in _DYNAMIC:
+        match = pattern.fullmatch(message)
+        if match:
+            return translation.format(**match.groupdict())
+    return message
 
 
 def localize(code, message):
-    """Translate known diagnostics while preserving paths, hosts and service output."""
-    if not isinstance(message, str):
-        return message
-    if message == "Les réglages sont incomplets. Rechargez la page de l’assistant.":
-        message = "Les réglages sont incomplets. Relancez l’installateur et réessayez."
-    if i18n.language(code) == "fr":
-        return message
-    if message in _ROWS and "{" not in message:
-        return i18n.text(code, _ROWS, message)
-    for template, pattern in _DYNAMIC:
-        match = pattern.fullmatch(message)
-        if match:
-            return i18n.text(code, _ROWS, template, **match.groupdict())
-    return message
+    """Compatibility with callers from editions that accepted a language argument."""
+    return english(message)

@@ -57,25 +57,28 @@ def verify(directory):
         for name in ("soundtime", "soundtime.cmd"):
             wrapper = ROOT / "installer" / "packaging" / "wrappers" / name
             shutil.copy2(wrapper, work / name)
-        def run(args):
-            env = {**os.environ, "PYTHONIOENCODING": "utf-8", "DISPLAY": ""}
+        def run(args, *, input_data=None):
+            env = {**os.environ, "PYTHONIOENCODING": "utf-8", "DISPLAY": "",
+                   "SOUNDTIME_LANG": "fr", "LANGUAGE": "fr", "LC_MESSAGES": "fr_FR.UTF-8"}
             if system == "windows":
                 command = ["cmd.exe", "/d", "/c", "soundtime.cmd", *args]
             else:
                 command = ["sh", str(work / "soundtime"), *args]
-            return subprocess.run(command, env=env, cwd=work, capture_output=True, timeout=90)
+            return subprocess.run(command, env=env, cwd=work, input=input_data, capture_output=True, timeout=90)
 
-        outputs = []
-        for lang in ("en", "fr", "es", "ru", "zh"):
-            result = run(["--lang", lang, "--help"])
-            if result.returncode or not result.stdout.strip():
-                raise RuntimeError(f"Failed to open {lang} CLI help: {result.stderr!r}")
-            outputs.append(result.stdout)
-        if len(set(outputs)) != len(outputs):
-            raise ValueError("CLI help did not change with language")
+        help_text = run(["--help"])
+        if help_text.returncode or b"Install SoundTime" not in help_text.stdout:
+            raise ValueError("The packaged CLI must show English help on a French system")
+        legacy = run(["--lang", "fr", "--help"])
+        if legacy.returncode or legacy.stdout != help_text.stdout:
+            raise ValueError("The legacy locale option changed the help language")
+        wizard = run([], input_data=b"2\n2\n1\n1\nCancelled project.zip\n2\n")
+        if (wizard.returncode or b"Where do you want to install SoundTime?" not in wizard.stdout
+                or b"Apply these settings?" not in wizard.stdout or (work / "Cancelled project.zip").exists()):
+            raise ValueError("The packaged wizard must offer the English NAS flow and allow cancellation")
         if run(["invalid-command"]).returncode == 0:
             raise ValueError("Wrapper swallowed a command error")
-        result = run(["--lang", "es", "export", "--target", "nas", "--directory", "/volume1/docker/soundtime",
+        result = run(["export", "--target", "nas", "--directory", "/volume1/docker/soundtime",
                       "--output", "NAS project.zip"])
         if result.returncode:
             raise RuntimeError(f"Packaged NAS export failed: {result.stdout!r}, {result.stderr!r}")
@@ -83,12 +86,14 @@ def verify(directory):
             for name in ("compose.yaml", ".env", "qnap-compose.yaml", "docker/nginx.conf", "README.txt"):
                 if not project.read(name).strip():
                     raise ValueError(f"Empty NAS project file: {name}")
+            if b"Install SoundTime on your NAS" not in project.read("README.txt"):
+                raise ValueError("The exported NAS guide must be in English")
         if system == "windows":
             shell = shutil.which("pwsh") or shutil.which("powershell")
             subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
-                            r"& '.\soundtime.cmd' --lang en --help; exit $LASTEXITCODE"],
+                            r"& '.\soundtime.cmd' --help; exit $LASTEXITCODE"],
                            cwd=work, check=True, stdout=subprocess.DEVNULL, timeout=60)
-    print(f"Console wrapper, five languages, exit status and NAS export verified on {system}-{arch}.")
+    print(f"Console wrapper, English wizard and help, exit status and English NAS export verified on {system}-{arch}.")
 
 
 if __name__ == "__main__":

@@ -68,7 +68,7 @@ class InstallationTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError) as caught:
                 engine._settings({**self.settings, "storage": {**self.S3, key: invalid}})
             self.assertNotIn(self.S3["secretKey"], str(caught.exception))
-        with self.assertRaisesRegex(ValueError, "ou le bucket S3"):
+        with self.assertRaisesRegex(ValueError, "or an S3 bucket"):
             engine._settings({**self.settings, "musicDirectory": str(self.directory), "storage": self.S3})
 
     @unittest.skipUnless(shutil.which("docker"), "Docker Compose CLI required")
@@ -122,7 +122,7 @@ class InstallationTests(unittest.TestCase):
                     mount = next(m for m in model["services"]["backend"]["volumes"] if isinstance(m, dict))
                     self.assertTrue(mount["read_only"])
                     self.assertEqual(mount["source"], "/volume2/Albums")
-                    self.assertNotIn("docker/acces/comptes", zipdata.namelist())
+                    self.assertNotIn("docker/access/users", zipdata.namelist())
         for bad in ("/", "/opt/../etc", "C:\\Music", "relative/config"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 engine.export_project({**settings, "directory": bad}, "cloud")
@@ -134,11 +134,11 @@ class InstallationTests(unittest.TestCase):
         self.directory.mkdir(parents=True)
         with zipfile.ZipFile(io.BytesIO(data)) as zipdata:
             zipdata.extractall(self.directory)
-            guide = zipdata.read("LISEZ-MOI.txt").decode()
-            password = re.search(r"Mot de passe temporaire : (\S+)", guide)[1]
+            guide = zipdata.read("README.txt").decode()
+            password = re.search(r"Temporary password: (\S+)", guide)[1]
             digest = base64.b64encode(hashlib.sha1(password.encode()).digest()).decode()
-            self.assertEqual(zipdata.read("docker/acces/comptes").decode(), f"soundtime:{{SHA}}{digest}\n")
-            self.assertIn(b"auth_basic $soundtime_realm", zipdata.read("docker/acces/bootstrap.active"))
+            self.assertEqual(zipdata.read("docker/access/users").decode(), f"soundtime:{{SHA}}{digest}\n")
+            self.assertIn(b"auth_basic $soundtime_realm", zipdata.read("docker/access/bootstrap.active"))
             self.assertNotIn(password, zipdata.read("compose.yaml").decode())
             self.assertNotIn(self.S3["secretKey"], guide)
         result = engine._docker("compose", "config", "--format", "json", cwd=self.directory)
@@ -166,7 +166,7 @@ class InstallationTests(unittest.TestCase):
             self.assertEqual(env.stat().st_mode & 0o777, 0o600)
         override = self.directory / "compose.override.yaml"
         override.write_text(override.read_text() + "# custom\n")
-        with self.assertRaisesRegex(ValueError, "modifié"):
+        with self.assertRaisesRegex(ValueError, "has changed"):
             engine._configure(self.directory, self.settings)
         self.assertTrue(override.read_text().endswith("# custom\n"))
 
@@ -178,7 +178,7 @@ class InstallationTests(unittest.TestCase):
 
     def test_two_launchers_cannot_use_the_same_directory_at_once(self):
         with engine._lock(self.directory):
-            with self.assertRaisesRegex(RuntimeError, "autre installation"):
+            with self.assertRaisesRegex(RuntimeError, "Another installation"):
                 with engine._lock(self.directory):
                     self.fail("Le verrou aurait dû bloquer la seconde opération.")
 
@@ -231,14 +231,14 @@ class InstallationTests(unittest.TestCase):
 
     def test_cloud_or_windows_docker_refused(self):
         with patch.dict(os.environ, {"DOCKER_HOST": "ssh://another-machine", "DOCKER_CONTEXT": ""}), patch("shutil.which", return_value="docker"):
-            with self.assertRaisesRegex(ValueError, "distant"):
+            with self.assertRaisesRegex(ValueError, "remote host"):
                 engine._docker_ready()
         with patch.dict(os.environ, {"DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONTEXT": ""}), patch("shutil.which", return_value="docker"), patch.object(engine, "_docker", return_value=CompletedProcess([], 0, "windows/amd64", "")):
-            with self.assertRaisesRegex(ValueError, "conteneurs Linux"):
+            with self.assertRaisesRegex(ValueError, "Linux containers"):
                 engine._docker_ready()
 
     def test_preflight_occupied_port_can_be_retried(self):
-        with patch.object(engine, "_docker_ready", return_value="Docker disponible"):
+        with patch.object(engine, "_docker_ready", return_value="Docker is available"):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
                 listener.bind(("127.0.0.1", 0))
                 listener.listen()
@@ -259,10 +259,10 @@ class InstallationTests(unittest.TestCase):
             self.assertTrue(result["lanPending"])
             self.assertTrue(result["url"].endswith("/setup"))
             with patch.object(engine, "_port_owner", return_value=set()):
-                with self.assertRaisesRegex(ValueError, "changé"):
+                with self.assertRaisesRegex(ValueError, "have changed"):
                     engine.enable_lan(settings, Mock())
             with patch.object(engine, "_port_owner", return_value={settings["port"]}):
-                with self.assertRaisesRegex(RuntimeError, "Terminez"):
+                with self.assertRaisesRegex(RuntimeError, "Finish creating"):
                     engine.enable_lan(settings, Mock())
                 self.assertNotIn("0.0.0.0", (self.directory / "compose.override.yaml").read_text())
                 status.update(has_admin=True, setup_complete=True)

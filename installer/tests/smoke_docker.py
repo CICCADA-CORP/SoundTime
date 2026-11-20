@@ -30,7 +30,7 @@ def http(port, path, body=None, headers=None):
 
 def smoke():
     def cli(*args, secret=None, success=True):
-        env = os.environ.copy()
+        env = {**os.environ, "SOUNDTIME_LANG": "fr", "LANGUAGE": "fr"}
         if secret:
             env["SOUNDTIME_ADMIN_PASSWORD"] = secret
         command = [os.environ["SOUNDTIME_TEST_CLI"]] if "SOUNDTIME_TEST_CLI" in os.environ else [sys.executable, str(ENTRY)]
@@ -38,7 +38,7 @@ def smoke():
         if "SOUNDTIME_TEST_SSH_PORT" in os.environ:
             destination = ["--target", "auto", "--ssh-host", "127.0.0.1", "--ssh-user", os.environ["SOUNDTIME_TEST_SSH_USER"],
                            "--ssh-port", os.environ["SOUNDTIME_TEST_SSH_PORT"]]
-        result = subprocess.run([*command, "--lang", "en", "--json", *args, *destination],
+        result = subprocess.run([*command, "--json", *args, *destination],
                                 stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=1000)
         if (result.returncode == 0) != success:
             raise AssertionError(f"CLI {args[0]} returned {result.returncode}: {result.stderr[-500:]!r}")

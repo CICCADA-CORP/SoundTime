@@ -22,7 +22,7 @@ def main():
         request = json.loads(sys.stdin.buffer.readline())
         actual = {"Linux": "linux", "Darwin": "macos", "Windows": "windows"}.get(platform.system())
         if not actual or request.get("os", actual) != actual:
-            raise ValueError("Le système détecté ne correspond pas à la destination choisie.")
+            raise ValueError("The detected operating system does not match the selected destination.")
         if actual == "macos":
             os.environ["PATH"] = os.pathsep.join([os.environ.get("PATH", ""), "/usr/local/bin",
                                                   "/opt/homebrew/bin", str(Path.home() / ".docker/bin"),
@@ -42,15 +42,15 @@ def main():
             operation = engine.install if action == "install" else engine.enable_lan
             result = operation(request["settings"], lambda stage, message: emit("event", stage=stage, message=message))
         else:
-            raise ValueError("Action distante inconnue.")
+            raise ValueError("Unknown remote action.")
         emit("result", result=result)
         return 0
     except (ValueError, RuntimeError) as exc:
         emit("error", message=str(exc))
     except OSError:
-        emit("error", message="Le serveur n’a pas pu accéder au dossier ou à Docker. Vérifiez les droits du compte SSH.")
+        emit("error", message="The server could not access the folder or Docker. Check the SSH account permissions.")
     except Exception:
-        emit("error", message="L’agent distant a rencontré une erreur. Relancez la vérification.")
+        emit("error", message="The remote agent encountered an error. Run the checks again.")
     return 1
 
 

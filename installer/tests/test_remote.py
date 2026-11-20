@@ -44,8 +44,8 @@ class RemoteTests(unittest.TestCase):
             self.assertFalse(Path(settings["directory"]).exists())
 
     def test_ssh_failure_points_to_account_or_host_trust_without_echoing_stderr(self):
-        self.assertIn("empreinte", remote._ssh_error(b"host key verification failed"))
-        self.assertIn("refusé", remote._ssh_error(b"permission denied (publickey)"))
+        self.assertIn("fingerprint", remote._ssh_error(b"host key verification failed"))
+        self.assertIn("rejected", remote._ssh_error(b"permission denied (publickey)"))
         self.assertIn("Python", remote._ssh_error(b"sh: python3: not found"))
 
     def test_detects_native_architecture_and_optional_nas(self):
@@ -63,15 +63,15 @@ class RemoteTests(unittest.TestCase):
             self.assertEqual(remote.detect(windows_login), {"os": "windows", "arch": "x64"})
             self.assertIn("powershell.exe", execute.call_args.args[1])
         with patch.object(remote, "_exec", return_value=subprocess.CompletedProcess([], 0,
-                b"SOUNDTIME-PLATFORM Linux armv7l none", b"")), self.assertRaisesRegex(ValueError, "64 bits"):
+                b"SOUNDTIME-PLATFORM Linux armv7l none", b"")), self.assertRaisesRegex(ValueError, "64-bit"):
             remote.detect(ssh)
         with patch.object(remote, "_exec", return_value=subprocess.CompletedProcess([], 0,
-                b"SOUNDTIME-PLATFORM Linux x86_64 none", b"")), self.assertRaisesRegex(ValueError, "correspond"):
+                b"SOUNDTIME-PLATFORM Linux x86_64 none", b"")), self.assertRaisesRegex(ValueError, "does not match"):
             remote.detect(windows_login)
 
     def test_untrusted_host_ends_detection_before_another_probe(self):
         with patch.object(remote, "_exec", return_value=subprocess.CompletedProcess([], 255, b"",
-                b"Host key verification failed")) as execute, self.assertRaisesRegex(RuntimeError, "empreinte"):
+                b"Host key verification failed")) as execute, self.assertRaisesRegex(RuntimeError, "fingerprint"):
             remote.detect({"os": "auto"})
         self.assertEqual(execute.call_count, 1)
 
@@ -84,7 +84,7 @@ class RemoteTests(unittest.TestCase):
             windows.touch()
             with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(local)):
                 self.assertEqual(remote._native_binary({"os": "windows", "arch": "x64"}), windows.resolve())
-                with self.assertRaisesRegex(ValueError, "archive universelle"):
+                with self.assertRaisesRegex(ValueError, "universal archive"):
                     remote._native_binary({"os": "linux", "arch": "x64"})
 
     def test_native_transfer_is_verified_and_cleaned_after_execution_error(self):
@@ -181,7 +181,7 @@ class RemoteTests(unittest.TestCase):
                 subprocess.run(cmds[2].split(), check=True)
 
     def test_remote_check_returns_a_correctable_diagnostic(self):
-        with patch.object(remote, "_call", side_effect=RuntimeError("Clé inconnue.")):
+        with patch.object(remote, "_call", side_effect=RuntimeError("Unknown host key.")):
             result = remote.preflight({"host": "music.test"}, {})
         self.assertFalse(result["ok"])
         self.assertEqual(result["checks"][0]["id"], "ssh")

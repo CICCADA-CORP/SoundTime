@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import http.client
 import json
@@ -41,15 +42,15 @@ def _storage(value):
     fields = {"kind", "endpoint", "region", "bucket", "prefix"}
     fields.update({"reuseCredentials"} if reuse else {"accessKey", "secretKey"})
     if not isinstance(value, dict) or value.keys() != fields or value.get("kind") != "s3":
-        raise ValueError("Choisissez le stockage sur disque ou renseignez les paramètres S3.")
+        raise ValueError("Choose disk storage or enter your S3 settings.")
     if any(not isinstance(v, str) or len(v) > 2048 or not all(ch.isprintable() for ch in v)
            for k, v in value.items() if k != "reuseCredentials"):
-        raise ValueError("Les champs S3 doivent tenir chacun sur une ligne de texte.")
+        raise ValueError("Enter each S3 setting on a single line.")
     s = value.copy()
     if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", s["bucket"]) or ".." in s["bucket"]:
-        raise ValueError("Indiquez le nom du bucket existant (3 à 63 lettres minuscules, chiffres, points ou tirets).")
+        raise ValueError("Enter the existing bucket name using 3 to 63 lowercase letters, digits, dots or hyphens.")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", s["region"]):
-        raise ValueError("Indiquez la région de votre bucket, par exemple eu-west-3 pour AWS ou auto pour R2.")
+        raise ValueError("Enter the bucket region, such as eu-west-3 for AWS or auto for R2.")
     if s["endpoint"]:
         try:
             url = urlsplit(s["endpoint"])
@@ -58,58 +59,58 @@ def _storage(value):
                     or any(ch.isspace() for ch in s["endpoint"])):
                 raise ValueError
         except ValueError:
-            raise ValueError("L’adresse S3 doit être une URL HTTP ou HTTPS sans identifiants, paramètres ou fragment. Laissez-la vide pour AWS.") from None
+            raise ValueError("Enter an HTTP or HTTPS endpoint without credentials, query parameters or a fragment. Leave it blank for AWS.") from None
     if not reuse and (not s["accessKey"].strip() or not s["secretKey"].strip()):
-        raise ValueError("Renseignez la clé d’accès et la clé secrète du service S3.")
+        raise ValueError("Enter the access key and secret key for your S3 service.")
     s["prefix"] = s["prefix"].strip("/")
     if ".." in s["prefix"].split("/"):
-        raise ValueError("Indiquez un préfixe S3 sans composant « .. ».")
+        raise ValueError("Enter an S3 prefix without a “..” path component.")
     return s
 
 
 def _settings(values, *, remote=False):
     if not isinstance(values, dict):
-        raise ValueError("Les réglages sont incomplets. Relancez l’installateur et réessayez.")
+        raise ValueError("Some settings are missing. Reopen the installer and try again.")
     s = {"musicDirectory": "", "storage": {"kind": "local"}, **values}
     fields = {"directory", "musicDirectory", "port", "peerPort", "p2p", "domain", "access", "storage"}
     if s.keys() != fields:
-        raise ValueError("Les réglages sont incomplets. Relancez l’installateur et réessayez.")
+        raise ValueError("Some settings are missing. Reopen the installer and try again.")
     for field in ("port", "peerPort"):
         if type(s[field]) is not int or not 1 <= s[field] <= 65535:
-            raise ValueError("Choisissez un numéro de port entre 1 et 65535.")
+            raise ValueError("Choose a port between 1 and 65535.")
     if s["access"] not in ("local", "lan") or type(s["p2p"]) is not bool:
-        raise ValueError("Choisissez une option d’accès et de partage proposée par l’assistant.")
+        raise ValueError("Choose one of the access and sharing options offered by the installer.")
     domain = s["domain"]
     label = r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
     if not isinstance(domain, str) or len(domain) > 253 or not re.fullmatch(rf"{label}(?:\.{label})*", domain):
-        raise ValueError("Entrez un nom d’hôte ou une adresse IPv4, par exemple localhost ou musique.maison.")
+        raise ValueError("Enter a host name or IPv4 address, such as localhost or music.home.")
     raw = s["directory"]
     if not isinstance(raw, str) or not raw.strip() or any(ord(ch) < 32 for ch in raw):
-        raise ValueError("Choisissez un chemin de dossier complet.")
+        raise ValueError("Enter a full folder path.")
     path = PurePosixPath(raw) if remote else Path(raw).expanduser()
     if (not path.is_absolute() or (not remote and path.is_symlink())
             or (remote and (path.anchor != "/" or ".." in path.parts))):
-        raise ValueError("Choisissez un dossier d’installation dédié avec un chemin absolu.")
+        raise ValueError("Choose a dedicated installation folder and use its absolute path.")
     path = path if remote else path.resolve()
     if path == type(path)(path.anchor):
-        raise ValueError("Choisissez un dossier d’installation dédié, sous la racine du disque.")
+        raise ValueError("Choose an installation folder below the root of the drive.")
     s["directory"] = str(path)
     s["storage"] = _storage(s["storage"])
     music = s["musicDirectory"]
     if not isinstance(music, str) or any(ord(ch) < 32 for ch in music):
-        raise ValueError("Choisissez le chemin complet de votre dossier de musique.")
+        raise ValueError("Enter the full path to your music folder.")
     if music:
         if s["storage"]["kind"] == "s3":
-            raise ValueError("Choisissez le dossier de musique sur disque ou le bucket S3 pour cette installation.")
+            raise ValueError("Choose either a music folder on disk or an S3 bucket for this installation.")
         collection = PurePosixPath(music) if remote else Path(music).expanduser()
         if not collection.is_absolute() or (remote and (collection.anchor != "/" or ".." in collection.parts)):
-            raise ValueError("Choisissez le chemin complet de votre dossier de musique.")
+            raise ValueError("Enter the full path to your music folder.")
         collection = collection if remote else collection.resolve()
         if (collection == type(collection)(collection.anchor) or path.is_relative_to(collection)
                 or collection.is_relative_to(path)):
-            raise ValueError("Choisissez un dossier de musique dédié, séparé du dossier d’installation.")
+            raise ValueError("Choose a music folder separate from the installation folder.")
         if not remote and (not collection.is_dir() or not os.access(collection, os.R_OK | os.X_OK)):
-            raise ValueError("Le dossier de musique doit exister et être lisible. Vérifiez son chemin ou reconnectez le disque.")
+            raise ValueError("The music folder must exist and be readable. Check its path or reconnect the drive.")
         s["musicDirectory"] = str(collection)
     return s
 
@@ -125,10 +126,10 @@ def _seal(data):
 
 def _unseal(path):
     if path.is_symlink() or not path.is_file():
-        raise ValueError("Un fichier de l’installation est absent ou remplacé. Vérifiez le dossier choisi.")
+        raise ValueError("An installation file is missing or has been replaced. Check the selected folder.")
     head, _, data = path.read_bytes().partition(b"\n")
     if head != (HEADER + _digest(data)).encode():
-        raise ValueError(f"Le fichier {path.name} a été modifié. Conservez ce dossier et utilisez Docker Compose pour le gérer, ou choisissez un dossier vide.")
+        raise ValueError(f"{path.name} has changed. Keep this folder and manage it with Docker Compose, or choose an empty folder.")
     return data
 
 
@@ -137,11 +138,11 @@ def _state(directory):
     if not directory.exists():
         return None
     if not directory.is_dir():
-        raise ValueError("Ce chemin désigne un fichier. Choisissez un dossier.")
+        raise ValueError("This path points to a file. Choose a folder.")
     env = directory / MANIFEST
     if not env.exists():
         if any(p.name not in (LOCK, ".DS_Store") for p in directory.iterdir()):
-            raise ValueError("Ce dossier contient déjà des fichiers. Choisissez un dossier vide ou une installation créée avec cet assistant.")
+            raise ValueError("This folder already contains files. Choose an empty folder or an installation created with this installer.")
         return None
     raw = _unseal(env)
     try:
@@ -155,7 +156,7 @@ def _state(directory):
                                     r'(?:S3_ACCESS_KEY="[^\n]*"\nS3_SECRET_KEY="[^\n]*"\n)?', variables)):
             raise ValueError
     except (KeyError, TypeError, UnicodeError, ValueError, AttributeError):
-        raise ValueError("Le dossier de cette installation a été déplacé ou ses identifiants sont incomplets. Restaurez la configuration d’origine ou choisissez un dossier vide.") from None
+        raise ValueError("The installation folder was moved or its credentials are incomplete. Restore the original configuration or choose an empty folder.") from None
     return meta
 
 
@@ -178,7 +179,7 @@ def _lock(directory):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = directory / LOCK
     if path.is_symlink():
-        raise ValueError("Choisissez un dossier d’installation dédié.")
+        raise ValueError("Choose a dedicated installation folder.")
     with path.open("a+b") as f:
         try:
             if os.name == "nt":
@@ -189,7 +190,7 @@ def _lock(directory):
                 import fcntl
                 fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            raise RuntimeError("Une autre installation utilise déjà ce dossier. Attendez sa fin, puis réessayez.") from None
+            raise RuntimeError("Another installation is using this folder. Wait for it to finish, then try again.") from None
         yield
 
 
@@ -205,15 +206,15 @@ def _prepare(directory):
     for name, src in ASSETS.items():
         dest = directory / name
         if dest.parent.is_symlink() or dest.is_symlink():
-            raise ValueError("Les fichiers Docker de l’installation doivent se trouver dans le dossier choisi.")
+            raise ValueError("The Docker files must be inside the selected installation folder.")
         expected = meta["assets"][name]
         if dest.exists():
             if not dest.is_file() or _digest(dest.read_bytes()) != expected:
-                raise ValueError(f"Le fichier {name} a été modifié. Gérez cette installation depuis Docker Compose ou choisissez un dossier vide.")
+                raise ValueError(f"{name} has changed. Manage this installation with Docker Compose or select an empty folder.")
         else:
             data = (ROOT / src).read_bytes()
             if _digest(data) != expected:
-                raise ValueError(f"Restaurez le fichier {name} de l’installation d’origine avant de reprendre.")
+                raise ValueError(f"Restore {name} from the original installation before continuing.")
             dest.parent.mkdir(exist_ok=True, mode=0o700)
             _write(dest, data)
     return meta
@@ -321,7 +322,7 @@ def _saved_plan(directory, data):
             raise ValueError
         return plan
     except (UnicodeError, KeyError, ValueError, AttributeError, TypeError):
-        raise ValueError("Impossible de reprendre automatiquement ces réglages. Restaurez la configuration de cette installation ou choisissez un dossier vide.") from None
+        raise ValueError("These settings could not be recovered automatically. Restore the original configuration or choose an empty folder.") from None
 
 
 def recommend(directory=None):
@@ -329,7 +330,7 @@ def recommend(directory=None):
     plan = defaults()
     path = Path(plan["directory"] if directory is None else directory).expanduser()
     if not path.is_absolute() or path.is_symlink() or path == Path(path.anchor):
-        raise ValueError("Choisissez un dossier d’installation dédié avec un chemin absolu.")
+        raise ValueError("Choose a dedicated installation folder and use its absolute path.")
     path = path.resolve()
     plan["directory"] = str(path)
     if (path / MANIFEST).is_file() and _state(path):
@@ -337,7 +338,7 @@ def recommend(directory=None):
         if override.exists() or override.is_symlink():
             return _saved_plan(path, _unseal(override))
         if b"\nS3_ACCESS_KEY=" in _unseal(path / MANIFEST):
-            raise ValueError("Restaurez le fichier compose.override.yaml de l’installation d’origine avant de reprendre.")
+            raise ValueError("Restore compose.override.yaml from the original installation before continuing.")
     for port in range(8880, 8900):
         try:
             _check_port(port, "127.0.0.1", socket.SOCK_STREAM, None, "nginx", 80)
@@ -352,7 +353,7 @@ def _check_saved_credentials(path, storage):
     override = path / "compose.override.yaml"
     if (not override.is_file() or _saved_plan(path, _unseal(override))["storage"] != storage
             or b"\nS3_ACCESS_KEY=" not in _unseal(path / MANIFEST)):
-        raise ValueError("Pour modifier le stockage S3, renseignez de nouveau les clés du bucket.")
+        raise ValueError("To change the S3 storage settings, enter the bucket credentials again.")
 
 
 def _configure(directory, settings, lan=False, *, keep_credentials=False):
@@ -388,30 +389,30 @@ def _docker(*args, cwd=None, timeout=12):
                               text=True, encoding="utf-8", errors="replace", timeout=timeout,
                               stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except subprocess.TimeoutExpired:
-        raise RuntimeError("Docker met trop de temps à répondre. Vérifiez son état et votre connexion, puis réessayez.") from None
+        raise RuntimeError("Docker took too long to respond. Check Docker and your connection, then try again.") from None
 
 
 def _docker_ready():
     if shutil.which("docker") is None:
-        raise ValueError("Installez Docker Desktop sur Mac ou Windows, ou Docker Engine avec Compose sur Linux, puis relancez la vérification.")
+        raise ValueError("Install Docker Desktop on Mac or Windows, or Docker Engine with Compose on Linux, then run the checks again.")
     endpoint = os.environ.get("DOCKER_HOST")
     if not endpoint or os.environ.get("DOCKER_CONTEXT"):
         context = _docker("context", "inspect", "--format", "{{.Endpoints.docker.Host}}")
         endpoint = context.stdout.strip() if context.returncode == 0 else ""
     if not endpoint:
-        raise ValueError("Ouvrez Docker Desktop ou démarrez Docker Engine, puis relancez la vérification.")
+        raise ValueError("Open Docker Desktop or start Docker Engine, then run the checks again.")
     if not (endpoint.startswith("unix:///") or endpoint.lower().replace("\\", "/").startswith("npipe:////./pipe/")):
-        raise ValueError("Sélectionnez le moteur Docker de cet ordinateur. Pour un serveur distant, ouvrez l’assistant sur ce serveur.")
+        raise ValueError("Select this computer’s Docker engine. To install on a remote host, use the remote installation option or run the installer there.")
     result = _docker("info", "--format", "{{.OSType}}/{{.Architecture}}")
     if result.returncode:
-        raise ValueError("Docker est installé. Démarrez-le et vérifiez que votre compte y a accès, puis réessayez.")
+        raise ValueError("Docker is installed. Start it and make sure your account can access it, then try again.")
     if result.stdout.strip().lower() not in {"linux/x86_64", "linux/amd64", "linux/arm64", "linux/aarch64"}:
-        raise ValueError("SoundTime utilise des conteneurs Linux x86-64 ou ARM64. Sur Windows, activez les conteneurs Linux dans Docker Desktop.")
+        raise ValueError("SoundTime runs in Linux x86-64 or ARM64 containers. On Windows, switch Docker Desktop to Linux containers.")
     version = _docker("compose", "version", "--short")
     match = re.match(r"v?(\d+)\.(\d+)\.(\d+)", version.stdout.strip())
     if version.returncode or not match or tuple(map(int, match.groups())) < MIN_COMPOSE:
-        raise ValueError("Mettez à jour Docker Compose vers la version 2.24.4 ou ultérieure, puis réessayez.")
-    return f"Docker est démarré. Compose {match[0]} est disponible."
+        raise ValueError("Update Docker Compose to version 2.24.4 or later, then try again.")
+    return f"Docker is running. Compose {match[0]} is available."
 
 
 def _port_owner(project, service, internal_port, udp=False):
@@ -438,7 +439,21 @@ def _check_port(port, host, kind, meta, service, internal):
     except OSError:
         if meta and port in _port_owner(meta["project"], service, internal, kind == socket.SOCK_DGRAM):
             return
-        raise ValueError(f"Le port {port} est occupé ou réservé. Choisissez un autre numéro dans les réglages.") from None
+        raise ValueError(f"Port {port} is in use or reserved. Choose another port in the settings.") from None
+
+
+def _check_error(exc):
+    if not isinstance(exc, OSError):
+        return str(exc)
+    reasons = {
+        errno.EACCES: "Permission denied. Check your account's access.",
+        errno.EPERM: "Permission denied. Check your account's access.",
+        errno.ENOENT: "The required file or command could not be found.",
+        errno.ENOSPC: "The disk is full. Free space and try again.",
+        errno.EROFS: "The disk is read-only. Choose a writable location.",
+    }
+    detail = reasons.get(exc.errno, "The operating system could not complete this check.")
+    return f"{detail} ({exc.filename})" if exc.filename else detail
 
 
 def preflight(settings):
@@ -450,13 +465,13 @@ def preflight(settings):
             checks.append(dict(id=key, label=label, ok=True, detail=message))
             return True
         except (ValueError, RuntimeError, OSError) as exc:
-            checks.append(dict(id=key, label=label, ok=False, detail=str(exc)))
+            checks.append(dict(id=key, label=label, ok=False, detail=_check_error(exc)))
             return False
 
     try:
         s = _settings(settings)
     except (ValueError, OSError, RuntimeError) as exc:
-        return {"ok": False, "checks": [dict(id="settings", label="Réglages", ok=False, detail=str(exc))]}
+        return {"ok": False, "checks": [dict(id="settings", label="Settings", ok=False, detail=_check_error(exc))]}
     path = Path(s["directory"])
     meta = None
 
@@ -469,24 +484,24 @@ def preflight(settings):
         while not ancestor.exists():
             ancestor = ancestor.parent
         if not ancestor.is_dir() or not os.access(ancestor, os.W_OK):
-            raise ValueError("Choisissez un dossier dans lequel votre compte peut écrire.")
-        return "L’installation existante sera reprise." if meta else "Le dossier est disponible pour SoundTime."
+            raise ValueError("Choose a folder your account can write to.")
+        return "The existing installation will resume." if meta else "The folder is available for SoundTime."
 
     def ports():
         _check_port(s["port"], "0.0.0.0" if s["access"] == "lan" else "127.0.0.1",
                     socket.SOCK_STREAM, meta, "nginx", 80)
         if s["p2p"]:
             _check_port(s["peerPort"], "0.0.0.0", socket.SOCK_DGRAM, meta, "backend", s["peerPort"])
-        return "Les ports choisis sont disponibles pour cette installation."
+        return "The selected ports are available."
 
-    docker_ok = check("docker", "Docker et Compose", _docker_ready)
-    check("directory", "Dossier d’installation", directory)
+    docker_ok = check("docker", "Docker and Compose", _docker_ready)
+    check("directory", "Installation folder", directory)
     if not docker_ok:
         meta = None
-    check("ports", "Ports réseau", ports)
+    check("ports", "Network ports", ports)
     if s["storage"]["kind"] == "s3":
-        checks.append(dict(id="storage", label="Configuration S3", ok=True,
-                           detail="Paramètres renseignés. Un premier téléversement et sa lecture permettront de vérifier les droits sur le bucket."))
+        checks.append(dict(id="storage", label="S3 configuration", ok=True,
+                           detail="The S3 settings are filled in. Upload and play a track to verify access to the bucket."))
     return {"ok": all(c["ok"] for c in checks), "checks": checks}
 
 
@@ -496,28 +511,28 @@ def _compose(directory, args, timeout, on_error):
     if result.returncode:
         detail = result.stderr.lower()
         if any(s in detail for s in ("port is already allocated", "address already in use", "ports are not available")):
-            raise RuntimeError("Un port vient d’être réservé par une autre application. Changez le port dans les réglages et relancez l’installation.")
+            raise RuntimeError("Another application just reserved the port. Change the port in settings and restart the installation.")
         if "no space left" in detail or "disk quota" in detail:
-            raise RuntimeError("Le disque utilisé par Docker est plein. Libérez de la place, puis réessayez avec le même dossier.")
+            raise RuntimeError("Docker’s disk is full. Free some space and try again using the same folder.")
         raise RuntimeError(on_error)
     return result.stdout
 
 
 def _download(directory, report):
-    images = _compose(directory, ["config", "--images"], 30, "La configuration Docker est invalide. Vérifiez votre version de Compose.")
+    images = _compose(directory, ["config", "--images"], 30, "The Docker configuration is invalid. Check your Compose version.")
     refs = list(dict.fromkeys(images.splitlines()))
     if not refs:
-        raise RuntimeError("Docker Compose n’a trouvé aucune image dans la configuration.")
+        raise RuntimeError("Docker Compose found no images in the configuration.")
     for i, image in enumerate(refs, 1):
         # Compose pulls :latest even with --pull missing. Inspect first so that
         # retries can use a complete local cache, including the SoundTime images.
         cached = _docker("image", "inspect", "--format", "{{.Id}}", image)
         if cached.returncode == 0:
-            report("download", f"{i}/{len(refs)} · {image} est disponible sur cet ordinateur.")
+            report("download", f"{i}/{len(refs)} · {image} is already available on this computer.")
             continue
-        report("download", f"{i}/{len(refs)} · Téléchargement de {image}.")
+        report("download", f"{i}/{len(refs)} · Downloading {image}.")
         if _docker("pull", "--quiet", image, timeout=1800).returncode:
-            raise RuntimeError(f"Docker n’a pas pu télécharger {image}. Vérifiez votre connexion, l’espace disque et l’accès au registre, puis réessayez.")
+            raise RuntimeError(f"Docker could not download {image}. Check your connection, disk space and registry access, then try again.")
 
 
 def _get(port, path):
@@ -548,7 +563,7 @@ def _readiness(port, wait=120):
         except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
             pass
         if time.monotonic() >= deadline:
-            raise RuntimeError("SoundTime démarre encore ou un service rencontre un problème. Réessayez avec le même dossier. Le journal « docker compose logs --tail=100 » dans ce dossier indique le service concerné.")
+            raise RuntimeError("SoundTime is still starting or a service needs attention. Retry with the same folder. Run “docker compose logs --tail=100” in that folder to see which service is affected.")
         time.sleep(1)
 
 
@@ -578,18 +593,18 @@ def _result(settings, status, lan=False):
 
 
 def _start(directory, *services):
-    _compose(directory, ["up", "-d", "--pull", "never", *services], 600, "Docker n’a pas pu démarrer les services. Vérifiez l’espace disque et le partage du dossier dans Docker Desktop, puis réessayez. Le journal « docker compose logs --tail=100 » est disponible dans ce dossier.")
+    _compose(directory, ["up", "-d", "--pull", "never", *services], 600, "Docker could not start the services. Check disk space and Docker Desktop file sharing, then try again. Run “docker compose logs --tail=100” in this folder for details.")
 
 
 def _publish(directory, settings, report):
     status = _readiness(settings["port"], wait=3)
     if not (status["has_admin"] and status["setup_complete"]):
-        raise RuntimeError("Terminez la création du compte et la configuration dans SoundTime, puis activez à nouveau l’accès réseau.")
-    report("start", "Activation de l’accès depuis votre réseau.")
+        raise RuntimeError("Finish creating your account and setting up SoundTime, then enable network access again.")
+    report("start", "Enabling access from your network.")
     _configure(directory, settings, lan=True, keep_credentials=True)
     try:
         _start(directory, "--no-deps", "nginx")
-        report("verify", "Vérification de l’accès à SoundTime.")
+        report("verify", "Checking access to SoundTime.")
         status = _readiness(settings["port"])
     except (OSError, RuntimeError):
         # Recreate the private listener after a LAN bind error so activation
@@ -610,17 +625,17 @@ def _validate_preflight(settings):
 def install(settings, report):
     s = _settings(settings)
     path = Path(s["directory"])
-    report("prepare", "Vérification de Docker, du dossier et des ports.")
+    report("prepare", "Checking Docker, the folder and the ports.")
     _validate_preflight(s)
     with _lock(path):
         _prepare(path)
         # Always bootstrap privately, even when the eventual destination is a LAN server.
         _configure(path, s)
-        report("download", "Téléchargement des images manquantes. Docker réutilise les images déjà disponibles.")
+        report("download", "Downloading missing images. Docker will reuse images already available.")
         _download(path, report)
-        report("start", "Démarrage de la bibliothèque et de ses services.")
+        report("start", "Starting the music library and its services.")
         _start(path)
-        report("verify", "Vérification du serveur, de la base de données et de la page de configuration.")
+        report("verify", "Checking the server, database and setup page.")
         status = _readiness(s["port"])
         if s["access"] == "lan" and status["has_admin"] and status["setup_complete"]:
             return _publish(path, s, report)
@@ -631,24 +646,24 @@ def enable_lan(settings, report):
     s = _settings(settings)
     path = Path(s["directory"])
     if s["access"] != "lan" or not _state(path):
-        raise ValueError("Choisissez une installation existante configurée pour le réseau local.")
+        raise ValueError("Select an existing installation configured for local network access.")
     _docker_ready()
     with _lock(path):
         state = _prepare(path)
         # A different process or instance must not be able to satisfy the bootstrap probe.
         if (s["port"] not in _port_owner(state["project"], "nginx", 80)
                 or _unseal(path / "compose.override.yaml") not in (_override(s), _override(s, True))):
-            raise ValueError("L’installation ou ses réglages ont changé. Relancez la vérification avec le même dossier.")
+            raise ValueError("The installation or its settings have changed. Run the checks again using the same folder.")
         return _publish(path, s, report)
 
 
-def export_project(settings, target, *, language="fr"):
+def export_project(settings, target, *, language="en"):
     if __package__:
         from . import project_export
     else:
         import project_export
     s = _settings(settings, remote=True)
     if s["storage"].get("reuseCredentials"):
-        raise ValueError("Pour exporter une configuration S3, fournissez les clés du bucket.")
+        raise ValueError("Enter the bucket credentials to export an S3 configuration.")
     return project_export.archive(s, target, ROOT, _storage_environment(s["storage"]),
                                   _secret_variables(s["storage"]), language=language)

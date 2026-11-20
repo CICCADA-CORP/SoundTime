@@ -11,14 +11,12 @@ import zipfile
 from pathlib import PurePosixPath
 
 if __package__:
-    from . import i18n
-    from .guide_strings import ROWS
+    from .guide_strings import SECTIONS
 else:
-    import i18n
-    from guide_strings import ROWS
+    from guide_strings import SECTIONS
 
 
-TARGETS = {"nas": "NAS", "server": "serveur dédié", "vps": "VPS", "vm": "machine virtuelle", "cloud": "serveur cloud"}
+TARGETS = ("nas", "server", "vps", "vm", "cloud")
 
 
 def _bind(source, target):
@@ -32,7 +30,7 @@ def _model(s, project, storage_env, nas_guard):
                 "host_ip": "0.0.0.0" if nas_guard else "${SOUNDTIME_BIND_IP:-127.0.0.1}"}
     nginx_mounts = [_bind(path / "docker/nginx.conf", "/etc/nginx/conf.d/default.conf")]
     if nas_guard:
-        nginx_mounts.append(_bind(path / "docker/acces", "/etc/nginx/soundtime-bootstrap"))
+        nginx_mounts.append(_bind(path / "docker/access", "/etc/nginx/soundtime-bootstrap"))
     media_mounts = ["music_data:/data/music", "p2p_data:/data/p2p-blobs"]
     if s["musicDirectory"]:
         media_mounts.append(_bind(s["musicDirectory"], "/data/music/collection"))
@@ -85,18 +83,18 @@ def _guard(nginx, password):
              f'    "{cookie}" off;\n}}\n\n' + nginx)
     marker = "    server_name _;"
     if nginx.count(marker) != 1:
-        raise RuntimeError("Impossible de préparer la protection du premier compte avec cette configuration Nginx.")
+        raise RuntimeError("This Nginx configuration cannot protect the first account during setup.")
     nginx = nginx.replace(marker, marker + "\n    include /etc/nginx/soundtime-bootstrap/*.active;")
-    rule = ("auth_basic $soundtime_realm;\nauth_basic_user_file /etc/nginx/soundtime-bootstrap/comptes;\n"
+    rule = ("auth_basic $soundtime_realm;\nauth_basic_user_file /etc/nginx/soundtime-bootstrap/users;\n"
             f'add_header Set-Cookie "soundtime_bootstrap={cookie}; Path=/; HttpOnly; SameSite=Strict";\n')
     digest = base64.b64encode(hashlib.sha1(password.encode("ascii")).digest()).decode("ascii")
-    return nginx, {"docker/acces/bootstrap.active": rule.encode(),
-                   "docker/acces/comptes": f"soundtime:{{SHA}}{digest}\n".encode()}
+    return nginx, {"docker/access/bootstrap.active": rule.encode(),
+                   "docker/access/users": f"soundtime:{{SHA}}{digest}\n".encode()}
 
 
-def _instructions(s, target, password, project, language):
+def _instructions(s, target, password, project):
     def msg(key, **values):
-        return i18n.text(language, ROWS, key, **values)
+        return SECTIONS[key].format(**values)
 
     directory = s["directory"]
     port = s["port"]
@@ -127,9 +125,9 @@ def _instructions(s, target, password, project, language):
     return "\n".join(sections)
 
 
-def archive(s, target, root, storage_env, secret_variables, *, language="fr"):
+def archive(s, target, root, storage_env, secret_variables, *, language="en"):
     if not isinstance(target, str) or target not in TARGETS:
-        raise ValueError("Choisissez une destination parmi NAS, serveur dédié, VPS, VM et cloud.")
+        raise ValueError("Choose NAS, dedicated server, VPS, virtual machine or cloud as the destination.")
     project = "soundtime-" + secrets.token_hex(8)
     guard = target == "nas" and s["access"] == "lan"
     values = {"COMPOSE_PROJECT_NAME": project, "SOUNDTIME_BIND_IP": "127.0.0.1",
@@ -157,10 +155,7 @@ def archive(s, target, root, storage_env, secret_variables, *, language="fr"):
         nginx, auth_files = _guard(nginx, password)
         files.update(auth_files)
     files["docker/nginx.conf"] = nginx.encode()
-    guide = _instructions(s, target, password, project, language).encode()
-    files["LISEZ-MOI.txt"] = guide
-    if i18n.language(language) != "fr":
-        files["README.txt"] = guide
+    files["README.txt"] = _instructions(s, target, password, project).encode()
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as packed:
         for name, data in files.items():
@@ -168,7 +163,7 @@ def archive(s, target, root, storage_env, secret_variables, *, language="fr"):
             info.create_system = 3
             # The nginx worker reads the password digest with its non-root UID.
             # .env, the cleartext guide and service environment files stay private.
-            mode = 0o644 if name == "docker/acces/comptes" else 0o600
+            mode = 0o644 if name == "docker/access/users" else 0o600
             info.external_attr = (0o100000 | mode) << 16
             packed.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED)
     return f"soundtime-{target}.zip", buffer.getvalue()

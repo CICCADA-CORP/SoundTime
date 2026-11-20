@@ -69,8 +69,8 @@ def smoke():
                 time.sleep(1)
             status, headers, _ = request(web_port, "/setup")
             assert status == 401 and "Set-Cookie" not in headers
-            guide = (root / "LISEZ-MOI.txt").read_text()
-            password = re.search(r"Mot de passe temporaire\s*:\s*(\S+)", guide)[1]
+            guide = (root / "README.txt").read_text()
+            password = re.search(r"Temporary password\s*:\s*(\S+)", guide)[1]
             basic = base64.b64encode(("soundtime:" + password).encode()).decode()
             for _ in range(60):
                 status, headers, _ = request(web_port, "/setup", {"Authorization": "Basic " + basic})
@@ -104,8 +104,8 @@ def smoke():
                                      input=credentials, text=True, capture_output=True, check=True).stdout
             keys = [e.text for e in ElementTree.fromstring(listing).findall(".//{*}Key")]
             assert any(k.startswith("collection/audio/") for k in keys), "Upload missing from S3 prefix"
-            active = root / "docker/acces/bootstrap.active"
-            active.rename(active.with_suffix(".termine"))
+            active = root / "docker/access/bootstrap.active"
+            active.rename(active.with_suffix(".done"))
             subprocess.run([*compose, "restart", "nginx"], cwd=root, check=True)
             for _ in range(40):
                 try:
