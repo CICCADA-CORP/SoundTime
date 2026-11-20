@@ -208,7 +208,7 @@ async fn artist_lookup_surfaces_a_persistent_503_after_three_attempts() {
         .expect(3)
         .mount(&server)
         .await;
-    assert!(get_artist(&Client::new(), &server.uri(), ARTIST)
+    assert!(get_artist(&test_client(), &server.uri(), ARTIST)
         .await
         .is_err());
 }
@@ -238,7 +238,7 @@ async fn missing_mbid_falls_back_to_exact_isrc_then_returns_full_recording() {
         .mount(&server)
         .await;
     let found = resolve_tagged_recording(
-        &Client::new(),
+        &test_client(),
         &base,
         Some(FIRST.parse().unwrap()),
         Some("fr-z03-16-00123"),
@@ -279,7 +279,7 @@ async fn shared_isrc_returns_manual_candidates_without_selecting_the_first_resul
         .mount(&server)
         .await;
     let result = resolve_tagged_recording(
-        &Client::new(),
+        &test_client(),
         &server.uri(),
         None,
         Some("FRZ031600123"),
@@ -297,7 +297,7 @@ async fn retry_and_progressive_lookup_use_one_clock_and_keep_legacy_shape() {
     let server = MockServer::start().await;
     let base = server.uri();
     let client = MusicBrainzClient {
-        http: Client::new(),
+        http: test_client(),
         base_url: base.clone(),
     };
     let row = candidate(FIRST, "Chanson", "Léa", "Printemps", 182_000);
@@ -367,7 +367,7 @@ async fn concurrent_artist_and_recording_helpers_share_the_provider_request_rate
             .await;
     }
     let base = server.uri();
-    let client = Client::new();
+    let client = test_client();
     let (artist, recording) = tokio::join!(
         get_artist(&client, &base, ARTIST),
         get_recording(&client, &base, FIRST.parse().unwrap())
@@ -401,7 +401,7 @@ async fn title_only_truncated_repetitions_prompt_once_and_never_select() {
             .mount(&server)
             .await;
     }
-    let answer = resolve_recording(&Client::new(), &server.uri(), "Hello", None, None, None)
+    let answer = resolve_recording(&test_client(), &server.uri(), "Hello", None, None, None)
         .await
         .unwrap();
     assert!(
@@ -434,7 +434,7 @@ async fn incomplete_title_only_search_without_plausible_hits_needs_more_informat
         .mount(&server)
         .await;
     let answer = resolve_recording(
-        &Client::new(),
+        &test_client(),
         &server.uri(),
         "Night Wave",
         None,
@@ -453,7 +453,7 @@ async fn incomplete_title_only_search_without_plausible_hits_needs_more_informat
         .await;
     assert!(matches!(
         resolve_recording(
-            &Client::new(),
+            &test_client(),
             &server.uri(),
             "No such title",
             None,
@@ -569,7 +569,7 @@ async fn complete_album_query_and_canonical_detail_identify_the_ascii_joga() {
         .mount(&server)
         .await;
     let answer = resolve_recording(
-        &Client::new(),
+        &test_client(),
         &server.uri(),
         "Joga",
         Some("Bjork"),
@@ -624,4 +624,74 @@ fn live_show_name_does_not_hide_an_album_take_or_automatically_decide_a_tie() {
         ),
         RecordingMatch::Absent
     ));
+}
+
+fn test_client() -> MusicBrainzHttp {
+    MusicBrainzHttp::new(MB_USER_AGENT).unwrap()
+}
+
+#[test]
+fn configured_api_keeps_its_origin_prefix_and_entity_type() {
+    let id = FIRST.parse().unwrap();
+    let url = endpoint(
+        "https://music.example:8443/mirror/ws/2/",
+        "recording",
+        Some(id),
+    )
+    .unwrap();
+    assert_eq!(
+        url.as_str(),
+        format!("https://music.example:8443/mirror/ws/2/recording/{FIRST}")
+    );
+    assert!(allows_redirect(&url, &url.join(SECOND).unwrap()));
+    assert!(!allows_redirect(
+        &url,
+        &Url::parse("https://other.example/recording/").unwrap()
+    ));
+    assert!(!allows_redirect(
+        &url,
+        &endpoint(
+            "https://music.example:8444/mirror/ws/2",
+            "recording",
+            Some(id)
+        )
+        .unwrap()
+    ));
+    assert!(!allows_redirect(
+        &url,
+        &endpoint("https://music.example:8443/mirror/ws/2", "artist", Some(id)).unwrap()
+    ));
+    assert!(endpoint("file:///music", "recording", None).is_err());
+    assert!(endpoint("https://music.example/?source=a", "recording", None).is_err());
+}
+
+#[tokio::test]
+async fn merged_recording_keeps_the_configured_provider_and_reads_the_canonical_id() {
+    let server = MockServer::start().await;
+    let merged = format!("/ws/2/recording/{SECOND}");
+    Mock::given(path(format!("/ws/2/recording/{FIRST}")))
+        .respond_with(ResponseTemplate::new(301).insert_header("Location", merged.as_str()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(path(merged))
+        .respond_with(ResponseTemplate::new(200).set_body_json(candidate(
+            SECOND,
+            "Canonical",
+            "Artist",
+            "Release",
+            180_000,
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let recording = get_recording(
+        &test_client(),
+        &format!("{}/ws/2", server.uri()),
+        FIRST.parse().unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(recording.id, SECOND);
 }

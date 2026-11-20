@@ -23,7 +23,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use soundtime_audio::StorageBackend;
 use soundtime_db::entities::{album, artist, instance_setting, track};
-use soundtime_p2p::musicbrainz::{self, RecordingMatch};
+use soundtime_p2p::musicbrainz::{self, MusicBrainzHttp, RecordingMatch};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -282,11 +282,12 @@ struct WikidataSitelink {
 /// Returns (bio, image_url).
 async fn fetch_artist_bio_image(
     client: &Client,
+    mb_http: &MusicBrainzHttp,
     artist_mbid: &str,
     artist_name: &str,
     mb_base_url: &str,
 ) -> (Option<String>, Option<String>) {
-    let resp = match musicbrainz::get_artist(client, mb_base_url, artist_mbid).await {
+    let resp = match musicbrainz::get_artist(mb_http, mb_base_url, artist_mbid).await {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {
             tracing::warn!("MB artist lookup returned {}", r.status());
@@ -452,6 +453,7 @@ fn parse_wikipedia_url(url: &str) -> Option<(String, String)> {
 /// Returns a `MetadataResult` describing what was found/updated.
 struct MetadataProvider {
     client: Client,
+    mb_http: MusicBrainzHttp,
     mb_base_url: String,
     caa_base_url: String,
 }
@@ -460,6 +462,7 @@ impl MetadataProvider {
         let (mb_base_url, agent, caa_base_url) = load_mb_config(db).await;
         Ok(Self {
             client: build_client_with_ua(&agent)?,
+            mb_http: MusicBrainzHttp::new(&agent)?,
             mb_base_url,
             caa_base_url,
         })
@@ -556,6 +559,7 @@ async fn enrich_with_provider(
     };
     let MetadataProvider {
         client,
+        mb_http,
         mb_base_url,
         caa_base_url,
     } = provider;
@@ -568,7 +572,7 @@ async fn enrich_with_provider(
         None
     };
     let resolution = if let Some(mbid) = choice {
-        musicbrainz::get_recording(client, mb_base_url, mbid)
+        musicbrainz::get_recording(mb_http, mb_base_url, mbid)
             .await
             .map(|r| {
                 r.map(RecordingMatch::Reliable)
@@ -584,7 +588,7 @@ async fn enrich_with_provider(
         };
         let duration = track_model.duration_secs;
         musicbrainz::resolve_tagged_recording(
-            client,
+            mb_http,
             mb_base_url,
             id,
             isrc.as_deref(),
@@ -737,7 +741,8 @@ async fn enrich_with_provider(
             // Fetch bio and image from Wikipedia via MusicBrainz relations
             if artist_model.bio.is_none() || artist_model.image_url.is_none() {
                 let (bio, image) =
-                    fetch_artist_bio_image(client, mbid, &artist_model.name, mb_base_url).await;
+                    fetch_artist_bio_image(client, mb_http, mbid, &artist_model.name, mb_base_url)
+                        .await;
                 if artist_model.bio.is_none() {
                     if let Some(ref bio_text) = bio {
                         artist_update.bio = Set(Some(bio_text.clone()));

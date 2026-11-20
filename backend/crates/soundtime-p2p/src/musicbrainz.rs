@@ -1,6 +1,6 @@
 //! Shared MusicBrainz recording resolution for imports and administrative enrichment.
 use anyhow::{bail, ensure, Result};
-use reqwest::{Client, Response, StatusCode};
+use reqwest::{redirect, Client, Response, StatusCode, Url};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::time::Duration;
 use tokio::{sync::Mutex, time::Instant};
@@ -168,7 +168,72 @@ fn retry_delay(response: &Response, attempt: u32) -> Duration {
     Duration::from_secs(1 << attempt)
 }
 
-async fn request(client: &Client, url: &str, query: &[(&str, &str)]) -> Result<Response> {
+/// HTTP client confined to the configured MusicBrainz API on every redirect.
+pub struct MusicBrainzHttp(Client);
+
+impl MusicBrainzHttp {
+    pub fn new(user_agent: &str) -> Result<Self, reqwest::Error> {
+        Client::builder()
+            .user_agent(user_agent)
+            .timeout(Duration::from_secs(12))
+            .redirect(redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() <= 5
+                    && attempt
+                        .previous()
+                        .first()
+                        .is_some_and(|initial| allows_redirect(initial, attempt.url()))
+                {
+                    attempt.follow()
+                } else {
+                    attempt.error("unexpected MusicBrainz redirect")
+                }
+            }))
+            .build()
+            .map(Self)
+    }
+}
+
+fn allows_redirect(initial: &Url, target: &Url) -> bool {
+    if initial.origin() != target.origin()
+        || !target.username().is_empty()
+        || target.password().is_some()
+    {
+        return false;
+    }
+    let from = initial.path().trim_end_matches('/');
+    let to = target.path().trim_end_matches('/');
+    // MusicBrainz redirects merged IDs to the canonical entity in the same collection.
+    from == to
+        || matches!(
+            (from.rsplit_once('/'), to.rsplit_once('/')),
+            (Some((collection, old)), Some((destination, new)))
+                if collection == destination && Uuid::parse_str(old).is_ok() && Uuid::parse_str(new).is_ok()
+        )
+}
+
+fn endpoint(base: &str, collection: &str, id: Option<Uuid>) -> Result<Url> {
+    let mut url = Url::parse(base)?;
+    ensure!(
+        matches!(url.scheme(), "http" | "https")
+            && url.has_host()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "invalid MusicBrainz API base"
+    );
+    let mut path = url
+        .path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("invalid MusicBrainz API path"))?;
+    path.pop_if_empty().push(collection);
+    if let Some(id) = id {
+        path.push(id.hyphenated().encode_lower(&mut Uuid::encode_buffer()));
+    }
+    drop(path);
+    Ok(url)
+}
+
+async fn request(client: &MusicBrainzHttp, url: Url, query: &[(&str, &str)]) -> Result<Response> {
     for attempt in 0..3 {
         // Keep response headers inside the critical section so no other caller
         // can race past a new provider-wide Retry-After embargo.
@@ -182,7 +247,8 @@ async fn request(client: &Client, url: &str, query: &[(&str, &str)]) -> Result<R
         }
         *next = Some(Instant::now() + Duration::from_secs(1));
         let response = client
-            .get(url)
+            .0
+            .get(url.clone())
             .query(query)
             .timeout(Duration::from_secs(12))
             .send()
@@ -210,24 +276,24 @@ async fn request(client: &Client, url: &str, query: &[(&str, &str)]) -> Result<R
     unreachable!()
 }
 
-pub async fn get_artist(client: &Client, base_url: &str, mbid: &str) -> Result<Response> {
-    let url = format!(
-        "{}/artist/{}",
-        base_url.trim_end_matches('/'),
-        Uuid::parse_str(mbid)?
-    );
+pub async fn get_artist(client: &MusicBrainzHttp, base_url: &str, mbid: &str) -> Result<Response> {
+    let url = endpoint(base_url, "artist", Some(Uuid::parse_str(mbid)?))?;
     Ok(
-        request(client, &url, &[("inc", "url-rels"), ("fmt", "json")])
+        request(client, url, &[("inc", "url-rels"), ("fmt", "json")])
             .await?
             .error_for_status()?,
     )
 }
 
-pub async fn get_recording(client: &Client, base_url: &str, id: Uuid) -> Result<Option<Recording>> {
-    let url = format!("{}/recording/{id}", base_url.trim_end_matches('/'));
+pub async fn get_recording(
+    client: &MusicBrainzHttp,
+    base_url: &str,
+    id: Uuid,
+) -> Result<Option<Recording>> {
+    let url = endpoint(base_url, "recording", Some(id))?;
     let response = request(
         client,
-        &url,
+        url,
         &[
             ("inc", "artist-credits+releases+tags+isrcs"),
             ("fmt", "json"),
@@ -302,19 +368,24 @@ fn text_queries(hints: &Hints<'_>) -> Vec<String> {
     queries
 }
 
-async fn search(client: &Client, base: &str, query: &str) -> Result<Page> {
+async fn search(client: &MusicBrainzHttp, base: &str, query: &str) -> Result<Page> {
     search_from(client, base, query, 0).await
 }
 
-async fn search_from(client: &Client, base: &str, query: &str, offset: usize) -> Result<Page> {
-    let url = format!("{}/recording", base.trim_end_matches('/'));
+async fn search_from(
+    client: &MusicBrainzHttp,
+    base: &str,
+    query: &str,
+    offset: usize,
+) -> Result<Page> {
+    let url = endpoint(base, "recording", None)?;
     let limit = PAGE_SIZE.to_string();
     let offset_text = offset.to_string();
     let mut params = vec![("query", query), ("fmt", "json"), ("limit", limit.as_str())];
     if offset > 0 {
         params.push(("offset", &offset_text));
     }
-    Ok(request(client, &url, &params)
+    Ok(request(client, url, &params)
         .await?
         .error_for_status()?
         .json()
@@ -322,7 +393,7 @@ async fn search_from(client: &Client, base: &str, query: &str, offset: usize) ->
 }
 
 async fn details(
-    client: &Client,
+    client: &MusicBrainzHttp,
     base: &str,
     found: Recording,
     album: Option<&str>,
@@ -366,7 +437,7 @@ fn isrc_code(raw: &str) -> Option<String> {
 }
 
 pub async fn resolve_recording(
-    client: &Client,
+    client: &MusicBrainzHttp,
     base_url: &str,
     title: &str,
     artist: Option<&str>,
@@ -388,7 +459,7 @@ pub async fn resolve_recording(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_tagged_recording(
-    client: &Client,
+    client: &MusicBrainzHttp,
     base_url: &str,
     recording_id: Option<Uuid>,
     isrc: Option<&str>,
@@ -544,17 +615,14 @@ pub struct MusicBrainzRecording {
 }
 
 pub struct MusicBrainzClient {
-    http: Client,
+    http: MusicBrainzHttp,
     base_url: String,
 }
 
 impl MusicBrainzClient {
     pub fn new() -> Self {
         Self {
-            http: Client::builder()
-                .user_agent(MB_USER_AGENT)
-                .timeout(Duration::from_secs(12))
-                .build()
+            http: MusicBrainzHttp::new(MB_USER_AGENT)
                 .expect("failed to build MusicBrainz HTTP client"),
             base_url: std::env::var("MUSICBRAINZ_BASE_URL")
                 .unwrap_or_else(|_| MB_BASE_URL.to_owned()),
