@@ -199,7 +199,7 @@ struct Entry {
 pub struct Directory {
     pub(super) podcasts: super::podcasts::Podcasts,
     client: Client,
-    mirrors: Vec<String>,
+    mirrors: Vec<Url>,
     preferred: AtomicUsize,
     pages: Mutex<VecDeque<Entry>>,
     permits: Semaphore,
@@ -207,10 +207,24 @@ pub struct Directory {
 
 impl Directory {
     pub fn new() -> anyhow::Result<Self> {
-        Self::with_mirrors(MIRRORS.iter().map(|s| s.to_string()).collect())
+        // Production origins are chosen exclusively here, independently of any station or filter.
+        let mirrors = MIRRORS
+            .iter()
+            .map(|origin| Url::parse(origin))
+            .collect::<Result<_, _>>()?;
+        Self::from_origins(mirrors)
     }
 
+    #[cfg(test)]
     fn with_mirrors(mirrors: Vec<String>) -> anyhow::Result<Self> {
+        let mirrors = mirrors
+            .iter()
+            .map(|origin| Url::parse(origin))
+            .collect::<Result<_, _>>()?;
+        Self::from_origins(mirrors)
+    }
+
+    fn from_origins(mirrors: Vec<Url>) -> anyhow::Result<Self> {
         anyhow::ensure!(!mirrors.is_empty(), "Radio Browser requires a mirror");
         let client = Client::builder()
             .user_agent(concat!("SoundTime/", env!("CARGO_PKG_VERSION")))
@@ -231,7 +245,7 @@ impl Directory {
 
     async fn get<T: DeserializeOwned>(
         &self,
-        path: &str,
+        path: &'static str,
         query: &[(&str, &str)],
         max: usize,
     ) -> Result<(usize, T), StatusCode> {
@@ -239,13 +253,9 @@ impl Directory {
         for step in 0..self.mirrors.len() {
             let index = (start + step) % self.mirrors.len();
             let result = async {
-                let mut response = self
-                    .client
-                    .get(format!("{}{path}", self.mirrors[index]))
-                    .query(query)
-                    .send()
-                    .await
-                    .ok()?;
+                let mut endpoint = self.mirrors[index].clone();
+                endpoint.set_path(path);
+                let mut response = self.client.get(endpoint).query(query).send().await.ok()?;
                 if !response.status().is_success()
                     || response.content_length().is_some_and(|n| n > max as u64)
                 {
@@ -368,10 +378,11 @@ impl Directory {
             .permits
             .try_acquire()
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+        let uuid = id.to_string();
         let (index, rows): (_, Vec<Listing>) = self
             .get(
-                &format!("/json/stations/byuuid/{id}"),
-                &[("hidebroken", "true"), ("limit", "1")],
+                "/json/stations/byuuid",
+                &[("uuids", &uuid), ("hidebroken", "true"), ("limit", "1")],
                 64 * 1024,
             )
             .await?;
@@ -383,9 +394,17 @@ impl Directory {
         // Count once at play time on the same mirror. A failed counter must not
         // interrupt a resolved stream or be retried as a second listening event.
         if count_click {
+            // Radio Browser requires a path segment for clicks. Only the parsed UUID
+            // is appended to the successful mirror's fixed endpoint.
+            let mut endpoint = self.mirrors[index].clone();
+            endpoint.set_path("/json/url");
+            endpoint
+                .path_segments_mut()
+                .expect("Radio Browser mirror is an HTTP origin")
+                .push(&uuid);
             let _ = self
                 .client
-                .get(format!("{}/json/url/{id}", self.mirrors[index]))
+                .get(endpoint)
                 .timeout(Duration::from_secs(1))
                 .send()
                 .await;

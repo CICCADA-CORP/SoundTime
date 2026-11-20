@@ -108,13 +108,24 @@ async fn paged_search_coalesces_requests_and_uses_the_working_mirror() {
 #[tokio::test]
 async fn play_counts_once_locate_counts_nothing_and_both_return_the_resolved_url() {
     let server = MockServer::start().await;
-    let dir = Directory::with_mirrors(vec![server.uri()]).unwrap();
+    let previous_mirror = MockServer::start().await;
+    let redirect_target = MockServer::start().await;
+    let dir = Directory::with_mirrors(vec![previous_mirror.uri(), server.uri()]).unwrap();
     let id = Uuid::new_v4();
     let mut listing = row(id);
     listing["hls"] = json!(1);
-    Mock::given(method("GET"))
-        .and(path(format!("/json/stations/byuuid/{id}")))
-        .and(query_param("hidebroken", "true"))
+    let details = || {
+        Mock::given(method("GET"))
+            .and(path("/json/stations/byuuid"))
+            .and(query_param("uuids", id.to_string()))
+            .and(query_param("hidebroken", "true"))
+    };
+    details()
+        .respond_with(ResponseTemplate::new(302).insert_header("location", redirect_target.uri()))
+        .expect(1)
+        .mount(&previous_mirror)
+        .await;
+    details()
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([listing])))
         .expect(2)
         .mount(&server)
@@ -132,6 +143,12 @@ async fn play_counts_once_locate_counts_nothing_and_both_return_the_resolved_url
     let played = dir.play(id).await.unwrap();
     assert_eq!(played.url, located.url);
     assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    assert!(redirect_target
+        .received_requests()
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(previous_mirror.received_requests().await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -154,7 +171,8 @@ async fn unknown_broken_and_unsafe_stations_are_never_counted() {
             }
         };
         Mock::given(method("GET"))
-            .and(path(format!("/json/stations/byuuid/{id}")))
+            .and(path("/json/stations/byuuid"))
+            .and(query_param("uuids", id.to_string()))
             .respond_with(ResponseTemplate::new(200).set_body_json(rows))
             .expect(1)
             .mount(&server)
